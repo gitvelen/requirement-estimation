@@ -168,7 +168,7 @@ health_check() {
     fi
 
     # 尝试导入主应用
-    .venv/bin/python3 -c "import sys; sys.path.insert(0, '/app'); import backend.app" || {
+    python3 -c "import sys; sys.path.insert(0, '/app'); import backend.app" || {
         echo_error "应用导入失败，请检查依赖"
         exit 1
     }
@@ -230,14 +230,14 @@ main() {
         echo_info "执行命令: $@"
         exec "$@"
     else
-        # 默认启动命令 - 使用虚拟环境中的 uvicorn
+        # 默认启动命令 - 使用 uvicorn（PATH 中已包含虚拟环境）
         # 根据 DEBUG 模式决定 workers 和 reload
         if [ "${DEBUG:-false}" = "true" ]; then
             echo_info "调试模式：单进程 + 热重载"
-            exec .venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --reload --workers 1 --log-level info
+            exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --reload --workers 1 --log-level info
         else
             echo_info "生产模式：多进程 (${WORKERS:-4}) + 无热重载"
-            exec .venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --workers ${WORKERS:-4} --log-level info
+            exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --workers ${WORKERS:-4} --log-level info
         fi
     fi
 }

@@ -37,8 +37,11 @@ COPY --chown=appuser:appuser . .
 RUN mkdir -p logs data uploads && \
     chown -R appuser:appuser /app
 
+# 将虚拟环境添加到 PATH（在验证之前设置）
+ENV PATH="/app/.venv/bin:$PATH"
+
 # 验证Python依赖是否完整（构建时检查）
-RUN .venv/bin/python3 -c "import sys; sys.path.insert(0, '.'); import backend.app" || (echo "依赖检查失败，请检查pyproject.toml" && exit 1)
+RUN python3 -c "import sys; sys.path.insert(0, '.'); import backend.app" || (echo "依赖检查失败，请检查pyproject.toml" && exit 1)
 
 # 复制 entrypoint.sh 并设置权限
 COPY --chown=appuser:appuser entrypoint.sh /app/
@@ -52,4 +55,4 @@ EXPOSE 443
 
 # 设置 entrypoint 和启动命令
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD [".venv/bin/uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "443"]
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "443"]
