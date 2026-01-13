@@ -1,0 +1,103 @@
+[project]
+name = "requirement-estimation-system"
+version = "1.0.0"
+description = "业务需求工作量评估系统 - 基于 AI 和 COSMIC 功能点分析方法"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = [
+    "requirement-estimation",
+    "cosmic",
+    "fastapi",
+    "ai",
+    "workload-estimation"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Build Tools",
+]
+
+dependencies = [
+    # Web 框架
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+
+    # 数据验证
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # 文档处理
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.2",
+
+    # AI 相关
+    "langchain>=0.1.0",
+    "langchain-openai>=0.0.2",
+    "langgraph>=0.0.26",
+    "dashscope>=1.14.0",
+]
+
+[project.optional-dependencies]
+# 开发依赖
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+
+# 生产依赖（与 dependencies 相同，方便单独安装）
+prod = [
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.2",
+    "langchain>=0.1.0",
+    "langchain-openai>=0.0.2",
+    "langgraph>=0.0.26",
+    "dashscope>=1.14.0",
+]
+
+[project.urls]
+Homepage = "http://172.18.121.196"
+Repository = "http://github.com/your-username/requirement-estimation-system"
+Documentation = "https://github.com/your-username/requirement-estimation-system/blob/main/README.md"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[tool.uv.sources]
+# 如果需要从特定源安装包，可以在这里配置
+# 例如：
+# fastapi = { url = "https://github.com/tiangolo/fastapi/archive/refs/tags/0.104.1.tar.gz" }
+
+# [tool.uv.index]
+# 配置默认的 PyPI 索引
+# url = "https://pypi.org/simple"
+# default = true
+
+# [tool.uv.index.private]
+# 配置私有 PyPI 索引（内网私服）
+# url = "http://your-private-pypi-server/simple"
+# default = false

@@ -1,0 +1,27 @@
+# uv 配置文件示例
+# 复制此文件为 .uvrc 并根据实际环境修改
+
+# PyPI 镜像源配置
+# 公有云镜像示例：
+# index-url = "https://mirrors.cloud.tencent.com/pypi/simple"
+# index-url = "https://mirrors.aliyun.com/pypi/simple"
+# index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+# 私服镜像示例（内网部署）：
+# index-url = "http://your-private-pypi-server/simple"
+
+# 如果私服需要认证：
+# index-url = "http://username:password@your-private-pypi-server/simple"
+
+# 额外的索引URL（用于同时使用多个源）
+# extra-index-url = []
+
+# 缓存配置
+# cache-dir = "/tmp/uv-cache"
+
+# Python 版本
+# python-version = "3.10"
+
+# 其他选项
+# no-dev = false
+# no-build-isolation = false

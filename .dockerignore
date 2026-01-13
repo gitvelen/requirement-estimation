@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.python-version
+
+# UV（忽略缓存目录，但保留 uv.lock）
+.uv/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 项目
+logs/
+data/
+uploads/
+*.log
+.git/
+.gitignore
+
+# 旧版依赖管理（已弃用，保留用于兼容）
+requirements.txt
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 文档
+docs/
+*.md
+!README.md

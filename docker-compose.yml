@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: .
+      args:
+        # 如果使用私服镜像，修改下面的 URL
+        # 示例：http://your-private-pypi-server/simple
+        - UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+    container_name: requirement-backend
+    ports:
+      - "443:443"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./backend/config:/app/backend/config
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 前端服务（使用Nginx）
+  frontend:
+    image: nginx:alpine
+    container_name: requirement-frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend/build:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
