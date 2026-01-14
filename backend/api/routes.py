@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -26,13 +26,6 @@ router = APIRouter(prefix=settings.API_PREFIX, tags=["需求评估"])
 
 # 全局任务存储（生产环境应使用Redis或数据库）
 task_storage = {}
-
-
-class EvaluateRequest(BaseModel):
-    """评估请求模型"""
-    request_id: str
-    callback_url: str = None
-    priority: int = 0
 
 
 class TaskStatusResponse(BaseModel):
@@ -114,7 +107,9 @@ async def upload_requirement(
 
 @router.post("/requirement/evaluate")
 async def evaluate_requirement(
-    request: EvaluateRequest,
+    request_id: str = Form(...),
+    callback_url: str = Form(None),
+    priority: int = Form(0),
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None
 ):
@@ -122,7 +117,9 @@ async def evaluate_requirement(
     DevOps系统调用的评估接口
 
     Args:
-        request: 评估请求
+        request_id: 请求ID
+        callback_url: 回调通知地址
+        priority: 优先级
         file: 需求文档文件
         background_tasks: 后台任务
 
@@ -130,10 +127,10 @@ async def evaluate_requirement(
         Dict: 任务信息
     """
     try:
-        logger.info(f"接收到DevOps评估请求: {request.request_id}")
+        logger.info(f"接收到DevOps评估请求: {request_id}")
 
         # 生成任务ID
-        task_id = request.request_id or str(uuid.uuid4())
+        task_id = request_id or str(uuid.uuid4())
 
         # 保存文件
         upload_dir = settings.UPLOAD_DIR
@@ -153,13 +150,13 @@ async def evaluate_requirement(
             "progress": 0,
             "message": "任务已创建",
             "created_at": datetime.now().isoformat(),
-            "callback_url": request.callback_url,
+            "callback_url": callback_url,
             "report_path": None
         }
 
         # 启动后台处理
         if background_tasks:
-            background_tasks.add_task(process_task_with_callback, task_id, file_path, request.callback_url)
+            background_tasks.add_task(process_task_with_callback, task_id, file_path, callback_url)
 
         return {
             "code": 200,
