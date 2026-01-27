@@ -1,13 +1,15 @@
 """
 系统识别Agent
 从需求文本中识别涉及改造的所有系统
+支持知识库注入，提供系统上下文信息
 """
 import logging
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 from backend.utils.llm_client import llm_client
 from backend.prompts.prompt_templates import SYSTEM_IDENTIFICATION_PROMPT
+from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +17,24 @@ logger = logging.getLogger(__name__)
 class SystemIdentificationAgent:
     """系统识别Agent"""
 
-    def __init__(self):
-        """初始化Agent"""
+    def __init__(self, knowledge_service=None):
+        """
+        初始化Agent
+
+        Args:
+            knowledge_service: 知识库服务（可选，用于注入系统知识）
+        """
         self.name = "系统识别Agent"
         self.prompt_template = SYSTEM_IDENTIFICATION_PROMPT
         self.system_list = []  # 延迟加载
         self.subsystem_mapping = {}  # 延迟加载
-        logger.info(f"{self.name}初始化完成（系统列表和映射将在首次使用时加载）")
+        self.knowledge_service = knowledge_service
+        self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
+
+        if self.knowledge_enabled and self.knowledge_service:
+            logger.info(f"{self.name}初始化完成（知识库功能：已启用）")
+        else:
+            logger.info(f"{self.name}初始化完成（知识库功能：未启用）")
 
     def _load_system_list(self) -> List[str]:
         """
@@ -94,7 +107,7 @@ class SystemIdentificationAgent:
         """
         subsystem_mapping = {}
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        csv_path = os.path.join(base_dir, "backend", "subsystem_list.csv")
+        csv_path = os.path.join(base_dir, "subsystem_list.csv")
 
         if os.path.exists(csv_path):
             try:
@@ -148,8 +161,36 @@ class SystemIdentificationAgent:
             logger.info(f"[系统识别] 开始识别系统...")
             logger.info(f"[内容长度] {len(requirement_content)} 字符")
 
+            # 【新增】知识库增强：检索系统级知识
+            knowledge_context = ""
+            if self.knowledge_enabled and self.knowledge_service:
+                try:
+                    logger.info("[系统识别] 正在检索相关系统知识...")
+                    system_profiles = self.knowledge_service.search_similar_knowledge(
+                        query_text=requirement_content,
+                        knowledge_type="system_profile",
+                        top_k=settings.KNOWLEDGE_TOP_K,
+                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD
+                    )
+
+                    if system_profiles:
+                        logger.info(f"[系统识别] 检索到 {len(system_profiles)} 条相关系统知识")
+                        knowledge_context = self._build_knowledge_context(system_profiles)
+                    else:
+                        logger.info("[系统识别] 未检索到相关系统知识")
+
+                except Exception as e:
+                    logger.warning(f"[系统识别] 知识库检索失败: {e}，继续使用传统方式")
+
             # 构建提示词
-            user_prompt = f"需求内容：\n\n{requirement_content}\n\n请识别该需求涉及的所有系统。"
+            user_prompt = f"需求内容：\n\n{requirement_content}\n\n"
+
+            # 【新增】注入知识上下文
+            if knowledge_context:
+                user_prompt += f"\n【系统知识参考】\n{knowledge_context}\n\n"
+                user_prompt += "请参考上述系统知识，识别该需求涉及的所有系统。"
+            else:
+                user_prompt += "请识别该需求涉及的所有系统。"
 
             # 调用LLM
             response = llm_client.chat_with_system_prompt(
@@ -420,6 +461,54 @@ class SystemIdentificationAgent:
 
         return True
 
+    def _build_knowledge_context(
+        self,
+        system_profiles: List[Dict[str, Any]]
+    ) -> str:
+        """
+        构建系统知识上下文（用于Agent Prompt）
 
-# 全局Agent实例
-system_identification_agent = SystemIdentificationAgent()
+        Args:
+            system_profiles: 系统知识列表
+
+        Returns:
+            str: 格式化的知识上下文
+        """
+        if not system_profiles:
+            return ""
+
+        context_parts = []
+        for idx, profile in enumerate(system_profiles, 1):
+            metadata = profile.get("metadata", {})
+            similarity = profile.get("similarity", 0.0)
+
+            part = f"""【知识{idx}】{metadata.get('system_name', '')} ({metadata.get('system_short_name', '')})
+   - 业务目标: {metadata.get('business_goal', '')}
+   - 核心功能: {metadata.get('core_functions', '')}
+   - 技术栈: {metadata.get('tech_stack', '')}
+   - 架构特点: {metadata.get('architecture', '')}
+   - 性能指标: {metadata.get('performance', '')}
+   - 相似度: {similarity:.2f}
+"""
+            context_parts.append(part)
+
+        return "\n".join(context_parts)
+
+
+# 全局Agent实例（延迟初始化，在agent_orchestrator中注入knowledge_service）
+system_identification_agent = None
+
+def get_system_identification_agent(knowledge_service=None):
+    """
+    获取系统识别Agent实例
+
+    Args:
+        knowledge_service: 知识库服务（可选）
+
+    Returns:
+        SystemIdentificationAgent: Agent实例
+    """
+    global system_identification_agent
+    if system_identification_agent is None:
+        system_identification_agent = SystemIdentificationAgent(knowledge_service)
+    return system_identification_agent

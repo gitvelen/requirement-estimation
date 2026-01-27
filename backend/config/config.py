@@ -3,7 +3,7 @@
 管理所有系统配置项，包括大模型API、数据库连接等
 """
 import os
-from typing import Optional
+from typing import Optional, List
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -20,18 +20,34 @@ class Settings(BaseSettings):
     PORT: int = 443
     WORKERS: int = 4
 
+    # CORS配置（从环境变量读取，支持多个域名用逗号分隔）
+    # 注意：ALLOWED_ORIGINS是属性，不需要在model_config中声明
+
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        """获取允许的CORS域名列表"""
+        origins_str = os.getenv("ALLOWED_ORIGINS", "http://172.18.121.196,http://172.18.121.196:80")
+        return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+
     # 阿里云大模型配置
     DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
     DASHSCOPE_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     LLM_MODEL: str = "qwen-turbo"  # 默认模型
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 4000
-    LLM_TIMEOUT: int = 60
+    LLM_TIMEOUT: int = 120  # LLM请求超时时间（秒），异步任务需要更长时间
 
     # Milvus向量数据库配置
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
     MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
     MILVUS_COLLECTION_NAME: str = "system_knowledge"
+
+    # 知识库配置
+    KNOWLEDGE_ENABLED: bool = os.getenv("KNOWLEDGE_ENABLED", "true").lower() == "true"
+    EMBEDDING_MODEL: str = "text-embedding-v2"  # 阿里云Embedding模型
+    EMBEDDING_DIM: int = 1024  # 向量维度
+    KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
+    KNOWLEDGE_SIMILARITY_THRESHOLD: float = 0.6  # 相似度阈值
 
     # 文件上传配置
     UPLOAD_DIR: str = "uploads"
@@ -66,9 +82,11 @@ class Settings(BaseSettings):
     TASK_TIMEOUT: int = 600  # 任务超时时间（秒）
     TASK_RETRY_TIMES: int = 3  # 任务重试次数
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = {
+        "extra": "ignore",
+        "env_file": ".env",
+        "case_sensitive": True
+    }
 
 # 全局配置实例
 settings = Settings()

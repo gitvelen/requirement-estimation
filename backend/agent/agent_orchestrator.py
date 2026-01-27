@@ -1,15 +1,18 @@
 """
 Agent编排器
 使用LangGraph实现Agent协同工作流程
+支持知识库注入到Agent中
 """
 import logging
 import time
 from typing import Dict, List, Any, Callable, Optional
 from langgraph.graph import StateGraph, END
-from backend.agent.system_identification_agent import system_identification_agent
-from backend.agent.feature_breakdown_agent import feature_breakdown_agent
+from backend.agent.system_identification_agent import get_system_identification_agent
+from backend.agent.feature_breakdown_agent import get_feature_breakdown_agent
 from backend.agent.work_estimation_agent import work_estimation_agent
 from backend.utils.excel_generator import excel_generator
+from backend.service.knowledge_service import get_knowledge_service
+from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +20,32 @@ logger = logging.getLogger(__name__)
 class AgentOrchestrator:
     """Agent编排器"""
 
-    def __init__(self):
-        """初始化编排器"""
+    def __init__(self, knowledge_service=None):
+        """
+        初始化编排器
+
+        Args:
+            knowledge_service: 知识库服务（可选）
+        """
         self.name = "Agent编排器"
+
+        # 初始化知识库服务
+        self.knowledge_service = knowledge_service
+        self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
+
+        if self.knowledge_enabled:
+            if self.knowledge_service is None:
+                try:
+                    self.knowledge_service = get_knowledge_service()
+                    logger.info(f"[{self.name}] 知识库功能已启用")
+                except Exception as e:
+                    logger.warning(f"[{self.name}] 知识库初始化失败: {e}，继续使用传统方式")
+                    self.knowledge_enabled = False
+            else:
+                logger.info(f"[{self.name}] 知识库功能已启用")
+        else:
+            logger.info(f"[{self.name}] 知识库功能未启用")
+
         logger.info(f"[{self.name}] 初始化完成")
 
     def _update_progress(
@@ -47,7 +73,7 @@ class AgentOrchestrator:
         task_id: str,
         requirement_data: Dict[str, str],
         progress_callback: Optional[Callable[[int, str], None]] = None
-    ) -> str:
+    ) -> tuple:
         """
         处理需求评估的主流程
 
@@ -57,7 +83,9 @@ class AgentOrchestrator:
             progress_callback: 进度回调函数 (progress, message) => None
 
         Returns:
-            str: 生成的Excel报告文件路径
+            tuple: (report_path, systems_data)
+                - report_path: 生成的Excel报告文件路径
+                - systems_data: 所有系统的功能点数据
         """
         start_time = time.time()
         requirement_name = requirement_data.get("requirement_name", "未知需求")
@@ -77,18 +105,20 @@ class AgentOrchestrator:
 
             self._update_progress(progress_callback, 20, "正在识别系统...")
 
-            systems = system_identification_agent.identify(
+            # 获取系统识别Agent（注入knowledge_service）
+            sys_agent = get_system_identification_agent(self.knowledge_service)
+            systems = sys_agent.identify(
                 requirement_data.get("requirement_content", "")
             )
 
             # 验证和标准化系统名称
             logger.info("[处理中] 验证和标准化系统名称...")
-            systems = system_identification_agent.validate_and_filter_systems(systems)
+            systems = sys_agent.validate_and_filter_systems(systems)
 
             if not systems:
                 raise ValueError("未识别到任何系统")
 
-            system_identification_agent.validate_systems(systems)
+            sys_agent.validate_systems(systems)
 
             # 统计系统信息
             system_names = [s["name"] for s in systems]
@@ -122,7 +152,9 @@ class AgentOrchestrator:
                 progress = 40 + int(20 * idx / len(systems))
                 self._update_progress(progress_callback, progress, f"拆分功能点：{system_name} ({idx}/{len(systems)})")
 
-                features = feature_breakdown_agent.breakdown(
+                # 获取功能拆分Agent（注入knowledge_service）
+                feature_agent = get_feature_breakdown_agent(self.knowledge_service)
+                features = feature_agent.breakdown(
                     requirement_data.get("requirement_content", ""),
                     system_name,
                     system_type
@@ -130,7 +162,7 @@ class AgentOrchestrator:
 
                 # 校验功能点中的系统名称
                 logger.info(f"  └─ 校验功能点系统名称...")
-                features = system_identification_agent.validate_system_names_in_features(
+                features = sys_agent.validate_system_names_in_features(
                     system_name, features
                 )
 
@@ -219,7 +251,8 @@ class AgentOrchestrator:
             logger.info("=" * 80)
             logger.info("")
 
-            return report_path
+            # 【新增】返回report_path和systems_data，用于人机协作修正
+            return report_path, systems_data
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -238,7 +271,7 @@ class AgentOrchestrator:
         requirement_data: Dict[str, str],
         max_retry: int = 3,
         progress_callback: Optional[Callable[[int, str], None]] = None
-    ) -> str:
+    ) -> tuple:
         """
         带重试机制的需求处理
 
@@ -249,7 +282,9 @@ class AgentOrchestrator:
             progress_callback: 进度回调函数
 
         Returns:
-            str: Excel报告文件路径
+            tuple: (report_path, systems_data)
+                - report_path: Excel报告文件路径
+                - systems_data: 所有系统的功能点数据
         """
         for attempt in range(max_retry):
             try:
@@ -269,5 +304,20 @@ class AgentOrchestrator:
                     raise
 
 
-# 全局编排器实例
-agent_orchestrator = AgentOrchestrator()
+# 全局编排器实例（延迟初始化，支持注入knowledge_service）
+agent_orchestrator = None
+
+def get_agent_orchestrator(knowledge_service=None):
+    """
+    获取Agent编排器实例
+
+    Args:
+        knowledge_service: 知识库服务（可选）
+
+    Returns:
+        AgentOrchestrator: 编排器实例
+    """
+    global agent_orchestrator
+    if agent_orchestrator is None:
+        agent_orchestrator = AgentOrchestrator(knowledge_service)
+    return agent_orchestrator

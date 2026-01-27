@@ -1,12 +1,14 @@
 """
 功能点拆分Agent
 按系统维度拆分功能点
+支持知识库注入，提供历史案例参考
 """
 import logging
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 from backend.utils.llm_client import llm_client
 from backend.prompts.prompt_templates import FEATURE_BREAKDOWN_PROMPT
+from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +16,22 @@ logger = logging.getLogger(__name__)
 class FeatureBreakdownAgent:
     """功能点拆分Agent"""
 
-    def __init__(self):
-        """初始化Agent"""
+    def __init__(self, knowledge_service=None):
+        """
+        初始化Agent
+
+        Args:
+            knowledge_service: 知识库服务（可选，用于注入历史案例）
+        """
         self.name = "功能点拆分Agent"
         self.prompt_template = FEATURE_BREAKDOWN_PROMPT
-        logger.info(f"{self.name}初始化完成")
+        self.knowledge_service = knowledge_service
+        self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
+
+        if self.knowledge_enabled and self.knowledge_service:
+            logger.info(f"{self.name}初始化完成（知识库功能：已启用）")
+        else:
+            logger.info(f"{self.name}初始化完成（知识库功能：未启用）")
 
     def breakdown(
         self,
@@ -43,10 +56,44 @@ class FeatureBreakdownAgent:
         try:
             logger.info(f"[功能拆分] 开始拆分: {system_name} ({system_type})")
 
+            # 【新增】知识库增强：检索历史功能案例
+            case_context = ""
+            if self.knowledge_enabled and self.knowledge_service:
+                try:
+                    logger.info(f"[功能拆分] 正在检索【{system_name}】的历史案例...")
+                    feature_cases = self.knowledge_service.search_similar_knowledge(
+                        query_text=requirement_content,
+                        system_name=system_name,
+                        knowledge_type="feature_case",
+                        top_k=settings.KNOWLEDGE_TOP_K,
+                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD
+                    )
+
+                    if feature_cases:
+                        logger.info(f"[功能拆分] 检索到 {len(feature_cases)} 条相关历史案例")
+                        case_context = self._build_case_context(feature_cases)
+                    else:
+                        logger.info(f"[功能拆分] 未检索到【{system_name}】的历史案例")
+
+                except Exception as e:
+                    logger.warning(f"[功能拆分] 知识库检索失败: {e}，继续使用传统方式")
+
             # 构建提示词
             user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
             user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
-            user_prompt += """拆分要求：
+
+            # 【新增】注入案例上下文
+            if case_context:
+                user_prompt += f"""【历史类似案例参考】\n{case_context}\n\n"""
+                user_prompt += """请参考上述历史案例的功能拆分粒度和复杂度评估，进行本次拆分。\n\n"""
+                user_prompt += """拆分要求：
+1. 只拆分属于该系统的功能点
+2. 功能点粒度控制在0.5-5人天
+3. 参考历史案例的拆分粒度和工作量估算
+4. 明确标注依赖关系
+5. 评估复杂度（高/中/低）"""
+            else:
+                user_prompt += """拆分要求：
 1. 只拆分属于该系统的功能点
 2. 功能点粒度控制在0.5-5人天
 3. 明确标注依赖关系
@@ -169,6 +216,57 @@ class FeatureBreakdownAgent:
             # 如果优化失败，返回原始结果
             return features
 
+    def _build_case_context(
+        self,
+        feature_cases: List[Dict[str, Any]]
+    ) -> str:
+        """
+        构建功能案例上下文（用于Agent Prompt）
 
-# 全局Agent实例
-feature_breakdown_agent = FeatureBreakdownAgent()
+        Args:
+            feature_cases: 功能案例列表
+
+        Returns:
+            str: 格式化的案例上下文
+        """
+        if not feature_cases:
+            return ""
+
+        context_parts = []
+        for idx, case in enumerate(feature_cases, 1):
+            metadata = case.get("metadata", {})
+            similarity = case.get("similarity", 0.0)
+
+            part = f"""【案例{idx}】{metadata.get('feature_name', '')}
+   - 系统名称: {metadata.get('system_name', '')}
+   - 功能模块: {metadata.get('module', '')}
+   - 业务描述: {metadata.get('description', '')}
+   - 预估人天: {metadata.get('estimated_days', '')}
+   - 复杂度: {metadata.get('complexity', '')}
+   - 技术要点: {metadata.get('tech_points', '')}
+   - 依赖系统: {metadata.get('dependencies', '')}
+   - 实施案例: {metadata.get('project_case', '')}
+   - 相似度: {similarity:.2f}
+"""
+            context_parts.append(part)
+
+        return "\n".join(context_parts)
+
+
+# 全局Agent实例（延迟初始化，在agent_orchestrator中注入knowledge_service）
+feature_breakdown_agent = None
+
+def get_feature_breakdown_agent(knowledge_service=None):
+    """
+    获取功能拆分Agent实例
+
+    Args:
+        knowledge_service: 知识库服务（可选）
+
+    Returns:
+        FeatureBreakdownAgent: Agent实例
+    """
+    global feature_breakdown_agent
+    if feature_breakdown_agent is None:
+        feature_breakdown_agent = FeatureBreakdownAgent(knowledge_service)
+    return feature_breakdown_agent

@@ -4,6 +4,7 @@
 """
 import os
 import logging
+import csv
 from typing import List, Dict
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -35,17 +36,21 @@ def _read_systems() -> List[Dict[str, str]]:
     systems = []
     if os.path.exists(CSV_PATH):
         try:
-            with open(CSV_PATH, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("系统名称"):
-                        continue
-                    parts = line.split(',')
-                    if len(parts) >= 3:
+            with open(CSV_PATH, 'r', encoding='utf-8', newline='') as f:
+                reader = csv.reader(f)
+                next(reader, None)  # 跳过表头
+                for row in reader:
+                    if len(row) >= 3:
                         systems.append({
-                            "name": parts[0].strip(),
-                            "abbreviation": parts[1].strip(),
-                            "status": parts[2].strip() if len(parts) > 2 else "运行中"
+                            "name": row[0].strip(),
+                            "abbreviation": row[1].strip(),
+                            "status": row[2].strip()
+                        })
+                    elif len(row) >= 2:
+                        systems.append({
+                            "name": row[0].strip(),
+                            "abbreviation": row[1].strip(),
+                            "status": "运行中"
                         })
         except Exception as e:
             logger.error(f"读取主系统列表失败: {e}")
@@ -53,8 +58,9 @@ def _read_systems() -> List[Dict[str, str]]:
         # 文件不存在时创建空文件
         try:
             os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-            with open(CSV_PATH, 'w', encoding='utf-8') as f:
-                f.write("系统名称,英文简称,系统状态\n")
+            with open(CSV_PATH, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["系统名称", "英文简称", "系统状态"])
             logger.info(f"创建主系统列表文件: {CSV_PATH}")
         except Exception as e:
             logger.error(f"创建主系统列表文件失败: {e}")
@@ -64,10 +70,11 @@ def _read_systems() -> List[Dict[str, str]]:
 def _write_systems(systems: List[Dict[str, str]]):
     """写入主系统列表"""
     try:
-        with open(CSV_PATH, 'w', encoding='utf-8') as f:
-            f.write("系统名称,英文简称,系统状态\n")
+        with open(CSV_PATH, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["系统名称", "英文简称", "系统状态"])
             for system in systems:
-                f.write(f"{system['name']},{system['abbreviation']},{system['status']}\n")
+                writer.writerow([system['name'], system['abbreviation'], system['status']])
         logger.info(f"保存了{len(systems)}个主系统")
     except Exception as e:
         logger.error(f"写入主系统列表失败: {e}")

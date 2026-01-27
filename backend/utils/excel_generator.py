@@ -41,7 +41,8 @@ class ExcelGenerator:
         task_id: str,
         requirement_name: str,
         systems_data: Dict[str, List[Dict[str, Any]]],
-        expert_estimates: Optional[Dict[str, List[float]]] = None
+        expert_estimates: Optional[Dict[str, List[float]]] = None,
+        output_path: Optional[str] = None
     ) -> str:
         """
         生成Excel报告
@@ -73,6 +74,7 @@ class ExcelGenerator:
                     "系统名": [专家1估值, 专家2估值, ..., 专家5估值],
                     ...
                 }
+            output_path: 指定输出文件路径（可选）
 
         Returns:
             str: 生成的Excel文件路径
@@ -98,10 +100,13 @@ class ExcelGenerator:
                 logger.info(f"  [{idx}/{len(systems_data)}] 创建系统sheet: {system_name} ({len(features)} 个功能点)")
                 self._create_system_sheet(wb, system_name, features, expert_estimates)
 
-            # 生成文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{task_id}_{requirement_name[:20]}_{timestamp}.xlsx"
-            file_path = os.path.join(self.report_dir, filename)
+            if output_path:
+                file_path = output_path
+            else:
+                # 生成文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{task_id}_{requirement_name[:20]}_{timestamp}.xlsx"
+                file_path = os.path.join(self.report_dir, filename)
 
             # 保存文件
             wb.save(file_path)

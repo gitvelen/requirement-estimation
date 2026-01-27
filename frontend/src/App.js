@@ -5,6 +5,7 @@ import zhCN from 'antd/locale/zh_CN';
 import UploadPage from './pages/UploadPage';
 import TaskListPage from './pages/TaskListPage';
 import ReportPage from './pages/ReportPage';
+import EditPage from './pages/EditPage';
 import SubsystemConfigPage from './pages/SubsystemConfigPage';
 import CosmicConfigPage from './pages/CosmicConfigPage';
 import MainSystemConfigPage from './pages/MainSystemConfigPage';
@@ -23,6 +24,7 @@ function App() {
               <Route path="/" element={<UploadPage />} />
               <Route path="/tasks" element={<TaskListPage />} />
               <Route path="/report/:taskId" element={<ReportPage />} />
+              <Route path="/edit/:taskId" element={<EditPage />} />
               <Route path="/config/subsystem" element={<SubsystemConfigPage />} />
               <Route path="/config/cosmic" element={<CosmicConfigPage />} />
               <Route path="/config/mainsystem" element={<MainSystemConfigPage />} />

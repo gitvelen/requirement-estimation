@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Table, Button, Tag, message, Card, Space, Progress, Typography, Tooltip } from 'antd';
-import { EyeOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { EyeOutlined, DownloadOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
@@ -61,6 +61,10 @@ const TaskListPage = () => {
 
   const handleView = (taskId) => {
     navigate(`/report/${taskId}`);
+  };
+
+  const handleEdit = (taskId) => {
+    navigate(`/edit/${taskId}`);
   };
 
   const handleDownload = async (taskId) => {
@@ -164,19 +168,30 @@ const TaskListPage = () => {
     {
       title: '操作',
       key: 'action',
-      width: 220,
+      width: 280,
       fixed: 'right',
       render: (_, record) => (
         <Space size="small">
-          <Button
-            type="primary"
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => handleView(record.task_id)}
-            disabled={record.status !== 'completed'}
-          >
-            查看
-          </Button>
+          {record.status === 'completed' && !record.confirmed ? (
+            <Button
+              type="primary"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record.task_id)}
+            >
+              编辑评估
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => handleView(record.task_id)}
+              disabled={record.status !== 'completed'}
+            >
+              查看
+            </Button>
+          )}
           <Button
             size="small"
             icon={<DownloadOutlined />}
