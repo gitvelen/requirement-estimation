@@ -6,8 +6,9 @@ import os
 import logging
 import csv
 from typing import List, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from backend.api.auth import require_admin_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ async def get_systems():
 
 
 @router.post("/systems")
-async def create_system(system: MainSystem):
+async def create_system(system: MainSystem, _auth: None = Depends(require_admin_api_key)):
     """
     添加新的主系统
 
@@ -150,7 +151,7 @@ async def create_system(system: MainSystem):
 
 
 @router.put("/systems/{system_name}")
-async def update_system(system_name: str, system: MainSystem):
+async def update_system(system_name: str, system: MainSystem, _auth: None = Depends(require_admin_api_key)):
     """
     更新主系统信息
 
@@ -199,7 +200,7 @@ async def update_system(system_name: str, system: MainSystem):
 
 
 @router.delete("/systems/{system_name}")
-async def delete_system(system_name: str):
+async def delete_system(system_name: str, _auth: None = Depends(require_admin_api_key)):
     """
     删除主系统
 
@@ -241,7 +242,7 @@ async def delete_system(system_name: str):
 
 
 @router.post("/reload")
-async def reload_systems():
+async def reload_systems(_auth: None = Depends(require_admin_api_key)):
     """
     重新加载主系统列表（热加载）
 

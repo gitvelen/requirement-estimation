@@ -337,12 +337,20 @@ class MilvusClient:
         conditions = []
 
         if system_name:
-            conditions.append(f'system_name == "{system_name}"')
+            safe_system = self._escape_expr_value(system_name)
+            conditions.append(f'system_name == "{safe_system}"')
 
         if knowledge_type:
-            conditions.append(f'knowledge_type == "{knowledge_type}"')
+            safe_type = self._escape_expr_value(knowledge_type)
+            conditions.append(f'knowledge_type == "{safe_type}"')
 
         return " && ".join(conditions) if conditions else ""
+
+    def _escape_expr_value(self, value: str) -> str:
+        """转义Milvus表达式字符串"""
+        if value is None:
+            return ""
+        return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
     def get_collection_stats(self) -> Dict[str, Any]:
         """

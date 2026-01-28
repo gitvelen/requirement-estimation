@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Select, Row, Col, Statistic, Form, Tooltip } from 'antd';
+import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Select, Row, Col, Statistic, Form, Tooltip, InputNumber } from 'antd';
 import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -533,7 +533,7 @@ const EditPage = () => {
                   { type: 'number', min: 0.5, max: 50, message: '人天范围: 0.5-50' }
                 ]}
               >
-                <Input type="number" step="0.5" placeholder="建议范围: 0.5-5" />
+                <InputNumber step={0.5} min={0.5} max={50} placeholder="建议范围: 0.5-5" style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={12}>

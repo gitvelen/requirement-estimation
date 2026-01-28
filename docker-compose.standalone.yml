@@ -1,10 +1,6 @@
 version: '3.8'
 
 services:
-  # ========== Milvus向量数据库组件 ==========
-  # 注意：如果不需要知识库功能，可以通过环境变量 KNOWLEDGE_ENABLED=false 禁用
-  # 这些服务会在backend启动后自动按需使用
-
   # Etcd：Milvus的元数据存储
   etcd:
     container_name: milvus-etcd
@@ -27,11 +23,10 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
-    # Milvus依赖服务，自动启动
     profiles:
       - milvus
 
-  # MinIO：Milvus的对象存储
+  # MinIO：使用本地镜像或简化配置
   minio:
     container_name: milvus-minio
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
@@ -68,8 +63,8 @@ services:
     networks:
       - app-network
     ports:
-      - "19530:19530"  # Milvus gRPC端口
-      - "9091:9091"    # Milvus metrics端口
+      - "19530:19530"
+      - "9091:9091"
     depends_on:
       - "etcd"
       - "minio"
@@ -82,15 +77,11 @@ services:
     profiles:
       - milvus
 
-  # ========== 主应用服务 ==========
-
   # 后端服务
   backend:
     build:
       context: .
       args:
-        # 如果使用私服镜像，修改下面的 URL
-        # 示例：http://your-private-pypi-server/simple
         - UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
     container_name: requirement-backend
     ports:
@@ -105,6 +96,7 @@ services:
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
       - KNOWLEDGE_ENABLED=true
+      - DASHSCOPE_API_KEY=dummy_key
     restart: unless-stopped
     networks:
       - app-network
@@ -114,7 +106,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # 前端服务（使用Nginx）
+  # 前端服务
   frontend:
     image: nginx:alpine
     container_name: requirement-frontend

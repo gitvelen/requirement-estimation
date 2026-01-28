@@ -6,9 +6,10 @@ import os
 import logging
 import csv
 from typing import List, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from backend.api.auth import require_admin_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ async def get_subsystem_mappings():
 
 
 @router.post("/mappings")
-async def create_subsystem_mapping(mapping: SubsystemMapping):
+async def create_subsystem_mapping(mapping: SubsystemMapping, _auth: None = Depends(require_admin_api_key)):
     """
     添加新的子系统映射关系
 
@@ -138,7 +139,7 @@ async def create_subsystem_mapping(mapping: SubsystemMapping):
 
 
 @router.put("/mappings/{subsystem}")
-async def update_subsystem_mapping(subsystem: str, mapping: SubsystemMapping):
+async def update_subsystem_mapping(subsystem: str, mapping: SubsystemMapping, _auth: None = Depends(require_admin_api_key)):
     """
     更新子系统映射关系
 
@@ -175,7 +176,7 @@ async def update_subsystem_mapping(subsystem: str, mapping: SubsystemMapping):
 
 
 @router.delete("/mappings/{subsystem}")
-async def delete_subsystem_mapping(subsystem: str):
+async def delete_subsystem_mapping(subsystem: str, _auth: None = Depends(require_admin_api_key)):
     """
     删除子系统映射关系
 
@@ -210,7 +211,7 @@ async def delete_subsystem_mapping(subsystem: str):
 
 
 @router.post("/reload")
-async def reload_subsystem_mappings():
+async def reload_subsystem_mappings(_auth: None = Depends(require_admin_api_key)):
     """
     重新加载子系统映射（热加载）
 

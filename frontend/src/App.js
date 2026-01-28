@@ -9,6 +9,7 @@ import EditPage from './pages/EditPage';
 import SubsystemConfigPage from './pages/SubsystemConfigPage';
 import CosmicConfigPage from './pages/CosmicConfigPage';
 import MainSystemConfigPage from './pages/MainSystemConfigPage';
+import KnowledgePage from './pages/KnowledgePage';
 import './App.css';
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
               <Route path="/tasks" element={<TaskListPage />} />
               <Route path="/report/:taskId" element={<ReportPage />} />
               <Route path="/edit/:taskId" element={<EditPage />} />
+              <Route path="/knowledge" element={<KnowledgePage />} />
               <Route path="/config/subsystem" element={<SubsystemConfigPage />} />
               <Route path="/config/cosmic" element={<CosmicConfigPage />} />
               <Route path="/config/mainsystem" element={<MainSystemConfigPage />} />

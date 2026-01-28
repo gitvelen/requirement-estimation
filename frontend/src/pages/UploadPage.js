@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Upload, Button, message, Card, Space, Typography } from 'antd';
+import { Upload, Button, message, Card, Space, Typography, Input, Divider } from 'antd';
 import { InboxOutlined, UploadOutlined, SettingOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
@@ -9,7 +9,19 @@ const { Text } = Typography;
 const UploadPage = () => {
   const [fileList, setFileList] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [adminKey, setAdminKey] = useState(localStorage.getItem('ADMIN_API_KEY') || '');
   const navigate = useNavigate();
+
+  const saveAdminKey = () => {
+    const trimmed = adminKey.trim();
+    if (trimmed) {
+      localStorage.setItem('ADMIN_API_KEY', trimmed);
+      message.success('管理口令已保存（仅本地）');
+    } else {
+      localStorage.removeItem('ADMIN_API_KEY');
+      message.info('管理口令已清除');
+    }
+  };
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -45,7 +57,7 @@ const UploadPage = () => {
       setFileList([]);
     },
     beforeUpload: (file) => {
-      const isDocx = file.name.endsWith('.docx');
+      const isDocx = file.name.toLowerCase().endsWith('.docx');
       if (!isDocx) {
         message.error('仅支持.docx格式文件');
         return false;
@@ -89,6 +101,20 @@ const UploadPage = () => {
             >
               查看任务列表
             </Button>
+          </Space>
+        </div>
+
+        <Divider />
+        <div style={{ marginBottom: 16 }}>
+          <Space>
+            <Text>管理口令（可选，仅本地/内网使用）</Text>
+            <Input.Password
+              placeholder="X-API-Key"
+              value={adminKey}
+              onChange={(e) => setAdminKey(e.target.value)}
+              style={{ width: 260 }}
+            />
+            <Button onClick={saveAdminKey}>保存</Button>
           </Space>
         </div>
 

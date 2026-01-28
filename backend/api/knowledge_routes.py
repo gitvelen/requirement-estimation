@@ -4,10 +4,11 @@
 """
 import logging
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel
 
 from backend.service.knowledge_service import get_knowledge_service
+from backend.api.auth import require_admin_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,9 @@ class FeatureCaseData(BaseModel):
 @router.post("/import")
 async def import_knowledge(
     file: UploadFile = File(...),
-    auto_extract: bool = Form(True)
+    auto_extract: bool = Form(True),
+    knowledge_type: Optional[str] = Form(None),
+    _auth: None = Depends(require_admin_api_key)
 ):
     """
     导入知识库文件
@@ -93,7 +96,8 @@ async def import_knowledge(
         result = knowledge_service.import_from_file(
             file_content=content,
             filename=file.filename,
-            auto_extract=auto_extract
+            auto_extract=auto_extract,
+            knowledge_type=knowledge_type
         )
 
         return {
@@ -198,7 +202,7 @@ async def get_knowledge_stats():
 
 
 @router.post("/rebuild-index")
-async def rebuild_index():
+async def rebuild_index(_auth: None = Depends(require_admin_api_key)):
     """
     重建索引
 
@@ -266,7 +270,7 @@ async def health_check():
 
 
 @router.post("/save_case")
-async def save_feature_case(case_data: FeatureCaseData):
+async def save_feature_case(case_data: FeatureCaseData, _auth: None = Depends(require_admin_api_key)):
     """
     保存功能案例到知识库
 
@@ -318,3 +322,40 @@ async def save_feature_case(case_data: FeatureCaseData):
             status_code=500,
             detail=f"保存案例失败: {str(e)}"
         )
+
+
+@router.get("/evaluation-metrics")
+async def get_evaluation_metrics():
+    """
+    获取知识库效果评估指标
+
+    Returns:
+        Dict: 评估指标
+            {
+                "code": 200,
+                "data": {
+                    "hit_rate": 75.5,  # 检索命中率（%）
+                    "avg_similarity": 68.2,  # 平均相似度（%）
+                    "adoption_rate": 45.3,  # 案例采纳率（%）
+                    "total_searches": 120,  # 总检索次数
+                    "total_tasks": 159,  # 总评估任务数
+                    "quality_comparison": {
+                        "with_kb": 85.2,  # 使用知识库的准确度（%）
+                        "without_kb": 72.1  # 未使用知识库的准确度（%）
+                    }
+                }
+            }
+    """
+    try:
+        knowledge_service = get_knowledge_service()
+        metrics = knowledge_service.get_evaluation_metrics()
+
+        return {
+            "code": 200,
+            "data": metrics
+        }
+
+    except Exception as e:
+        logger.error(f"获取评估指标失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取评估指标失败: {str(e)}")
+

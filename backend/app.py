@@ -17,6 +17,7 @@ from backend.api.routes import router
 from backend.api.subsystem_routes import router as subsystem_router
 from backend.api.cosmic_routes import router as cosmic_router
 from backend.api.system_routes import router as system_router
+from backend.api.knowledge_routes import router as knowledge_router
 
 # 配置日志
 handlers = [logging.StreamHandler()]
@@ -59,6 +60,7 @@ app.include_router(router)
 app.include_router(subsystem_router)
 app.include_router(cosmic_router)
 app.include_router(system_router)
+app.include_router(knowledge_router)
 
 # 创建必要的目录
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

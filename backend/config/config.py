@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # 任务配置
     TASK_TIMEOUT: int = 600  # 任务超时时间（秒）
     TASK_RETRY_TIMES: int = 3  # 任务重试次数
+    TASK_RETENTION_DAYS: int = int(os.getenv("TASK_RETENTION_DAYS", "7"))  # 任务保留天数
+
+    # 简单鉴权（生产环境建议启用）
+    ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
 
     model_config = {
         "extra": "ignore",

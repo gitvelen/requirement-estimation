@@ -5,12 +5,19 @@ API路由
 import os
 import re
 import uuid
+import json
 import logging
 import socket
 import threading
 import ipaddress
+from contextlib import contextmanager
+try:
+    import fcntl
+    FCNTL_AVAILABLE = True
+except ImportError:
+    FCNTL_AVAILABLE = False
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
@@ -20,6 +27,13 @@ from pydantic import BaseModel
 from backend.utils.docx_parser import docx_parser
 from backend.agent.agent_orchestrator import get_agent_orchestrator
 from backend.config.config import settings
+from backend.service.knowledge_service import get_knowledge_service
+
+# 创建logger实例
+logger = logging.getLogger(__name__)
+
+# 创建线程池用于异步任务处理
+executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="task_worker")
 
 # 尝试导入 python-magic（用于文件类型检测）
 try:
@@ -29,17 +43,111 @@ except ImportError:
     MAGIC_AVAILABLE = False
     logger.warning("python-magic 未安装，将跳过MIME类型检测")
 
-# 创建线程池用于异步任务处理
-executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="task_worker")
-
-logger = logging.getLogger(__name__)
-
 # 创建路由器
 router = APIRouter(prefix=settings.API_PREFIX, tags=["需求评估"])
 
 # 全局任务存储（生产环境应使用Redis或数据库）
 task_storage = {}
 task_storage_lock = threading.RLock()
+TASK_STORE_PATH = os.path.join(settings.REPORT_DIR, "task_storage.json")
+TASK_STORE_LOCK_PATH = f"{TASK_STORE_PATH}.lock"
+
+
+@contextmanager
+def _task_store_lock():
+    """跨进程文件锁，保证任务存储一致性"""
+    if FCNTL_AVAILABLE:
+        os.makedirs(os.path.dirname(TASK_STORE_LOCK_PATH), exist_ok=True)
+        with open(TASK_STORE_LOCK_PATH, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    else:
+        with task_storage_lock:
+            yield
+
+
+def _load_task_storage_unlocked() -> Dict[str, Any]:
+    """读取任务存储（不加锁）"""
+    if not os.path.exists(TASK_STORE_PATH):
+        return {}
+    try:
+        with open(TASK_STORE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning(f"读取任务存储失败: {e}")
+        return {}
+
+
+def _save_task_storage_unlocked(data: Dict[str, Any]) -> None:
+    """写入任务存储（不加锁）"""
+    os.makedirs(os.path.dirname(TASK_STORE_PATH), exist_ok=True)
+    tmp_path = f"{TASK_STORE_PATH}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, TASK_STORE_PATH)
+
+
+@contextmanager
+def _task_storage_context():
+    """读取-写入的原子上下文"""
+    with _task_store_lock():
+        data = _load_task_storage_unlocked()
+        yield data
+        _save_task_storage_unlocked(data)
+
+
+def _get_task(task_id: str) -> Dict[str, Any]:
+    """获取单个任务"""
+    with _task_store_lock():
+        data = _load_task_storage_unlocked()
+        task = data.get(task_id)
+        return task
+
+
+def _cleanup_tasks(data: Dict[str, Any]) -> int:
+    """清理过期任务"""
+    retention_days = settings.TASK_RETENTION_DAYS
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    removed = 0
+    for task_id, task in list(data.items()):
+        status = task.get("status")
+        created_at = task.get("created_at")
+        if status not in ("completed", "failed"):
+            continue
+        if not created_at:
+            continue
+        try:
+            created_time = datetime.fromisoformat(created_at)
+        except Exception:
+            continue
+        if created_time < cutoff:
+            del data[task_id]
+            removed += 1
+    return removed
+
+
+def _safe_log_task_event():
+    """记录任务创建事件（失败不影响主流程）"""
+    try:
+        knowledge_service = get_knowledge_service()
+        knowledge_service.log_task_event()
+    except Exception as e:
+        logger.warning(f"记录任务事件失败: {e}")
+
+
+def _safe_log_modification_event():
+    """记录修改事件（失败不影响主流程）"""
+    try:
+        knowledge_service = get_knowledge_service()
+        knowledge_service.log_modification_event()
+    except Exception as e:
+        logger.warning(f"记录修改事件失败: {e}")
 
 
 def _sanitize_filename(filename: str, default_name: str = "upload.docx") -> str:
@@ -124,7 +232,7 @@ async def upload_requirement(
         logger.info(f"接收到文件上传请求: {file.filename}")
 
         # 验证文件名后缀
-        if not file.filename or not file.filename.endswith(".docx"):
+        if not file.filename or not file.filename.lower().endswith(".docx"):
             raise HTTPException(status_code=400, detail="仅支持.docx格式文件")
 
         # 读取文件内容
@@ -166,7 +274,7 @@ async def upload_requirement(
         logger.info(f"文件已保存: {file_path}")
 
         # 创建任务记录
-        task_storage[task_id] = {
+        task_record = {
             "task_id": task_id,
             "filename": safe_filename,
             "file_path": file_path,
@@ -176,6 +284,11 @@ async def upload_requirement(
             "created_at": datetime.now().isoformat(),
             "report_path": None
         }
+        with _task_storage_context() as data:
+            data[task_id] = task_record
+
+        # 记录任务事件
+        _safe_log_task_event()
 
         # 启动后台处理任务
         if background_tasks:
@@ -224,7 +337,7 @@ async def evaluate_requirement(
             raise HTTPException(status_code=400, detail="回调地址必须为内网或本机地址")
 
         # 验证文件名后缀
-        if not file.filename or not file.filename.endswith(".docx"):
+        if not file.filename or not file.filename.lower().endswith(".docx"):
             raise HTTPException(status_code=400, detail="仅支持.docx格式文件")
 
         # 读取文件内容
@@ -264,7 +377,7 @@ async def evaluate_requirement(
             buffer.write(content)
 
         # 创建任务记录
-        task_storage[task_id] = {
+        task_record = {
             "task_id": task_id,
             "filename": safe_filename,
             "file_path": file_path,
@@ -275,6 +388,11 @@ async def evaluate_requirement(
             "callback_url": callback_url,
             "report_path": None
         }
+        with _task_storage_context() as data:
+            data[task_id] = task_record
+
+        # 记录任务事件
+        _safe_log_task_event()
 
         # 启动后台处理
         if background_tasks:
@@ -302,7 +420,9 @@ async def get_all_tasks():
     Returns:
         Dict: 所有任务列表
     """
-    tasks_list = list(task_storage.values())
+    with _task_storage_context() as data:
+        removed = _cleanup_tasks(data)
+        tasks_list = list(data.values())
     # 按创建时间倒序排列
     tasks_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
 
@@ -324,10 +444,9 @@ async def get_task_status(task_id: str):
     Returns:
         Dict: 任务状态信息
     """
-    if task_id not in task_storage:
+    task = _get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    task = task_storage[task_id]
     # 直接返回完整的任务信息，不使用TaskStatusResponse模型
     return {
         "code": 200,
@@ -355,10 +474,9 @@ async def download_report(task_id: str):
     Returns:
         FileResponse: Excel文件
     """
-    if task_id not in task_storage:
+    task = _get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    task = task_storage[task_id]
 
     if task["status"] != "completed":
         raise HTTPException(status_code=400, detail="任务未完成")
@@ -392,23 +510,31 @@ def process_task_sync(task_id: str, file_path: str):
     """同步处理评估任务（在线程池中运行）"""
     try:
         # 更新任务状态
-        task_storage[task_id]["status"] = "processing"
-        task_storage[task_id]["progress"] = 10
-        task_storage[task_id]["message"] = "正在解析文档..."
+        with _task_storage_context() as data:
+            task = data.get(task_id)
+            if not task:
+                logger.warning(f"任务 {task_id} 不存在，停止处理")
+                return
+            task["status"] = "processing"
+            task["progress"] = 10
+            task["message"] = "正在解析文档..."
 
         # 定义进度更新函数
         def update_progress(progress: int, message: str):
             """更新任务进度"""
-            if task_id in task_storage:
-                task_storage[task_id]["progress"] = progress
-                task_storage[task_id]["message"] = message
-                logger.info(f"[任务 {task_id}] 进度: {progress}% - {message}")
+            with _task_storage_context() as data:
+                task = data.get(task_id)
+                if task:
+                    task["progress"] = progress
+                    task["message"] = message
+            logger.info(f"[任务 {task_id}] 进度: {progress}% - {message}")
 
         # 解析文档
         requirement_data = docx_parser.parse(file_path)
 
         # 提取文档文件名（不包含扩展名）作为需求名称
-        original_filename = task_storage[task_id].get("filename", "")
+        task_snapshot = _get_task(task_id) or {}
+        original_filename = task_snapshot.get("filename", "")
         if original_filename:
             # 去掉.docx扩展名
             requirement_name = original_filename.rsplit(".", 1)[0] if "." in original_filename else original_filename
@@ -435,23 +561,29 @@ def process_task_sync(task_id: str, file_path: str):
         )
 
         # 【新增】保存systems_data到task_storage，用于人机协作修正
-        task_storage[task_id]["systems_data"] = systems_data
-        task_storage[task_id]["modifications"] = []  # 初始化为空列表
-        task_storage[task_id]["confirmed"] = False  # 初始状态为未确认
-
-        # 更新任务状态
-        task_storage[task_id]["status"] = "completed"
-        task_storage[task_id]["progress"] = 100
-        task_storage[task_id]["message"] = "评估完成"
-        task_storage[task_id]["report_path"] = report_path
+        with _task_storage_context() as data:
+            task = data.get(task_id)
+            if task:
+                task["systems_data"] = systems_data
+                task["modifications"] = []  # 初始化为空列表
+                task["confirmed"] = False  # 初始状态为未确认
+                task["requirement_name"] = requirement_name
+                # 更新任务状态
+                task["status"] = "completed"
+                task["progress"] = 100
+                task["message"] = "评估完成"
+                task["report_path"] = report_path
 
         logger.info(f"任务 {task_id} 处理完成，系统数: {len(systems_data)}，功能点总数: {sum(len(v) for v in systems_data.values())}")
 
     except Exception as e:
         logger.error(f"任务 {task_id} 处理失败: {str(e)}")
-        task_storage[task_id]["status"] = "failed"
-        task_storage[task_id]["message"] = f"处理失败: {str(e)}"
-        task_storage[task_id]["error"] = str(e)
+        with _task_storage_context() as data:
+            task = data.get(task_id)
+            if task:
+                task["status"] = "failed"
+                task["message"] = f"处理失败: {str(e)}"
+                task["error"] = str(e)
 
 
 async def process_task(task_id: str, file_path: str):
@@ -481,7 +613,7 @@ async def process_task_with_callback(task_id: str, file_path: str, callback_url:
             return
         try:
             import httpx
-            task = task_storage[task_id]
+            task = _get_task(task_id) or {}
 
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -521,10 +653,9 @@ async def get_evaluation_result(task_id: str):
     Returns:
         Dict: 评估结果数据
     """
-    if task_id not in task_storage:
+    task = _get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    task = task_storage[task_id]
 
     if task["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"任务未完成，当前状态: {task['status']}")
@@ -562,100 +693,103 @@ async def update_features(task_id: str, request: FeatureUpdateRequest):
     Returns:
         Dict: 更新结果
     """
-    if task_id not in task_storage:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    task = task_storage[task_id]
-
-    if task["status"] != "completed":
-        raise HTTPException(status_code=400, detail="只能修改已完成的任务")
-
-    if task.get("confirmed", False):
-        raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
-
-    systems_data = task.get("systems_data", {})
-    modifications = task.get("modifications", [])
-
-    if request.system not in systems_data:
-        raise HTTPException(status_code=400, detail=f"系统 '{request.system}' 不存在")
-
     try:
-        mod = {
-            "id": f"mod_{uuid.uuid4().hex[:8]}",
-            "timestamp": datetime.now().isoformat(),
-            "operation": request.operation,
-            "system": request.system
-        }
+        with _task_storage_context() as data:
+            task = data.get(task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
 
-        if request.operation == "update":
-            # 修改功能点
-            if request.feature_index is None:
-                raise HTTPException(status_code=400, detail="update操作需要feature_index")
+            if task["status"] != "completed":
+                raise HTTPException(status_code=400, detail="只能修改已完成的任务")
 
-            features = systems_data[request.system]
-            if request.feature_index < 0 or request.feature_index >= len(features):
-                raise HTTPException(status_code=400, detail="feature_index超出范围")
+            if task.get("confirmed", False):
+                raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
 
-            old_feature = features[request.feature_index]
-            if request.feature_data is None:
-                raise HTTPException(status_code=400, detail="update操作需要feature_data")
+            systems_data = task.get("systems_data", {})
+            modifications = task.get("modifications", [])
 
-            # 记录修改
-            for key, new_value in request.feature_data.items():
-                old_value = old_feature.get(key)
-                if old_value != new_value:
-                    mod["field"] = key
-                    mod["old_value"] = old_value
-                    mod["new_value"] = new_value
-                    # 应用修改
-                    old_feature[key] = new_value
+            if request.system not in systems_data:
+                raise HTTPException(status_code=400, detail=f"系统 '{request.system}' 不存在")
 
-            logger.info(f"[任务 {task_id}] 更新功能点: 系统={request.system}, 索引={request.feature_index}")
+            mod = {
+                "id": f"mod_{uuid.uuid4().hex[:8]}",
+                "timestamp": datetime.now().isoformat(),
+                "operation": request.operation,
+                "system": request.system
+            }
 
-        elif request.operation == "delete":
-            # 删除功能点
-            if request.feature_index is None:
-                raise HTTPException(status_code=400, detail="delete操作需要feature_index")
+            if request.operation == "update":
+                # 修改功能点
+                if request.feature_index is None:
+                    raise HTTPException(status_code=400, detail="update操作需要feature_index")
 
-            features = systems_data[request.system]
-            if request.feature_index < 0 or request.feature_index >= len(features):
-                raise HTTPException(status_code=400, detail="feature_index超出范围")
+                features = systems_data[request.system]
+                if request.feature_index < 0 or request.feature_index >= len(features):
+                    raise HTTPException(status_code=400, detail="feature_index超出范围")
 
-            deleted_feature = features.pop(request.feature_index)
-            mod["deleted_feature"] = deleted_feature
+                old_feature = features[request.feature_index]
+                if request.feature_data is None:
+                    raise HTTPException(status_code=400, detail="update操作需要feature_data")
 
-            logger.info(f"[任务 {task_id}] 删除功能点: 系统={request.system}, 索引={request.feature_index}")
+                # 记录修改
+                for key, new_value in request.feature_data.items():
+                    old_value = old_feature.get(key)
+                    if old_value != new_value:
+                        mod["field"] = key
+                        mod["old_value"] = old_value
+                        mod["new_value"] = new_value
+                        # 应用修改
+                        old_feature[key] = new_value
 
-        elif request.operation == "add":
-            # 添加新功能点
-            if request.feature_data is None:
-                raise HTTPException(status_code=400, detail="add操作需要feature_data")
+                logger.info(f"[任务 {task_id}] 更新功能点: 系统={request.system}, 索引={request.feature_index}")
 
-            features = systems_data[request.system]
-            new_feature = request.feature_data
+            elif request.operation == "delete":
+                # 删除功能点
+                if request.feature_index is None:
+                    raise HTTPException(status_code=400, detail="delete操作需要feature_index")
 
-            # 设置默认值
-            if "序号" not in new_feature:
-                new_feature["序号"] = f"{len(features)+1}.1"
-            if "预估人天" not in new_feature:
-                new_feature["预估人天"] = 2.5
-            if "复杂度" not in new_feature:
-                new_feature["复杂度"] = "中"
+                features = systems_data[request.system]
+                if request.feature_index < 0 or request.feature_index >= len(features):
+                    raise HTTPException(status_code=400, detail="feature_index超出范围")
 
-            features.append(new_feature)
-            mod["added_feature"] = new_feature
+                deleted_feature = features.pop(request.feature_index)
+                mod["deleted_feature"] = deleted_feature
 
-            logger.info(f"[任务 {task_id}] 添加功能点: 系统={request.system}")
+                logger.info(f"[任务 {task_id}] 删除功能点: 系统={request.system}, 索引={request.feature_index}")
 
-        else:
-            raise HTTPException(status_code=400, detail=f"不支持的操作: {request.operation}")
+            elif request.operation == "add":
+                # 添加新功能点
+                if request.feature_data is None:
+                    raise HTTPException(status_code=400, detail="add操作需要feature_data")
 
-        # 保存修改记录
-        modifications.append(mod)
-        task["modifications"] = modifications
+                features = systems_data[request.system]
+                new_feature = request.feature_data
 
-        # 持久化到JSON（实现数据闭环）
-        _save_modifications_to_json(task_id, modifications)
+                # 设置默认值
+                if "序号" not in new_feature:
+                    new_feature["序号"] = f"{len(features)+1}.1"
+                if "预估人天" not in new_feature:
+                    new_feature["预估人天"] = 2.5
+                if "复杂度" not in new_feature:
+                    new_feature["复杂度"] = "中"
+
+                features.append(new_feature)
+                mod["added_feature"] = new_feature
+
+                logger.info(f"[任务 {task_id}] 添加功能点: 系统={request.system}")
+
+            else:
+                raise HTTPException(status_code=400, detail=f"不支持的操作: {request.operation}")
+
+            # 保存修改记录
+            modifications.append(mod)
+            task["modifications"] = modifications
+
+            # 持久化到JSON（实现数据闭环）
+            _save_modifications_to_json(task_id, modifications)
+
+        # 记录修改事件
+        _safe_log_modification_event()
 
         return {
             "code": 200,
@@ -690,10 +824,9 @@ async def confirm_evaluation(task_id: str):
     Returns:
         Dict: 确认结果
     """
-    if task_id not in task_storage:
+    task = _get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    task = task_storage[task_id]
 
     if task["status"] != "completed":
         raise HTTPException(status_code=400, detail="任务未完成")
@@ -733,10 +866,14 @@ async def confirm_evaluation(task_id: str):
         )
 
         # 更新任务状态
-        task["confirmed"] = True
-        task["confirmed_at"] = datetime.now().isoformat()
-        task["report_path"] = report_path
-        task["message"] = "评估完成并已确认"
+        confirmed_at = datetime.now().isoformat()
+        with _task_storage_context() as data:
+            task_record = data.get(task_id)
+            if task_record:
+                task_record["confirmed"] = True
+                task_record["confirmed_at"] = confirmed_at
+                task_record["report_path"] = report_path
+                task_record["message"] = "评估完成并已确认"
 
         logger.info(f"[任务 {task_id}] 已确认，最终报告: {report_path}")
 
@@ -745,7 +882,7 @@ async def confirm_evaluation(task_id: str):
             "message": "确认成功",
             "data": {
                 "report_path": file_path,
-                "confirmed_at": task["confirmed_at"]
+                "confirmed_at": confirmed_at
             }
         }
 
@@ -767,10 +904,11 @@ async def get_modifications(task_id: str):
     Returns:
         Dict: 修正历史
     """
-    if task_id not in task_storage:
+    task = _get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    modifications = task_storage[task_id].get("modifications", [])
+    modifications = task.get("modifications", [])
 
     return {
         "code": 200,

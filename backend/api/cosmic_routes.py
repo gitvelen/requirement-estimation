@@ -6,9 +6,10 @@ import os
 import json
 import logging
 from typing import Dict, Any, List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from backend.api.auth import require_admin_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ async def get_cosmic_config():
 
 
 @router.post("/config")
-async def update_cosmic_config(config: CosmicConfig):
+async def update_cosmic_config(config: CosmicConfig, _auth: None = Depends(require_admin_api_key)):
     """
     更新COSMIC配置
 
@@ -195,7 +196,7 @@ async def update_cosmic_config(config: CosmicConfig):
 
 
 @router.post("/reset")
-async def reset_cosmic_config():
+async def reset_cosmic_config(_auth: None = Depends(require_admin_api_key)):
     """
     重置为默认配置
 
@@ -244,7 +245,7 @@ async def analyze_feature_cosmic(feature_description: str):
 
 
 @router.post("/reload")
-async def reload_cosmic_config():
+async def reload_cosmic_config(_auth: None = Depends(require_admin_api_key)):
     """
     重新加载COSMIC配置（热加载）
 
