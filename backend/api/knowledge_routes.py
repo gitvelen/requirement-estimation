@@ -3,12 +3,13 @@
 提供知识导入、检索、统计等接口
 """
 import logging
+import os
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel
 
 from backend.service.knowledge_service import get_knowledge_service
-from backend.api.auth import require_admin_api_key
+from backend.api.auth import require_roles
 
 logger = logging.getLogger(__name__)
 
@@ -25,39 +26,25 @@ class SearchRequest(BaseModel):
     similarity_threshold: float = 0.6  # 相似度阈值
 
 
-class FeatureCaseData(BaseModel):
-    """功能案例数据"""
-    system_name: str  # 系统名称
-    module: str  # 功能模块
-    feature_name: str  # 功能点名称
-    description: str  # 业务描述
-    estimated_days: float  # 预估人天
-    complexity: str  # 复杂度（高/中/低）
-    tech_points: str = ""  # 技术要点
-    dependencies: str = ""  # 依赖系统
-    project_case: str = ""  # 实施案例
-    source: str = "人工修正"  # 来源
-
-
 @router.post("/import")
 async def import_knowledge(
     file: UploadFile = File(...),
     auto_extract: bool = Form(True),
     knowledge_type: Optional[str] = Form(None),
-    _auth: None = Depends(require_admin_api_key)
+    system_name: Optional[str] = Form(None),
+    _auth: None = Depends(require_roles(["manager"]))
 ):
     """
     导入知识库文件
 
     支持的文件格式：
-    - CSV: 系统知识库、功能案例库
-    - DOCX: 系统说明书、需求文档
-    - XLSX: Excel格式的系统清单、案例库
-    - PDF: 架构文档、技术方案
+    - DOCX: 系统说明书、系统架构说明
+    - PPTX: 系统架构汇报、系统介绍材料
 
     Args:
         file: 上传的文件
         auto_extract: 是否自动提取结构化数据
+        system_name: 主系统名称（知识库维度）
 
     Returns:
         Dict: 导入结果
@@ -75,9 +62,20 @@ async def import_knowledge(
     try:
         logger.info(f"接收到知识导入请求: {file.filename}")
 
+        normalized_system = str(system_name or "").strip()
+        if not normalized_system:
+            raise HTTPException(status_code=400, detail="请选择主系统（system_name）")
+
+        if knowledge_type and str(knowledge_type).strip() not in ("", "system_profile"):
+            raise HTTPException(status_code=400, detail="当前仅支持导入系统知识（system_profile）")
+
         # 验证文件名
         if not file.filename:
             raise HTTPException(status_code=400, detail="文件名不能为空")
+
+        ext = os.path.splitext(file.filename.lower())[1]
+        if ext not in (".docx", ".pptx"):
+            raise HTTPException(status_code=400, detail="仅支持 DOCX / PPTX 格式导入系统知识")
 
         # 读取文件内容
         content = await file.read()
@@ -97,7 +95,8 @@ async def import_knowledge(
             file_content=content,
             filename=file.filename,
             auto_extract=auto_extract,
-            knowledge_type=knowledge_type
+            knowledge_type="system_profile",
+            system_name=normalized_system
         )
 
         return {
@@ -108,6 +107,8 @@ async def import_knowledge(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"知识导入失败: {str(e)}")
         raise HTTPException(
@@ -117,7 +118,10 @@ async def import_knowledge(
 
 
 @router.post("/search")
-async def search_knowledge(request: SearchRequest):
+async def search_knowledge(
+    request: SearchRequest,
+    _auth: None = Depends(require_roles(["manager"]))
+):
     """
     检索相似知识
 
@@ -137,14 +141,20 @@ async def search_knowledge(request: SearchRequest):
     try:
         logger.info(f"接收到知识检索请求: {request.query}")
 
+        normalized_system = str(request.system_name or "").strip()
+        if not normalized_system:
+            raise HTTPException(status_code=400, detail="请选择主系统（system_name）")
+        if request.knowledge_type and str(request.knowledge_type).strip() not in ("", "system_profile"):
+            raise HTTPException(status_code=400, detail="当前仅支持检索系统知识（system_profile）")
+
         # 获取知识库服务
         knowledge_service = get_knowledge_service()
 
         # 执行检索
         results = knowledge_service.search_similar_knowledge(
             query_text=request.query,
-            system_name=request.system_name,
-            knowledge_type=request.knowledge_type,
+            system_name=normalized_system,
+            knowledge_type="system_profile",
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold
         )
@@ -166,7 +176,10 @@ async def search_knowledge(request: SearchRequest):
 
 
 @router.get("/stats")
-async def get_knowledge_stats():
+async def get_knowledge_stats(
+    system_name: Optional[str] = None,
+    _auth: None = Depends(require_roles(["manager"]))
+):
     """
     获取知识库统计信息
 
@@ -186,7 +199,7 @@ async def get_knowledge_stats():
         knowledge_service = get_knowledge_service()
 
         # 获取统计信息
-        stats = knowledge_service.get_knowledge_stats()
+        stats = knowledge_service.get_knowledge_stats(system_name=system_name)
 
         return {
             "code": 200,
@@ -202,7 +215,7 @@ async def get_knowledge_stats():
 
 
 @router.post("/rebuild-index")
-async def rebuild_index(_auth: None = Depends(require_admin_api_key)):
+async def rebuild_index(_auth: None = Depends(require_roles(["manager"]))):
     """
     重建索引
 
@@ -233,7 +246,9 @@ async def rebuild_index(_auth: None = Depends(require_admin_api_key)):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(
+    _auth: None = Depends(require_roles(["manager"]))
+):
     """
     健康检查
 
@@ -269,63 +284,10 @@ async def health_check():
         }
 
 
-@router.post("/save_case")
-async def save_feature_case(case_data: FeatureCaseData, _auth: None = Depends(require_admin_api_key)):
-    """
-    保存功能案例到知识库
-
-    将人工修正后的功能点保存为案例，供后续评估参考
-
-    Args:
-        case_data: 案例数据
-
-    Returns:
-        Dict: 保存结果
-    """
-    try:
-        logger.info(f"接收到保存案例请求: {case_data.system_name} - {case_data.feature_name}")
-
-        # 获取知识库服务
-        knowledge_service = get_knowledge_service()
-
-        # 保存案例
-        result = knowledge_service.save_feature_case(
-            system_name=case_data.system_name,
-            module=case_data.module,
-            feature_name=case_data.feature_name,
-            description=case_data.description,
-            estimated_days=case_data.estimated_days,
-            complexity=case_data.complexity,
-            tech_points=case_data.tech_points,
-            dependencies=case_data.dependencies,
-            project_case=case_data.project_case,
-            source=case_data.source
-        )
-
-        if result["status"] == "success":
-            return {
-                "code": 200,
-                "message": "案例保存成功",
-                "data": result["case"]
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=result.get("error", "保存失败")
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"保存案例失败: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"保存案例失败: {str(e)}"
-        )
-
-
 @router.get("/evaluation-metrics")
-async def get_evaluation_metrics():
+async def get_evaluation_metrics(
+    _auth: None = Depends(require_roles(["manager"]))
+):
     """
     获取知识库效果评估指标
 

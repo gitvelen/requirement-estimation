@@ -1,27 +1,18 @@
 import React, { useState } from 'react';
 import { Upload, Button, message, Card, Space, Typography, Input, Divider } from 'antd';
-import { InboxOutlined, UploadOutlined, SettingOutlined } from '@ant-design/icons';
+import { InboxOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
 const { Text } = Typography;
+const { TextArea } = Input;
 
 const UploadPage = () => {
   const [fileList, setFileList] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [adminKey, setAdminKey] = useState(localStorage.getItem('ADMIN_API_KEY') || '');
+  const [taskName, setTaskName] = useState('');
+  const [taskDesc, setTaskDesc] = useState('');
   const navigate = useNavigate();
-
-  const saveAdminKey = () => {
-    const trimmed = adminKey.trim();
-    if (trimmed) {
-      localStorage.setItem('ADMIN_API_KEY', trimmed);
-      message.success('管理口令已保存（仅本地）');
-    } else {
-      localStorage.removeItem('ADMIN_API_KEY');
-      message.info('管理口令已清除');
-    }
-  };
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -31,22 +22,27 @@ const UploadPage = () => {
 
     const formData = new FormData();
     formData.append('file', fileList[0]);
+    if (taskName.trim()) {
+      formData.append('name', taskName.trim());
+    }
+    if (taskDesc.trim()) {
+      formData.append('description', taskDesc.trim());
+    }
 
     setUploading(true);
 
     try {
-      const response = await axios.post('/api/v1/requirement/upload', formData, {
+      await axios.post('/api/v1/tasks', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
 
-      message.success('文件上传成功');
-      const taskId = response.data.data.task_id;
-      navigate(`/tasks`);
+      message.success('任务创建成功，AI正在评估');
+      navigate('/tasks/my-tasks');
 
     } catch (error) {
-      message.error('文件上传失败: ' + error.message);
+      message.error(error.response?.data?.detail || '文件上传失败');
     } finally {
       setUploading(false);
     }
@@ -75,48 +71,30 @@ const UploadPage = () => {
 
   return (
     <div>
-      <Card title="上传需求文档" className="upload-card">
-        <div style={{ marginBottom: 16 }}>
-          <Space>
-            <Button
-              icon={<SettingOutlined />}
-              onClick={() => navigate('/config/subsystem')}
-            >
-              子系统配置
-            </Button>
-            <Button
-              icon={<SettingOutlined />}
-              onClick={() => navigate('/config/mainsystem')}
-            >
-              主系统配置
-            </Button>
-            <Button
-              icon={<SettingOutlined />}
-              onClick={() => navigate('/config/cosmic')}
-            >
-              COSMIC规则配置
-            </Button>
-            <Button
-              onClick={() => navigate('/tasks')}
-            >
-              查看任务列表
-            </Button>
-          </Space>
-        </div>
+      <Card title="发起评估任务" className="upload-card">
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <div>
+            <Text>任务名称（可选）</Text>
+            <Input
+              placeholder="例如：核心系统需求评估"
+              value={taskName}
+              onChange={(e) => setTaskName(e.target.value)}
+              style={{ marginTop: 8 }}
+            />
+          </div>
+          <div>
+            <Text>任务说明（可选）</Text>
+            <TextArea
+              placeholder="补充评估背景、范围或重点说明"
+              rows={3}
+              value={taskDesc}
+              onChange={(e) => setTaskDesc(e.target.value)}
+              style={{ marginTop: 8 }}
+            />
+          </div>
+        </Space>
 
         <Divider />
-        <div style={{ marginBottom: 16 }}>
-          <Space>
-            <Text>管理口令（可选，仅本地/内网使用）</Text>
-            <Input.Password
-              placeholder="X-API-Key"
-              value={adminKey}
-              onChange={(e) => setAdminKey(e.target.value)}
-              style={{ width: 260 }}
-            />
-            <Button onClick={saveAdminKey}>保存</Button>
-          </Space>
-        </div>
 
         <Upload.Dragger {...uploadProps}>
           <p className="ant-upload-drag-icon">
@@ -134,7 +112,7 @@ const UploadPage = () => {
             loading={uploading}
             size="large"
           >
-            开始评估
+            提交评估
           </Button>
         </div>
 
@@ -142,10 +120,8 @@ const UploadPage = () => {
           <h3>使用说明</h3>
           <ul>
             <li>上传需求文档（.docx格式）</li>
-            <li>系统将自动解析需求内容</li>
-            <li>识别涉及系统并拆分功能点</li>
-            <li>使用Delphi法进行工作量估算</li>
-            <li>生成Excel评估报告</li>
+            <li>系统将自动解析需求内容并拆分功能点</li>
+            <li>AI完成初评后进入草稿状态，可继续编辑</li>
           </ul>
         </div>
       </Card>

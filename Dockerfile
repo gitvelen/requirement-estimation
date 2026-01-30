@@ -41,14 +41,14 @@ RUN mkdir -p logs data uploads && \
 ENV PATH="/app/.venv/bin:$PATH"
 
 # 验证Python依赖是否完整（构建时检查）
-RUN python3 -c "import sys; sys.path.insert(0, '.'); import backend.app" || (echo "依赖检查失败，请检查pyproject.toml" && exit 1)
+RUN /app/.venv/bin/python -c "import sys; sys.path.insert(0, '.'); import backend.app" || (echo "依赖检查失败，请检查pyproject.toml" && exit 1)
 
 # 复制 entrypoint.sh 并设置权限
 COPY --chown=appuser:appuser entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
-# 切换到非 root 用户
-USER appuser
+# 以 root 启动 entrypoint，便于修复挂载目录权限；entrypoint 内会降权运行主进程
+USER root
 
 # 暴露端口
 EXPOSE 443

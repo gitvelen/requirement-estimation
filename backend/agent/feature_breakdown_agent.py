@@ -1,7 +1,7 @@
 """
 功能点拆分Agent
 按系统维度拆分功能点
-支持知识库注入，提供历史案例参考
+支持知识库注入，提供系统知识参考
 """
 import logging
 import json
@@ -37,7 +37,8 @@ class FeatureBreakdownAgent:
         self,
         requirement_content: str,
         system_name: str,
-        system_type: str = "主系统"
+        system_type: str = "主系统",
+        task_id: Optional[str] = None
     ) -> List[Dict[str, any]]:
         """
         对指定系统进行功能点拆分
@@ -56,24 +57,27 @@ class FeatureBreakdownAgent:
         try:
             logger.info(f"[功能拆分] 开始拆分: {system_name} ({system_type})")
 
-            # 【新增】知识库增强：检索历史功能案例
-            case_context = ""
+            # 【新增】知识库增强：检索系统知识（系统边界/核心功能/技术栈等）
+            knowledge_context = ""
+            system_profiles: List[Dict[str, Any]] = []
             if self.knowledge_enabled and self.knowledge_service:
                 try:
-                    logger.info(f"[功能拆分] 正在检索【{system_name}】的历史案例...")
-                    feature_cases = self.knowledge_service.search_similar_knowledge(
+                    logger.info(f"[功能拆分] 正在检索【{system_name}】的系统知识...")
+                    system_profiles = self.knowledge_service.search_similar_knowledge(
                         query_text=requirement_content,
                         system_name=system_name,
-                        knowledge_type="feature_case",
+                        knowledge_type="system_profile",
                         top_k=settings.KNOWLEDGE_TOP_K,
-                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD
+                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
+                        task_id=task_id,
+                        stage="feature_breakdown"
                     )
 
-                    if feature_cases:
-                        logger.info(f"[功能拆分] 检索到 {len(feature_cases)} 条相关历史案例")
-                        case_context = self._build_case_context(feature_cases)
+                    if system_profiles:
+                        logger.info(f"[功能拆分] 检索到 {len(system_profiles)} 条相关系统知识")
+                        knowledge_context = self.knowledge_service.build_knowledge_context(system_profiles, max_length=1500)
                     else:
-                        logger.info(f"[功能拆分] 未检索到【{system_name}】的历史案例")
+                        logger.info(f"[功能拆分] 未检索到【{system_name}】的系统知识")
 
                 except Exception as e:
                     logger.warning(f"[功能拆分] 知识库检索失败: {e}，继续使用传统方式")
@@ -82,22 +86,17 @@ class FeatureBreakdownAgent:
             user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
             user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
 
-            # 【新增】注入案例上下文
-            if case_context:
-                user_prompt += f"""【历史类似案例参考】\n{case_context}\n\n"""
-                user_prompt += """请参考上述历史案例的功能拆分粒度和复杂度评估，进行本次拆分。\n\n"""
-                user_prompt += """拆分要求：
-1. 只拆分属于该系统的功能点
-2. 功能点粒度控制在0.5-5人天
-3. 参考历史案例的拆分粒度和工作量估算
-4. 明确标注依赖关系
-5. 评估复杂度（高/中/低）"""
-            else:
-                user_prompt += """拆分要求：
+            # 【新增】注入系统知识上下文
+            if knowledge_context:
+                user_prompt += f"""【系统知识参考】\n{knowledge_context}\n\n"""
+                user_prompt += "请参考上述系统知识（系统边界、核心功能、技术栈等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
+
+            user_prompt += """拆分要求：
 1. 只拆分属于该系统的功能点
 2. 功能点粒度控制在0.5-5人天
 3. 明确标注依赖关系
-4. 评估复杂度（高/中/低）"""
+4. 评估复杂度（高/中/低）
+5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
 
             # 调用LLM
             response = llm_client.chat_with_system_prompt(
@@ -130,6 +129,17 @@ class FeatureBreakdownAgent:
                 complexity = feature.get("复杂度", "中")
                 if complexity in complexity_count:
                     complexity_count[complexity] += 1
+
+            # 【新增】系统校准：写入知识引用与归属复核提示（只提示，不自动调整归属）
+            try:
+                self._apply_kb_calibration_to_features(
+                    features=features,
+                    system_name=system_name,
+                    system_profiles=system_profiles,
+                    task_id=task_id
+                )
+            except Exception as e:
+                logger.debug(f"[功能拆分] 系统校准提示写入失败（忽略）: {e}")
 
             logger.info(f"[功能拆分] 完成，共 {len(features)} 个功能点（高:{complexity_count['高']} 中:{complexity_count['中']} 低:{complexity_count['低']}）")
             return features
@@ -165,6 +175,117 @@ class FeatureBreakdownAgent:
         # 验证复杂度
         if feature["复杂度"] not in ["高", "中", "低"]:
             raise ValueError(f"功能点{feature['序号']}的复杂度值错误: {feature['复杂度']}")
+
+    def _apply_kb_calibration_to_features(
+        self,
+        features: List[Dict[str, Any]],
+        system_name: str,
+        system_profiles: List[Dict[str, Any]],
+        task_id: Optional[str],
+    ) -> None:
+        if not features:
+            return
+
+        kb_ref_line = self._build_kb_reference_line(system_profiles)
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            remark = str(feature.get("备注") or "").strip()
+            parts = [p for p in remark.splitlines() if p.strip()] if remark else []
+            if kb_ref_line:
+                parts.append(kb_ref_line)
+            feature["备注"] = "\n".join(parts).strip()
+
+        # 高风险功能点才做跨系统归属复核（减少embedding调用）
+        if not (self.knowledge_enabled and self.knowledge_service):
+            return
+
+        checks = 0
+        max_checks = 12
+        for feature in features:
+            if checks >= max_checks:
+                break
+            if not self._is_high_risk_feature(feature):
+                continue
+            checks += 1
+
+            query_text = self._build_feature_query_text(feature)
+            if not query_text.strip():
+                continue
+
+            threshold = max(float(getattr(settings, "KNOWLEDGE_SIMILARITY_THRESHOLD", 0.6) or 0.6), 0.75)
+            results = self.knowledge_service.search_similar_knowledge(
+                query_text=query_text,
+                knowledge_type="system_profile",
+                top_k=3,
+                similarity_threshold=threshold,
+                task_id=task_id,
+                module=str(feature.get("功能模块") or "").strip() or None,
+                feature_name=str(feature.get("功能点") or "").strip() or None,
+                stage="feature_attribution_check",
+            )
+            if not results:
+                continue
+
+            top = results[0]
+            top_system = str(top.get("system_name") or "").strip()
+            top_sim = float(top.get("similarity") or 0.0)
+            if not top_system or top_system == system_name:
+                continue
+
+            best_current = 0.0
+            for item in results:
+                if str(item.get("system_name") or "").strip() == system_name:
+                    best_current = max(best_current, float(item.get("similarity") or 0.0))
+
+            if top_sim - best_current < 0.08:
+                continue
+
+            remark = str(feature.get("备注") or "").strip()
+            note = f"[归属复核] 疑似更偏向系统：{top_system} (sim={top_sim:.2f})，建议复核。"
+            feature["备注"] = f"{remark}\n{note}".strip() if remark else note
+
+    def _build_kb_reference_line(self, system_profiles: List[Dict[str, Any]]) -> str:
+        if not system_profiles:
+            return "[知识引用] 无（该系统未导入system_profile系统画像）"
+
+        hits = []
+        for item in sorted(system_profiles, key=lambda x: x.get("similarity", 0.0), reverse=True)[:2]:
+            source_file = str(item.get("source_file") or "").strip()
+            sim = float(item.get("similarity") or 0.0)
+            if source_file:
+                hits.append(f"{source_file}(sim={sim:.2f})")
+            else:
+                hits.append(f"system_profile(sim={sim:.2f})")
+        if not hits:
+            return "[知识引用] system_profile"
+        return "[知识引用] " + "；".join(hits)
+
+    def _is_high_risk_feature(self, feature: Dict[str, Any]) -> bool:
+        try:
+            complexity = str(feature.get("复杂度") or "").strip()
+        except Exception:
+            complexity = ""
+        if complexity == "高":
+            return True
+
+        dep = str(feature.get("依赖项") or feature.get("依赖") or "").strip()
+        if dep and dep not in ("无", "-"):
+            return True
+
+        text = " ".join(
+            str(feature.get(k) or "").strip()
+            for k in ("功能点", "业务描述", "输入", "输出", "依赖", "依赖项", "备注")
+        )
+        keywords = ("接口", "联调", "同步", "对账", "加密", "权限", "性能", "合规", "上线", "发布", "迁移", "改造")
+        return any(k in text for k in keywords)
+
+    def _build_feature_query_text(self, feature: Dict[str, Any]) -> str:
+        module = str(feature.get("功能模块") or "").strip()
+        name = str(feature.get("功能点") or "").strip()
+        desc = str(feature.get("业务描述") or "").strip()
+        dep = str(feature.get("依赖项") or feature.get("依赖") or "").strip()
+        return "\n".join([part for part in (module, name, desc, dep) if part])
 
     def refine_breakdown(
         self,
@@ -215,43 +336,6 @@ class FeatureBreakdownAgent:
             logger.error(f"功能点优化失败: {str(e)}")
             # 如果优化失败，返回原始结果
             return features
-
-    def _build_case_context(
-        self,
-        feature_cases: List[Dict[str, Any]]
-    ) -> str:
-        """
-        构建功能案例上下文（用于Agent Prompt）
-
-        Args:
-            feature_cases: 功能案例列表
-
-        Returns:
-            str: 格式化的案例上下文
-        """
-        if not feature_cases:
-            return ""
-
-        context_parts = []
-        for idx, case in enumerate(feature_cases, 1):
-            metadata = case.get("metadata", {})
-            similarity = case.get("similarity", 0.0)
-
-            part = f"""【案例{idx}】{metadata.get('feature_name', '')}
-   - 系统名称: {metadata.get('system_name', '')}
-   - 功能模块: {metadata.get('module', '')}
-   - 业务描述: {metadata.get('description', '')}
-   - 预估人天: {metadata.get('estimated_days', '')}
-   - 复杂度: {metadata.get('complexity', '')}
-   - 技术要点: {metadata.get('tech_points', '')}
-   - 依赖系统: {metadata.get('dependencies', '')}
-   - 实施案例: {metadata.get('project_case', '')}
-   - 相似度: {similarity:.2f}
-"""
-            context_parts.append(part)
-
-        return "\n".join(context_parts)
-
 
 # 全局Agent实例（延迟初始化，在agent_orchestrator中注入knowledge_service）
 feature_breakdown_agent = None

@@ -1,0 +1,94 @@
+.app-layout {
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.app-sider {
+  background: #1f2a44;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  gap: 12px;
+  padding: 0 12px;
+}
+
+.app-logo-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: #3b6cff;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.app-logo-text {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-header {
+  background: #ffffff;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.app-header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2a44;
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+}
+
+.app-header-icon {
+  font-size: 18px;
+  color: #3b4a6b;
+  cursor: pointer;
+}
+
+.app-role-badge {
+  background: #eef2ff;
+  color: #3b6cff;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.app-user {
+  cursor: pointer;
+}
+
+.app-content {
+  margin: 20px;
+  padding: 0;
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 12px;
+  }
+
+  .app-content {
+    margin: 12px;
+  }
+
+  .app-header-title {
+    font-size: 14px;
+  }
+}

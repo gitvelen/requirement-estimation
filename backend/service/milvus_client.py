@@ -115,7 +115,7 @@ class MilvusClient:
 
             schema = CollectionSchema(
                 fields=fields,
-                description="系统知识库 - 存储系统知识和功能案例"
+                description="系统知识库 - 存储系统知识"
             )
 
             # 创建Collection
@@ -156,7 +156,7 @@ class MilvusClient:
 
         Args:
             system_name: 系统名称
-            knowledge_type: 知识类型 (system_profile/feature_case/tech_spec)
+            knowledge_type: 知识类型（当前仅维护 system_profile）
             content: 原始文本内容
             embedding: 向量embedding
             metadata: 元数据（JSON序列化后的字典）

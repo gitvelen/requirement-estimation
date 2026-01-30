@@ -8,6 +8,20 @@ import json
 
 BASE_URL = "http://localhost:443/api/v1"
 
+def login(username: str, password: str) -> str:
+    """登录并返回JWT Token"""
+    resp = requests.post(
+        f"{BASE_URL}/auth/login",
+        json={"username": username, "password": password},
+        timeout=20
+    )
+    resp.raise_for_status()
+    data = resp.json().get("data") or {}
+    token = data.get("token") or ""
+    if not token:
+        raise RuntimeError("登录成功但未返回token")
+    return token
+
 def test_health():
     """测试健康检查"""
     print("\n=== 测试1: 健康检查 ===")
@@ -20,11 +34,15 @@ def test_health():
         print(f"❌ 失败: {e}")
         return False
 
-def test_knowledge_health():
+def test_knowledge_health(token: str):
     """测试知识库健康检查"""
     print("\n=== 测试2: 知识库健康检查 ===")
     try:
-        response = requests.get(f"{BASE_URL}/knowledge/health")
+        response = requests.get(
+            f"{BASE_URL}/knowledge/health",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20
+        )
         print(f"状态码: {response.status_code}")
         print(f"响应: {response.json()}")
         return response.status_code == 200
@@ -32,14 +50,33 @@ def test_knowledge_health():
         print(f"❌ 失败: {e}")
         return False
 
-def test_import_knowledge():
+def test_import_knowledge(token: str):
     """测试导入知识库"""
     print("\n=== 测试3: 导入系统知识 ===")
     try:
-        with open("data/test_knowledge.csv", "rb") as f:
-            files = {"file": ("test_knowledge.csv", f, "text/csv")}
-            data = {"auto_extract": "true"}
-            response = requests.post(f"{BASE_URL}/knowledge/import", files=files, data=data)
+        from io import BytesIO
+        from docx import Document
+
+        doc = Document()
+        doc.add_heading("支付中台", level=1)
+        doc.add_paragraph("system_short_name：Payment")
+        doc.add_paragraph("business_goal：统一支付渠道接入，沉淀支付能力。")
+        doc.add_paragraph("core_functions：渠道接入、路由编排、签名验签、对账、清结算")
+        doc.add_paragraph("tech_stack：Java / Spring Cloud / MySQL / Redis / Kafka")
+
+        buf = BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+
+        files = {"file": ("test_system.docx", buf, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+        data = {"auto_extract": "true", "knowledge_type": "system_profile", "system_name": "支付中台"}
+        response = requests.post(
+            f"{BASE_URL}/knowledge/import",
+            headers={"Authorization": f"Bearer {token}"},
+            files=files,
+            data=data,
+            timeout=60
+        )
         
         print(f"状态码: {response.status_code}")
         result = response.json()
@@ -49,28 +86,16 @@ def test_import_knowledge():
         print(f"❌ 失败: {e}")
         return False
 
-def test_import_cases():
-    """测试导入功能案例"""
-    print("\n=== 测试4: 导入功能案例 ===")
-    try:
-        with open("data/test_cases.csv", "rb") as f:
-            files = {"file": ("test_cases.csv", f, "text/csv")}
-            data = {"auto_extract": "true"}
-            response = requests.post(f"{BASE_URL}/knowledge/import", files=files, data=data)
-        
-        print(f"状态码: {response.status_code}")
-        result = response.json()
-        print(f"响应: {json.dumps(result, indent=2, ensure_ascii=False)}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"❌ 失败: {e}")
-        return False
-
-def test_knowledge_stats():
+def test_knowledge_stats(token: str):
     """测试知识库统计"""
-    print("\n=== 测试5: 知识库统计 ===")
+    print("\n=== 测试4: 知识库统计 ===")
     try:
-        response = requests.get(f"{BASE_URL}/knowledge/stats")
+        response = requests.get(
+            f"{BASE_URL}/knowledge/stats",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"system_name": "支付中台"},
+            timeout=20
+        )
         print(f"状态码: {response.status_code}")
         result = response.json()
         print(f"响应: {json.dumps(result, indent=2, ensure_ascii=False)}")
@@ -79,41 +104,22 @@ def test_knowledge_stats():
         print(f"❌ 失败: {e}")
         return False
 
-def test_search_knowledge():
+def test_search_knowledge(token: str):
     """测试知识检索"""
-    print("\n=== 测试6: 知识检索 ===")
+    print("\n=== 测试5: 知识检索 ===")
     try:
         payload = {
             "query": "账户管理功能",
+            "system_name": "支付中台",
             "top_k": 3,
             "similarity_threshold": 0.6
         }
-        response = requests.post(f"{BASE_URL}/knowledge/search", json=payload)
-        print(f"状态码: {response.status_code}")
-        result = response.json()
-        print(f"响应: {json.dumps(result, indent=2, ensure_ascii=False)}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"❌ 失败: {e}")
-        return False
-
-def test_save_case():
-    """测试保存功能案例"""
-    print("\n=== 测试7: 保存功能案例 ===")
-    try:
-        payload = {
-            "system_name": "新一代核心系统",
-            "module": "账户管理",
-            "feature_name": "测试功能点",
-            "description": "这是一个测试功能点",
-            "estimated_days": 2.5,
-            "complexity": "低",
-            "tech_points": "测试技术要点",
-            "dependencies": "",
-            "project_case": "自动化测试",
-            "source": "测试脚本"
-        }
-        response = requests.post(f"{BASE_URL}/knowledge/save_case", json=payload)
+        response = requests.post(
+            f"{BASE_URL}/knowledge/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+            timeout=30
+        )
         print(f"状态码: {response.status_code}")
         result = response.json()
         print(f"响应: {json.dumps(result, indent=2, ensure_ascii=False)}")
@@ -128,14 +134,20 @@ def main():
     print("║   业务需求工作量评估系统 - 自动化测试    ║")
     print("╚══════════════════════════════════════════╝")
     
+    username = "integration_manager"
+    password = "ChangeMe123!"
+    try:
+        token = login(username, password)
+    except Exception as e:
+        print(f"❌ 登录失败: {e}")
+        return
+
     tests = [
         ("健康检查", test_health),
-        ("知识库健康检查", test_knowledge_health),
-        ("导入系统知识", test_import_knowledge),
-        ("导入功能案例", test_import_cases),
-        ("知识库统计", test_knowledge_stats),
-        ("知识检索", test_search_knowledge),
-        ("保存功能案例", test_save_case),
+        ("知识库健康检查", lambda: test_knowledge_health(token)),
+        ("导入系统知识", lambda: test_import_knowledge(token)),
+        ("知识库统计", lambda: test_knowledge_stats(token)),
+        ("知识检索", lambda: test_search_knowledge(token)),
     ]
     
     results = []

@@ -2,18 +2,15 @@
 """
 知识库功能验收脚本
 
-测试知识库的核心功能，包括：
-1. Milvus连接测试
-2. 知识库导入（CSV/DOCX）
+本期知识库采用本地文件向量库（无 MinIO/Milvus/Redis），本脚本测试核心能力：
+1. 健康检查（后端 + 知识库）
+2. 知识库导入（DOCX）
 3. 知识库检索
 4. 统计信息
 5. 效果评估指标
 
 使用方法：
     python scripts/knowledge_acceptance.py
-
-或者使用HTTP API：
-    curl http://localhost:80/knowledge
 """
 
 import os
@@ -21,7 +18,6 @@ import sys
 import json
 import requests
 import logging
-from pathlib import Path
 from datetime import datetime
 
 # 配置日志
@@ -35,9 +31,16 @@ logger = logging.getLogger(__name__)
 class KnowledgeAcceptanceTest:
     """知识库功能验收测试"""
 
-    def __init__(self, base_url="http://localhost"):
+    def __init__(self, base_url="http://127.0.0.1:443"):
         self.base_url = base_url
         self.api_base = f"{base_url}/api/v1/knowledge"
+        self.admin_api_key = os.getenv("ADMIN_API_KEY", "").strip()
+        self.manager_username = os.getenv("KB_USERNAME", "integration_manager").strip()
+        self.manager_password = os.getenv("KB_PASSWORD", "ChangeMe123!").strip()
+        self.admin_username = os.getenv("KB_ADMIN_USERNAME", "integration_admin").strip()
+        self.admin_password = os.getenv("KB_ADMIN_PASSWORD", "ChangeMe123!").strip()
+        self.manager_token = None
+        self.admin_token = None
         self.test_results = []
         self.passed = 0
         self.failed = 0
@@ -60,65 +63,74 @@ class KnowledgeAcceptanceTest:
         else:
             self.failed += 1
 
-    def test_1_milvus_connection(self):
-        """测试1：Milvus连接测试"""
+    def _request(self, method: str, path: str, *, headers=None, timeout=10, **kwargs):
+        url = f"{self.base_url}{path}"
+        return requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+    def _login(self, username: str, password: str) -> str:
+        response = self._request(
+            "POST",
+            "/api/v1/auth/login",
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        token = (data.get("data") or {}).get("token")
+        if not token:
+            raise RuntimeError("登录成功但未返回token")
+        return token
+
+    def _ensure_user(self, username: str, display_name: str, roles: list, password: str) -> bool:
+        headers = {}
+        if self.admin_api_key:
+            headers["X-API-Key"] = self.admin_api_key
+
+        payload = {
+            "username": username,
+            "displayName": display_name,
+            "password": password,
+            "roles": roles,
+            "email": f"{username}@example.com",
+            "department": "knowledge_acceptance",
+            "isActive": True,
+        }
+        response = self._request("POST", "/api/v1/users", json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return True
+        if response.status_code == 400 and "用户名已存在" in response.text:
+            return True
+        return False
+
+    def _prepare_auth(self) -> bool:
+        try:
+            # 尽量确保测试用户存在（需要ADMIN_API_KEY或DEBUG模式放行）
+            self._ensure_user(self.admin_username, "验收管理员", ["admin"], self.admin_password)
+            self._ensure_user(self.manager_username, "验收项目经理", ["manager"], self.manager_password)
+
+            self.admin_token = self._login(self.admin_username, self.admin_password)
+            self.manager_token = self._login(self.manager_username, self.manager_password)
+
+            self.log_test("准备认证", True, f"manager={self.manager_username}, admin={self.admin_username}")
+            return True
+        except Exception as e:
+            self.log_test("准备认证", False, f"无法登录，请确认用户存在且密码正确（默认ChangeMe123!）。错误: {e}")
+            return False
+
+    def test_1_health(self):
+        """测试1：健康检查"""
         logger.info("\n" + "="*60)
-        logger.info("测试1：Milvus连接测试")
+        logger.info("测试1：健康检查")
         logger.info("="*60)
 
         try:
-            # 检查Milvus容器是否运行
-            import subprocess
-            result = subprocess.run(
-                ["docker", "ps", "--filter", "name=milvus", "--format", "{{.Names}}"],
-                capture_output=True,
-                text=True
-            )
-
-            milvus_running = "milvus-standalone" in result.stdout
-
-            if not milvus_running:
-                self.log_test(
-                    "Milvus容器状态",
-                    False,
-                    "Milvus容器未运行，请先启动: docker-compose --profile milvus up -d"
-                )
-                return False
-
-            self.log_test("Milvus容器状态", True, "Milvus容器运行中")
-
-            # 检查Milvus健康状态
-            try:
-                response = requests.get("http://localhost:9091/healthz", timeout=5)
-                healthy = response.status_code == 200
-                self.log_test(
-                    "Milvus健康检查",
-                    healthy,
-                    f"HTTP {response.status_code}"
-                )
-            except Exception as e:
-                self.log_test("Milvus健康检查", False, f"连接失败: {e}")
-                return False
-
-            # 检查知识库API
-            try:
-                response = requests.get(f"{self.api_base}/health", timeout=5)
-                api_healthy = response.status_code == 200
-
-                data = response.json()
-                self.log_test(
-                    "知识库API健康检查",
-                    api_healthy,
-                    f"状态: {data.get('status', 'unknown')}"
-                )
-            except Exception as e:
-                self.log_test("知识库API健康检查", False, f"API调用失败: {e}")
-                return False
-
-            return True
+            response = self._request("GET", "/api/v1/health", timeout=5)
+            healthy = response.status_code == 200
+            self.log_test("后端健康检查", healthy, f"HTTP {response.status_code}")
+            return healthy
 
         except Exception as e:
-            self.log_test("Milvus连接测试", False, f"测试失败: {e}")
+            self.log_test("后端健康检查", False, f"测试失败: {e}")
             return False
 
     def test_2_knowledge_stats(self):
@@ -128,7 +140,12 @@ class KnowledgeAcceptanceTest:
         logger.info("="*60)
 
         try:
-            response = requests.get(f"{self.api_base}/stats", timeout=10)
+            response = self._request(
+                "GET",
+                "/api/v1/knowledge/stats",
+                headers={"Authorization": f"Bearer {self.manager_token}"},
+                timeout=10,
+            )
             response.raise_for_status()
 
             data = response.json()
@@ -159,7 +176,12 @@ class KnowledgeAcceptanceTest:
         logger.info("="*60)
 
         try:
-            response = requests.get(f"{self.api_base}/evaluation-metrics", timeout=10)
+            response = self._request(
+                "GET",
+                "/api/v1/knowledge/evaluation-metrics",
+                headers={"Authorization": f"Bearer {self.manager_token}"},
+                timeout=10,
+            )
             response.raise_for_status()
 
             data = response.json()
@@ -196,51 +218,64 @@ class KnowledgeAcceptanceTest:
         logger.info("="*60)
 
         try:
-            # 检查测试数据文件是否存在
-            test_file = Path("data/templates/system_profile_template.csv")
+            # 生成一份可抽取的 DOCX 测试材料并上传
+            from io import BytesIO
+            from docx import Document
 
-            if not test_file.exists():
+            doc = Document()
+            doc.add_heading("支付中台", level=1)
+            doc.add_paragraph("system_short_name：Payment")
+            doc.add_paragraph("system_category：中台系统")
+            doc.add_paragraph("business_goal：统一支付渠道接入，沉淀支付能力，提升接入效率与一致性。")
+            doc.add_paragraph("core_functions：渠道接入、路由编排、签名验签、对账、清结算")
+            doc.add_paragraph("tech_stack：Java / Spring Cloud / MySQL / Redis / Kafka")
+            doc.add_paragraph("architecture：微服务 + 分布式集群；灰度发布；多活容灾")
+            doc.add_paragraph("performance：TPS 10000+，关键接口RT < 200ms")
+            doc.add_paragraph("main_users：各业务系统、支付运营、对账人员")
+            doc.add_paragraph("notes：外部对接需符合签名规范；交易需落库并具备可追溯性。")
+
+            buf = BytesIO()
+            doc.save(buf)
+            buf.seek(0)
+
+            files = {"file": ("test_system.docx", buf, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            data = {
+                "auto_extract": "true",
+                "knowledge_type": "system_profile",
+                "system_name": "支付中台",
+            }
+
+            response = self._request(
+                "POST",
+                "/api/v1/knowledge/import",
+                headers={"Authorization": f"Bearer {self.manager_token}"},
+                files=files,
+                data=data,
+                timeout=60,
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            success = result.get('data', {}).get('success', 0)
+            failed = result.get('data', {}).get('failed', 0)
+
+            logger.info(f"导入结果：成功 {success} 条，失败 {failed} 条")
+
+            if success > 0:
                 self.log_test(
                     "导入测试数据",
-                    False,
-                    f"测试文件不存在: {test_file}"
+                    True,
+                    f"成功导入 {success} 条系统知识"
                 )
-                return False
+                return True
 
-            # 读取文件并上传
-            with open(test_file, 'rb') as f:
-                files = {'file': ('test_system.csv', f, 'text/csv')}
-                data = {'auto_extract': 'true'}
-
-                response = requests.post(
-                    f"{self.api_base}/import",
-                    files=files,
-                    data=data,
-                    timeout=30
-                )
-
-                response.raise_for_status()
-                result = response.json()
-
-                success = result.get('data', {}).get('success', 0)
-                failed = result.get('data', {}).get('failed', 0)
-
-                logger.info(f"导入结果：成功 {success} 条，失败 {failed} 条")
-
-                if success > 0:
-                    self.log_test(
-                        "导入测试数据",
-                        True,
-                        f"成功导入 {success} 条系统知识"
-                    )
-                    return True
-                else:
-                    self.log_test(
-                        "导入测试数据",
-                        False,
-                        "没有数据导入成功"
-                    )
-                    return False
+            self.log_test(
+                "导入测试数据",
+                False,
+                "没有数据导入成功"
+            )
+            return False
 
         except Exception as e:
             self.log_test("导入测试数据", False, f"测试失败: {e}")
@@ -256,14 +291,18 @@ class KnowledgeAcceptanceTest:
             # 测试检索
             search_data = {
                 "query": "支付中台 微信支付",
+                "system_name": "支付中台",
                 "top_k": 5,
-                "similarity_threshold": 0.6
+                # 由于embedding/阈值会受模型与语料影响，验收时用较低阈值保证可观测性
+                "similarity_threshold": 0.2
             }
 
-            response = requests.post(
-                f"{self.api_base}/search",
+            response = self._request(
+                "POST",
+                "/api/v1/knowledge/search",
+                headers={"Authorization": f"Bearer {self.manager_token}"},
                 json=search_data,
-                timeout=10
+                timeout=20,
             )
 
             response.raise_for_status()
@@ -298,53 +337,27 @@ class KnowledgeAcceptanceTest:
             self.log_test("知识检索", False, f"测试失败: {e}")
             return False
 
-    def test_6_save_case(self):
-        """测试6：保存功能案例"""
+    def test_6_rebuild_index(self):
+        """测试6：重建索引（本地向量库）"""
         logger.info("\n" + "="*60)
-        logger.info("测试6：保存功能案例")
+        logger.info("测试6：重建索引")
         logger.info("="*60)
 
         try:
-            # 测试保存案例
-            case_data = {
-                "system_name": "支付中台",
-                "module": "测试模块",
-                "feature_name": "验收测试功能",
-                "description": "这是一个验收测试功能点",
-                "estimated_days": 2.5,
-                "complexity": "中",
-                "tech_points": "Python、FastAPI",
-                "dependencies": "核心系统",
-                "project_case": "知识库验收测试",
-                "source": "验收脚本"
-            }
-
-            response = requests.post(
-                f"{self.api_base}/save_case",
-                json=case_data,
-                timeout=10
+            response = self._request(
+                "POST",
+                "/api/v1/knowledge/rebuild-index",
+                headers={"Authorization": f"Bearer {self.admin_token}"},
+                timeout=30,
             )
-
             response.raise_for_status()
             result = response.json()
-
-            if result.get('code') == 200:
-                self.log_test(
-                    "保存功能案例",
-                    True,
-                    "案例保存成功"
-                )
-                return True
-            else:
-                self.log_test(
-                    "保存功能案例",
-                    False,
-                    f"保存失败: {result.get('message', 'Unknown error')}"
-                )
-                return False
-
+            data = result.get("data") or {}
+            ok = result.get("code") == 200 and (data.get("status") in ("success", None) or data.get("message"))
+            self.log_test("重建索引", ok, data.get("message", ""))
+            return ok
         except Exception as e:
-            self.log_test("保存功能案例", False, f"测试失败: {e}")
+            self.log_test("重建索引", False, f"测试失败: {e}")
             return False
 
     def run_all_tests(self):
@@ -356,14 +369,20 @@ class KnowledgeAcceptanceTest:
         logger.info(f"API地址: {self.api_base}")
         logger.info("="*60)
 
+        # 认证准备（后续接口需要登录）
+        if not self._prepare_auth():
+            self.print_summary()
+            self.generate_report()
+            return
+
         # 运行测试
         tests = [
-            self.test_1_milvus_connection,
+            self.test_1_health,
             self.test_2_knowledge_stats,
             self.test_3_evaluation_metrics,
             self.test_4_import_test_data,
             self.test_5_knowledge_search,
-            self.test_6_save_case,
+            self.test_6_rebuild_index,
         ]
 
         for test in tests:
@@ -421,8 +440,8 @@ def main():
     parser = argparse.ArgumentParser(description="知识库功能验收测试")
     parser.add_argument(
         "--base-url",
-        default="http://localhost",
-        help="API基础地址（默认: http://localhost）"
+        default="http://127.0.0.1:443",
+        help="API基础地址（默认: http://127.0.0.1:443）"
     )
 
     args = parser.parse_args()

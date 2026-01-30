@@ -1,0 +1,15 @@
+.profile-page {
+  padding: 24px;
+}
+
+.profile-avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.profile-info-list {
+  width: 100%;
+}

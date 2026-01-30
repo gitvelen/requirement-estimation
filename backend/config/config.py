@@ -44,6 +44,8 @@ class Settings(BaseSettings):
 
     # 知识库配置
     KNOWLEDGE_ENABLED: bool = os.getenv("KNOWLEDGE_ENABLED", "true").lower() == "true"
+    # 向量存储后端：local（本地文件向量库）/ milvus（Milvus向量库，需配套MinIO等）
+    KNOWLEDGE_VECTOR_STORE: str = os.getenv("KNOWLEDGE_VECTOR_STORE", "local").lower()
     EMBEDDING_MODEL: str = "text-embedding-v2"  # 阿里云Embedding模型
     EMBEDDING_DIM: int = 1024  # 向量维度
     KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
@@ -85,6 +87,10 @@ class Settings(BaseSettings):
 
     # 简单鉴权（生产环境建议启用）
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
+
+    # JWT配置
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "change_me")
+    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))
 
     model_config = {
         "extra": "ignore",

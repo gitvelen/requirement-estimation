@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from backend.api.auth import require_admin_api_key
+from backend.api.auth import require_admin_api_key, require_roles
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def _save_cosmic_config(config: Dict[str, Any]):
 
 
 @router.get("/config")
-async def get_cosmic_config():
+async def get_cosmic_config(_auth: None = Depends(require_roles(["admin"]))):
     """
     获取COSMIC配置
 

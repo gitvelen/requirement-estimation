@@ -22,6 +22,9 @@ class LLMClient:
         self.max_tokens = settings.LLM_MAX_TOKENS
         self.timeout = settings.LLM_TIMEOUT
 
+        if not self.api_key:
+            logger.warning("DASHSCOPE_API_KEY 未配置，LLM调用将失败")
+
         # 初始化OpenAI客户端（兼容阿里云DashScope）
         self.client = OpenAI(
             api_key=self.api_key,
@@ -54,6 +57,8 @@ class LLMClient:
         """
         temperature = temperature or self.temperature
         max_tokens = max_tokens or self.max_tokens
+        if not self.api_key:
+            raise ValueError("DASHSCOPE_API_KEY未配置")
 
         for attempt in range(retry_times):
             try:

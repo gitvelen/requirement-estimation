@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card,
   Form,
@@ -9,8 +9,6 @@ import {
   message,
   Typography,
   Divider,
-  Row,
-  Col,
   Tag,
   Select,
   Tabs,
@@ -23,18 +21,21 @@ import {
   CheckCircleOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
+import usePermission from '../hooks/usePermission';
 
 const { Title, Text, Paragraph } = Typography;
 const { TabPane } = Tabs;
 
 const CosmicConfigPage = () => {
+  const { isAdmin } = usePermission();
+  const readOnly = !isAdmin;
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState(null);
 
   // 加载配置
-  const fetchConfig = async () => {
+  const fetchConfig = useCallback(async () => {
     setLoading(true);
     try {
       const response = await axios.get('/api/v1/cosmic/config');
@@ -46,14 +47,18 @@ const CosmicConfigPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [form]);
 
   useEffect(() => {
     fetchConfig();
-  }, []);
+  }, [fetchConfig]);
 
   // 保存配置
   const handleSave = async () => {
+    if (readOnly) {
+      message.warning('只读模式：无权限保存配置');
+      return;
+    }
     try {
       const values = await form.validateFields();
       setSaving(true);
@@ -71,6 +76,10 @@ const CosmicConfigPage = () => {
 
   // 重置配置
   const handleReset = async () => {
+    if (readOnly) {
+      message.warning('只读模式：无权限重置配置');
+      return;
+    }
     try {
       await axios.post('/api/v1/cosmic/reset');
       message.success('配置已重置为默认值');
@@ -83,6 +92,10 @@ const CosmicConfigPage = () => {
 
   // 重新加载配置
   const handleReload = async () => {
+    if (readOnly) {
+      message.warning('只读模式：无权限重新加载配置');
+      return;
+    }
     try {
       await axios.post('/api/v1/cosmic/reload');
       message.success('配置重新加载成功');
@@ -96,7 +109,7 @@ const CosmicConfigPage = () => {
     <div style={{ padding: '24px' }}>
       <Card>
         <div style={{ marginBottom: 16 }}>
-          <Title level={3}>COSMIC功能点规则配置</Title>
+          <Title level={3}>估算规则配置（COSMIC）</Title>
           <Text type="secondary">
             配置COSMIC方法的功能点分析规则，包括数据组定义、功能处理拆分粒度、数据移动判定规则等
           </Text>
@@ -110,21 +123,35 @@ const CosmicConfigPage = () => {
           style={{ marginBottom: 24 }}
         />
 
+        {readOnly && (
+          <Alert
+            message="只读模式"
+            description="项目经理可查看估算规则配置，但不可编辑；修改请联系管理员。"
+            type="warning"
+            showIcon
+            style={{ marginBottom: 24 }}
+          />
+        )}
+
         <Space style={{ marginBottom: 24 }}>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            onClick={handleSave}
-            loading={saving}
-          >
-            保存配置
-          </Button>
-          <Button
-            icon={<UndoOutlined />}
-            onClick={handleReset}
-          >
-            重置为默认
-          </Button>
+          {isAdmin && (
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={handleSave}
+              loading={saving}
+            >
+              保存配置
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
+              icon={<UndoOutlined />}
+              onClick={handleReset}
+            >
+              重置为默认
+            </Button>
+          )}
           <Button
             icon={<ReloadOutlined />}
             onClick={fetchConfig}
@@ -132,18 +159,21 @@ const CosmicConfigPage = () => {
           >
             刷新
           </Button>
-          <Button
-            icon={<CheckCircleOutlined />}
-            onClick={handleReload}
-          >
-            重新加载（热更新）
-          </Button>
+          {isAdmin && (
+            <Button
+              icon={<CheckCircleOutlined />}
+              onClick={handleReload}
+            >
+              重新加载（热更新）
+            </Button>
+          )}
         </Space>
 
         <Form
           form={form}
           layout="vertical"
           initialValues={config}
+          disabled={readOnly}
         >
           <Tabs defaultActiveKey="1">
             <TabPane tab="数据组规则" key="1">

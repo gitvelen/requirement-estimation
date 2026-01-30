@@ -18,6 +18,14 @@ from backend.api.subsystem_routes import router as subsystem_router
 from backend.api.cosmic_routes import router as cosmic_router
 from backend.api.system_routes import router as system_router
 from backend.api.knowledge_routes import router as knowledge_router
+from backend.api.user_routes import router as user_router
+from backend.api.notification_routes import router as notification_router
+from backend.api.report_routes import router as report_router
+from backend.api.auth_routes import router as auth_router
+from backend.api.profile_routes import router as profile_router
+from backend.api.department_routes import router as department_router
+from backend.api.system_list_routes import router as system_list_router
+from backend.utils.pdf_report import get_font_info
 
 # 配置日志
 handlers = [logging.StreamHandler()]
@@ -61,6 +69,13 @@ app.include_router(subsystem_router)
 app.include_router(cosmic_router)
 app.include_router(system_router)
 app.include_router(knowledge_router)
+app.include_router(user_router)
+app.include_router(notification_router)
+app.include_router(report_router)
+app.include_router(auth_router)
+app.include_router(profile_router)
+app.include_router(department_router)
+app.include_router(system_list_router)
 
 # 创建必要的目录
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -81,6 +96,12 @@ async def startup_event():
     logger.info(f"监听地址: {settings.HOST}:{settings.PORT}")
     logger.info(f"API前缀: {settings.API_PREFIX}")
     logger.info(f"工作进程数: {settings.WORKERS}")
+    font_info = get_font_info()
+    if font_info.get("reportlab_available"):
+        font_path = font_info.get("font_path") or font_info.get("source")
+        logger.info(f"PDF字体: {font_info.get('font_name')} ({font_path})")
+    else:
+        logger.info("PDF字体: reportlab 未安装，使用最小PDF模式")
     logger.info("=" * 60)
 
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 一键部署脚本（包含知识库功能）
+# 一键部署脚本（本期：知识库使用本地向量库，无 Milvus/MinIO）
 
 set -e
 
@@ -24,8 +24,8 @@ echo ""
 
 # 选择部署模式
 echo "请选择部署模式："
-echo "1) 基础部署（不包含知识库功能，资源占用少）"
-echo "2) 完整部署（包含知识库功能，推荐）"
+echo "1) 基础部署（禁用知识库，资源占用少）"
+echo "2) 默认部署（启用知识库-本地向量库，推荐）"
 echo ""
 read -p "请输入选项 [1/2] (默认: 2): " mode
 
@@ -33,28 +33,17 @@ mode=${mode:-2}
 
 if [ "$mode" = "1" ]; then
     echo ""
-    echo "启动基础部署（不包含Milvus知识库）..."
+    echo "启动基础部署（禁用知识库）..."
+    export KNOWLEDGE_ENABLED=false
+    export KNOWLEDGE_VECTOR_STORE=local
     docker-compose up -d --build
 elif [ "$mode" = "2" ]; then
     echo ""
-    echo "启动完整部署（包含Milvus知识库）..."
-    echo "这可能需要1-2分钟，请耐心等待..."
-    docker-compose --profile milvus up -d --build
-
-    echo ""
-    echo "等待Milvus启动..."
-    sleep 30
-
-    # 等待Milvus健康
-    echo "检查Milvus健康状态..."
-    for i in {1..30}; do
-        if curl -s http://localhost:9091/healthz > /dev/null 2>&1; then
-            echo "✓ Milvus已就绪"
-            break
-        fi
-        echo "等待Milvus启动... ($i/30)"
-        sleep 2
-    done
+    echo "启动默认部署（启用知识库-本地向量库）..."
+    echo "提示：如需知识库导入/检索，请在 .env 中配置 DASHSCOPE_API_KEY。"
+    export KNOWLEDGE_ENABLED=true
+    export KNOWLEDGE_VECTOR_STORE=local
+    docker-compose up -d --build
 else
     echo "错误: 无效的选项"
     exit 1

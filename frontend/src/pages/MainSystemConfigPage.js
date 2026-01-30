@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Table,
   Button,
@@ -24,12 +24,26 @@ import axios from 'axios';
 
 const { Title, Text } = Typography;
 
-const MainSystemConfigPage = () => {
+const MainSystemConfigPage = ({ embedded = false }) => {
   const [systems, setSystems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [form] = Form.useForm();
+
+  const extraKeys = useMemo(() => {
+    const order = [];
+    const seen = new Set();
+    (systems || []).forEach((item) => {
+      const extra = item?.extra || {};
+      Object.keys(extra).forEach((key) => {
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        order.push(key);
+      });
+    });
+    return order;
+  }, [systems]);
 
   // 状态选项
   const statusOptions = [
@@ -61,6 +75,7 @@ const MainSystemConfigPage = () => {
   const handleAdd = () => {
     setEditingRecord(null);
     form.resetFields();
+    form.setFieldsValue({ extra: {} });
     setModalVisible(true);
   };
 
@@ -70,15 +85,16 @@ const MainSystemConfigPage = () => {
     form.setFieldsValue({
       name: record.name,
       abbreviation: record.abbreviation,
-      status: record.status
+      status: record.status,
+      extra: record.extra || {}
     });
     setModalVisible(true);
   };
 
   // 删除系统
-  const handleDelete = async (systemName) => {
+  const handleDelete = async (systemId) => {
     try {
-      await axios.delete(`/api/v1/system/systems/${encodeURIComponent(systemName)}`);
+      await axios.delete(`/api/v1/system/systems/${encodeURIComponent(systemId)}`);
       message.success('删除成功');
       fetchSystems();
     } catch (error) {
@@ -91,17 +107,25 @@ const MainSystemConfigPage = () => {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      const payload = {
+        ...values,
+        name: values.name ?? '',
+        abbreviation: values.abbreviation ?? '',
+        status: values.status ?? '',
+        extra: values.extra || {}
+      };
 
       if (editingRecord) {
         // 更新
+        const targetId = editingRecord.id || editingRecord.name;
         await axios.put(
-          `/api/v1/system/systems/${encodeURIComponent(editingRecord.name)}`,
-          values
+          `/api/v1/system/systems/${encodeURIComponent(targetId)}`,
+          payload
         );
         message.success('更新成功');
       } else {
         // 新增
-        await axios.post('/api/v1/system/systems', values);
+        await axios.post('/api/v1/system/systems', payload);
         message.success('添加成功');
       }
 
@@ -143,25 +167,34 @@ const MainSystemConfigPage = () => {
       dataIndex: 'name',
       key: 'name',
       width: 300,
+      fixed: 'left',
     },
     {
       title: '系统简称',
       dataIndex: 'abbreviation',
       key: 'abbreviation',
       width: 150,
-      render: (text) => <Tag color="blue">{text}</Tag>
+      render: (text) => (text ? <Tag color="blue">{text}</Tag> : '-')
     },
     {
       title: '系统状态',
       dataIndex: 'status',
       key: 'status',
       width: 120,
-      render: (text) => <Tag color={getStatusColor(text)}>{text}</Tag>
+      render: (text) => (text ? <Tag color={getStatusColor(text)}>{text}</Tag> : '-')
     },
+    ...extraKeys.map((key) => ({
+      title: key,
+      key: `extra-${key}`,
+      dataIndex: ['extra', key],
+      width: 220,
+      render: (text) => (text ? String(text) : '-')
+    })),
     {
       title: '操作',
       key: 'action',
       width: 150,
+      fixed: 'right',
       render: (_, record) => (
         <Space>
           <Button
@@ -173,7 +206,7 @@ const MainSystemConfigPage = () => {
           </Button>
           <Popconfirm
             title="确定要删除这个系统吗？"
-            onConfirm={() => handleDelete(record.name)}
+            onConfirm={() => handleDelete(record.id || record.name)}
             okText="确定"
             cancelText="取消"
           >
@@ -187,7 +220,7 @@ const MainSystemConfigPage = () => {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div style={{ padding: embedded ? 0 : '24px' }}>
       <Card>
         <div style={{ marginBottom: 16 }}>
           <Title level={3}>标准主系统配置</Title>
@@ -224,8 +257,9 @@ const MainSystemConfigPage = () => {
         <Table
           columns={columns}
           dataSource={systems}
-          rowKey="name"
+          rowKey={(record, index) => record.id || `${record.name || 'row'}-${index}`}
           loading={loading}
+          scroll={{ x: 'max-content' }}
           pagination={{
             pageSize: 10,
             showSizeChanger: true,
@@ -241,6 +275,7 @@ const MainSystemConfigPage = () => {
         onOk={handleSubmit}
         width={600}
         destroyOnClose
+        bodyStyle={{ maxHeight: '70vh', overflowY: 'auto' }}
       >
         <Form
           form={form}
@@ -251,13 +286,11 @@ const MainSystemConfigPage = () => {
             label="系统名称"
             name="name"
             rules={[
-              { required: true, message: '请输入系统名称' },
               { max: 100, message: '系统名称不能超过100个字符' }
             ]}
           >
             <Input
               placeholder="例如：新一代核心、支付中台、新移动银行"
-              disabled={!!editingRecord}
             />
           </Form.Item>
 
@@ -265,9 +298,14 @@ const MainSystemConfigPage = () => {
             label="系统简称"
             name="abbreviation"
             rules={[
-              { required: true, message: '请输入系统简称' },
               { max: 20, message: '系统简称不能超过20个字符' },
-              { pattern: /^[A-Z0-9]+$/, message: '系统简称只能包含大写字母和数字' }
+              {
+                validator: (_, value) => {
+                  if (!value) return Promise.resolve();
+                  if (/^[A-Z0-9]+$/.test(value)) return Promise.resolve();
+                  return Promise.reject(new Error('系统简称只能包含大写字母和数字'));
+                }
+              }
             ]}
           >
             <Input
@@ -279,13 +317,28 @@ const MainSystemConfigPage = () => {
           <Form.Item
             label="系统状态"
             name="status"
-            rules={[{ required: true, message: '请选择系统状态' }]}
           >
             <Select
               placeholder="请选择系统状态"
+              allowClear
               options={statusOptions}
             />
           </Form.Item>
+
+          {extraKeys.length ? (
+            <div style={{ marginTop: 8 }}>
+              <Title level={5} style={{ marginBottom: 8 }}>其它字段（来自模板列）</Title>
+              {extraKeys.map((key) => (
+                <Form.Item key={key} label={key} name={['extra', key]}>
+                  {/(描述|备注|关联系统)/.test(key) ? (
+                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
+                  ) : (
+                    <Input />
+                  )}
+                </Form.Item>
+              ))}
+            </div>
+          ) : null}
 
           <div style={{ marginTop: 16, padding: 12, background: '#f0f2f5', borderRadius: 4 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>

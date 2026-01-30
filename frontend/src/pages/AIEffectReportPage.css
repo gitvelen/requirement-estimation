@@ -1,0 +1,110 @@
+.ai-effect-report {
+  padding: 0;
+}
+
+.ai-effect-nav {
+  position: sticky;
+  top: 16px;
+}
+
+.ai-filter-form {
+  margin-bottom: 16px;
+  row-gap: 12px;
+}
+
+.ai-section {
+  margin-top: 24px;
+}
+
+.ai-chart {
+  width: 100%;
+}
+
+.ai-bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-bar-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 60px;
+  align-items: center;
+  gap: 12px;
+}
+
+.ai-bar-label {
+  font-size: 13px;
+  color: #1f2a44;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-bar-track {
+  background: #eef2ff;
+  border-radius: 8px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.ai-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b6cff, #69a0ff);
+  border-radius: 8px;
+}
+
+.ai-bar-value {
+  font-weight: 600;
+  color: #3b4a6b;
+  text-align: right;
+}
+
+.ai-trend-wrapper {
+  border: 1px solid #e6e9f2;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fbfcff;
+}
+
+.ai-trend-labels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ai-trend-label {
+  background: #f5f7ff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #3b4a6b;
+}
+
+.ai-trend-label strong {
+  color: #1f2a44;
+}
+
+@media (max-width: 992px) {
+  .ai-bar-row {
+    grid-template-columns: 120px 1fr 50px;
+  }
+}
+
+@media (max-width: 768px) {
+  .ai-effect-nav {
+    position: static;
+  }
+
+  .ai-bar-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .ai-bar-value {
+    text-align: left;
+  }
+}

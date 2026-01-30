@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Select, Row, Col, Statistic, Form, Tooltip, InputNumber } from 'antd';
-import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
+import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Row, Col, Statistic, Form, InputNumber, Popover, Checkbox, AutoComplete, Select } from 'antd';
+import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
 const { Title, Text } = Typography;
-const { Option } = Select;
 const { TextArea } = Input;
 
 const EditPage = () => {
@@ -23,27 +22,46 @@ const EditPage = () => {
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editingFeature, setEditingFeature] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
+  const [aiSystemAnalysis, setAiSystemAnalysis] = useState(null);
+  const [addSystemVisible, setAddSystemVisible] = useState(false);
+  const [addingSystem, setAddingSystem] = useState(false);
+  const [mainSystemNames, setMainSystemNames] = useState([]);
+  const [systemSuggestions, setSystemSuggestions] = useState([]);
+  const [visibleColumns, setVisibleColumns] = useState([
+    '业务描述',
+    '输入',
+    '输出',
+    '依赖项',
+    '备注'
+  ]);
+  const [renameVisible, setRenameVisible] = useState(false);
+  const [newSystemName, setNewSystemName] = useState('');
 
-  // 加载评估结果
-  useEffect(() => {
-    fetchEvaluationResult();
-  }, [taskId]);
+  const [addSystemForm] = Form.useForm();
 
-  const fetchEvaluationResult = async () => {
+  const fetchEvaluationResult = useCallback(async (preferredSystem = '') => {
     try {
       setLoading(true);
       const response = await axios.get(`/api/v1/requirement/result/${taskId}`);
-      const { systems_data, modifications, confirmed } = response.data.data;
+      const { systems_data, modifications, confirmed, ai_system_analysis } = response.data.data;
 
       setSystemsData(systems_data);
       setModifications(modifications || []);
       setConfirmed(confirmed);
+      setAiSystemAnalysis(ai_system_analysis || null);
 
-      // 设置默认选中第一个系统
+      // 设置默认选中系统（优先：preferredSystem > 原先选中 > 第一个系统）
       const systemNames = Object.keys(systems_data);
-      if (systemNames.length > 0) {
-        setCurrentSystem(systemNames[0]);
-      }
+      setCurrentSystem((prev) => {
+        const preferred = (preferredSystem || '').trim();
+        if (preferred && systemNames.includes(preferred)) {
+          return preferred;
+        }
+        if (prev && systemNames.includes(prev)) {
+          return prev;
+        }
+        return systemNames[0] || '';
+      });
     } catch (error) {
       console.error('获取评估结果失败:', error);
       message.error(error.response?.data?.detail || '获取评估结果失败');
@@ -51,13 +69,95 @@ const EditPage = () => {
     } finally {
       setLoading(false);
     }
+  }, [taskId, navigate]);
+
+  // 加载评估结果
+  useEffect(() => {
+    fetchEvaluationResult();
+  }, [fetchEvaluationResult]);
+
+  const fetchMainSystems = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/v1/system/systems');
+      const systems = response.data?.data?.systems || [];
+      const names = systems.map(s => s.name).filter(Boolean);
+      setMainSystemNames(names);
+    } catch (error) {
+      console.warn('获取主系统清单失败:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMainSystems();
+  }, [fetchMainSystems]);
+
+  useEffect(() => {
+    const candidateNames = (aiSystemAnalysis?.candidate_systems || []).map(item => item?.name).filter(Boolean);
+    const merged = [...mainSystemNames, ...candidateNames];
+    const uniq = Array.from(new Set(merged.map(s => (s || '').trim()).filter(Boolean)));
+    setSystemSuggestions(uniq.map(name => ({ value: name })));
+  }, [mainSystemNames, aiSystemAnalysis]);
+
+  const normalizeListField = (value) => {
+    if (Array.isArray(value)) {
+      return value.join('、');
+    }
+    return value || '';
+  };
+
+  const normalizeFeatureForForm = (feature) => ({
+    ...feature,
+    输入: normalizeListField(feature['输入'] || feature['inputs']),
+    输出: normalizeListField(feature['输出'] || feature['outputs']),
+    依赖项: normalizeListField(feature['依赖项'] || feature['dependencies']),
+  });
+
+  const renderRemark = (text) => {
+    const raw = String(text || '').trim();
+    if (!raw) {
+      return <Text type="secondary">-</Text>;
+    }
+    const tagColors = {
+      归属依据: 'blue',
+      系统约束: 'purple',
+      集成点: 'geekblue',
+      知识引用: 'cyan',
+      待确认: 'orange',
+      归属复核: 'red',
+    };
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return (
+      <div>
+        {lines.map((line, idx) => {
+          const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
+          if (!match) {
+            return (
+              <div key={`${idx}-${line}`} style={{ marginBottom: 4 }}>
+                <Text style={{ whiteSpace: 'pre-wrap' }}>{line}</Text>
+              </div>
+            );
+          }
+          const label = match[1];
+          const content = match[2] || '';
+          return (
+            <div key={`${idx}-${label}`} style={{ marginBottom: 4 }}>
+              <Tag color={tagColors[label] || 'default'} style={{ marginRight: 6 }}>
+                {label}
+              </Tag>
+              <Text style={{ whiteSpace: 'pre-wrap' }}>{content}</Text>
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   // 打开编辑Modal
   const handleEdit = (feature, index) => {
-    setEditingFeature({ ...feature });
+    const normalized = normalizeFeatureForForm(feature);
+    setEditingFeature({ ...normalized });
     setEditingIndex(index);
-    form.setFieldsValue(feature);
+    form.setFieldsValue(normalized);
     setEditModalVisible(true);
   };
 
@@ -148,14 +248,15 @@ const EditPage = () => {
       功能模块: '',
       功能点: '',
       业务描述: '',
-      预估人天: 1,
-      复杂度: '中'
+      输入: '',
+      输出: '',
+      依赖项: '',
+      预估人天: 1
     });
     setEditingIndex(null);
     form.resetFields();
     form.setFieldsValue({
-      预估人天: 1,
-      复杂度: '中'
+      预估人天: 1
     });
     setEditModalVisible(true);
   };
@@ -202,56 +303,193 @@ const EditPage = () => {
   };
 
   // 保存功能点到知识库
-  const handleSaveToLibrary = async (feature) => {
-    try {
-      setSaving(true);
+  // （已移除）功能案例沉淀：当前版本仅维护系统知识库
 
-      await axios.post('/api/v1/knowledge/save_case', {
-        system_name: currentSystem,
-        module: feature['功能模块'],
-        feature_name: feature['功能点'],
-        description: feature['业务描述'],
-        estimated_days: feature['预估人天'],
-        complexity: feature['复杂度'],
-        tech_points: '',  // 可以从表单获取
-        dependencies: '',  // 可以从表单获取
-        project_case: `任务${taskId.substring(0, 8)}`,  // 使用任务ID作为案例来源
-        source: '人工修正'
-      });
-
-      message.success('已保存到知识库，AI后续将参考此案例');
-    } catch (error) {
-      console.error('保存到知识库失败:', error);
-      message.error('保存失败: ' + (error.response?.data?.detail || error.message));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // 确认完成
+  // 提交给管理员
   const handleConfirm = async () => {
     try {
       setLoading(true);
-      const response = await axios.post(`/api/v1/requirement/confirm/${taskId}`);
+      await axios.post(`/api/v1/tasks/${taskId}/submit-to-admin`);
 
-      message.success('确认成功，最终报告已生成');
+      message.success('已提交给管理员，等待分配专家');
       setConfirmed(true);
 
       Modal.success({
-        title: '报告生成成功',
-        content: `最终报告已生成，请前往任务列表下载`,
-        okText: '前往下载',
-        onOk: () => navigate('/tasks')
+        title: '提交成功',
+        content: `任务已提交给管理员，请等待分配专家`,
+        okText: '返回列表',
+        onOk: () => navigate('/tasks/my-tasks')
       });
     } catch (error) {
       console.error('确认失败:', error);
-      message.error('确认失败: ' + (error.response?.data?.detail || error.message));
+      message.error('提交失败: ' + (error.response?.data?.detail || error.message));
     } finally {
       setLoading(false);
     }
   };
 
   // 表格列配置
+  const optionalColumns = {
+    业务描述: {
+      title: '业务描述',
+      dataIndex: '业务描述',
+      key: '业务描述',
+      width: 300,
+      render: (text) => <Text style={{ whiteSpace: 'pre-wrap' }}>{text || '-'}</Text>,
+    },
+    输入: {
+      title: '输入',
+      dataIndex: '输入',
+      key: '输入',
+      width: 180,
+      render: (value) => {
+        const display = Array.isArray(value) ? value.join('、') : (value || '-');
+        return <Text style={{ whiteSpace: 'pre-wrap' }}>{display}</Text>;
+      },
+    },
+    输出: {
+      title: '输出',
+      dataIndex: '输出',
+      key: '输出',
+      width: 180,
+      render: (value) => {
+        const display = Array.isArray(value) ? value.join('、') : (value || '-');
+        return <Text style={{ whiteSpace: 'pre-wrap' }}>{display}</Text>;
+      },
+    },
+    依赖项: {
+      title: '依赖项',
+      dataIndex: '依赖项',
+      key: '依赖项',
+      width: 180,
+      render: (value) => {
+        const display = Array.isArray(value) ? value.join('、') : (value || '-');
+        return <Text style={{ whiteSpace: 'pre-wrap' }}>{display}</Text>;
+      },
+    },
+    备注: {
+      title: '备注',
+      dataIndex: '备注',
+      key: '备注',
+      width: 160,
+      render: (text) => renderRemark(text),
+    },
+  };
+
+  const handleRenameSystem = async () => {
+    const nextName = newSystemName.trim();
+    if (!nextName) {
+      message.warning('请输入新的系统名称');
+      return;
+    }
+    if (nextName === currentSystem) {
+      message.info('新名称与原名称相同');
+      return;
+    }
+    try {
+      setSaving(true);
+      await axios.put(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}/rename`, {
+        new_name: nextName
+      });
+      setRenameVisible(false);
+      setNewSystemName('');
+      await fetchEvaluationResult(nextName);
+      message.success('系统重命名成功');
+    } catch (error) {
+      console.error('重命名失败:', error);
+      message.error(error.response?.data?.detail || '重命名失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteSystem = async () => {
+    try {
+      setSaving(true);
+      await axios.delete(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}`);
+      await fetchEvaluationResult();
+      message.success('系统已删除');
+    } catch (error) {
+      console.error('删除系统失败:', error);
+      message.error(error.response?.data?.detail || '删除系统失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRebreakdownSystem = async () => {
+    if (!currentSystem) {
+      message.warning('请先选择系统');
+      return;
+    }
+    try {
+      setSaving(true);
+      const matched = (aiSystemAnalysis?.selected_systems || []).find((item) => item?.name === currentSystem);
+      const systemType = matched?.type || '主系统';
+      const response = await axios.post(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}/rebreakdown`, {
+        system_type: systemType
+      });
+      const data = response.data?.data || {};
+      await fetchEvaluationResult(currentSystem);
+      if (data.breakdown_error) {
+        message.error(`重新拆分失败：${data.breakdown_error}`);
+      } else {
+        message.success(`重新拆分完成：${data.old_features || 0} → ${data.new_features || 0} 个功能点`);
+      }
+    } catch (error) {
+      console.error('重新拆分失败:', error);
+      message.error(error.response?.data?.detail || '重新拆分失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submitAddSystem = async (payload) => {
+    try {
+      const name = (payload?.name || '').trim();
+      if (!name) {
+        message.warning('请输入系统名称');
+        return;
+      }
+      const type = (payload?.type || '主系统').trim() || '主系统';
+
+      setAddingSystem(true);
+      const response = await axios.post(`/api/v1/requirement/systems/${taskId}`, {
+        name,
+        type,
+        auto_breakdown: payload?.auto_breakdown !== false
+      });
+      const data = response.data?.data || {};
+      const finalName = data.final_system_name || name;
+      const breakdownError = data.breakdown_error;
+
+      setAddSystemVisible(false);
+      addSystemForm.resetFields();
+
+      await fetchEvaluationResult(finalName);
+
+      if (breakdownError) {
+        message.warning(`系统已新增，但自动拆分失败：${breakdownError}`);
+      } else {
+        message.success(`系统已新增并完成自动拆分（${data.added_features || 0}个功能点）`);
+      }
+    } catch (error) {
+      console.error('新增系统失败:', error);
+      message.error(error.response?.data?.detail || '新增系统失败');
+    } finally {
+      setAddingSystem(false);
+    }
+  };
+
+  const openAddSystemModal = (prefillName = '') => {
+    addSystemForm.setFieldsValue({
+      name: (prefillName || '').trim(),
+      type: '主系统',
+      auto_breakdown: true,
+    });
+    setAddSystemVisible(true);
+  };
+
   const columns = [
     {
       title: '序号',
@@ -264,26 +502,14 @@ const EditPage = () => {
       dataIndex: '功能模块',
       key: '功能模块',
       width: 150,
-      ellipsis: true,
+      render: (value) => <Text style={{ whiteSpace: 'pre-wrap' }}>{value || '-'}</Text>,
     },
     {
       title: '功能点',
       dataIndex: '功能点',
       key: '功能点',
       width: 200,
-      ellipsis: true,
-    },
-    {
-      title: '业务描述',
-      dataIndex: '业务描述',
-      key: '业务描述',
-      width: 300,
-      ellipsis: true,
-      render: (text) => (
-        <Tooltip title={text}>
-          <Text ellipsis>{text}</Text>
-        </Tooltip>
-      ),
+      render: (value) => <Text style={{ whiteSpace: 'pre-wrap' }}>{value || '-'}</Text>,
     },
     {
       title: '预估人天',
@@ -291,16 +517,6 @@ const EditPage = () => {
       key: '预估人天',
       width: 100,
       render: (value) => <Text strong>{value}</Text>,
-    },
-    {
-      title: '复杂度',
-      dataIndex: '复杂度',
-      key: '复杂度',
-      width: 100,
-      render: (value) => {
-        const colorMap = { '高': 'red', '中': 'orange', '低': 'green' };
-        return <Tag color={colorMap[value] || 'default'}>{value}</Tag>;
-      },
     },
     {
       title: '操作',
@@ -334,44 +550,31 @@ const EditPage = () => {
               删除
             </Button>
           </Popconfirm>
-          <Popconfirm
-            title="确定要将此功能点存入知识库吗？存入后AI会参考此案例进行后续评估"
-            onConfirm={() => handleSaveToLibrary(record)}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button
-              type="link"
-              size="small"
-              style={{ color: '#52c41a' }}
-              disabled={saving}
-            >
-              存入知识库
-            </Button>
-          </Popconfirm>
         </Space>
       ),
     },
+  ];
+
+  const resolvedColumns = [
+    ...columns.slice(0, 3),
+    ...visibleColumns.map((key) => optionalColumns[key]).filter(Boolean),
+    columns[3],
+    columns[4],
   ];
 
   // 计算统计数据
   const calculateStats = () => {
     let totalFeatures = 0;
     let totalDays = 0;
-    let complexityCount = { 高: 0, 中: 0, 低: 0 };
 
     Object.values(systemsData).forEach(features => {
       totalFeatures += features.length;
       features.forEach(f => {
         totalDays += f['预估人天'] || 0;
-        const complexity = f['复杂度'];
-        if (complexityCount.hasOwnProperty(complexity)) {
-          complexityCount[complexity]++;
-        }
       });
     });
 
-    return { totalFeatures, totalDays, complexityCount };
+    return { totalFeatures, totalDays };
   };
 
   const stats = calculateStats();
@@ -389,13 +592,121 @@ const EditPage = () => {
             返回列表
           </Button>
           <Title level={4} style={{ margin: 0 }}>
-            在线编辑评估结果
+            功能点编辑
           </Title>
           <Tag color={confirmed ? 'success' : 'processing'}>
-            {confirmed ? '已确认' : '编辑中'}
+            {confirmed ? '已提交' : '编辑中'}
           </Tag>
         </Space>
       </div>
+
+      {/* 系统校准卡片（知识库A档：用于提升系统识别/拆分归属准确性） */}
+      {aiSystemAnalysis && (
+        <Card
+          size="small"
+          style={{ marginBottom: 16 }}
+          title="系统校准（知识库）"
+          extra={(
+            <Button size="small" onClick={() => openAddSystemModal()} disabled={confirmed || saving}>
+              新增系统（默认自动拆分）
+            </Button>
+          )}
+        >
+          <Row gutter={[16, 8]}>
+            <Col span={24}>
+              <Text type="secondary">已选系统（鼠标悬停查看理由/知识引用）：</Text>
+              <div style={{ marginTop: 8 }}>
+                <Space wrap>
+                  {(aiSystemAnalysis.selected_systems || []).map((sys) => {
+                    const confidence = sys?.confidence || '中';
+                    const color = confidence === '高' ? 'green' : confidence === '低' ? 'orange' : 'blue';
+                    const kbHits = sys?.kb_hits || [];
+                    const reasons = sys?.reasons || [];
+                    const pop = (
+                      <div style={{ maxWidth: 520 }}>
+                        <div><Text strong>类型：</Text><Text>{sys?.type || '-'}</Text></div>
+                        <div><Text strong>置信度：</Text><Text>{confidence}</Text></div>
+                        {reasons.length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <Text strong>理由：</Text>
+                            <ul style={{ margin: '4px 0 0 18px' }}>
+                              {reasons.map((r, idx) => <li key={idx}><Text>{String(r)}</Text></li>)}
+                            </ul>
+                          </div>
+                        )}
+                        <div style={{ marginTop: 8 }}>
+                          <Text strong>知识引用：</Text>
+                          {kbHits.length === 0 ? (
+                            <Text type="secondary"> 无（该系统未导入system_profile）</Text>
+                          ) : (
+                            <ul style={{ margin: '4px 0 0 18px' }}>
+                              {kbHits.map((h, idx) => (
+                                <li key={idx}>
+                                  <Text>{h?.source_file || 'system_profile'}</Text>
+                                  <Text type="secondary"> (sim={h?.similarity})</Text>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    );
+                    return (
+                      <Popover key={sys?.name} content={pop} title={sys?.name}>
+                        <Tag color={color}>{sys?.name}</Tag>
+                      </Popover>
+                    );
+                  })}
+                </Space>
+              </div>
+              {(aiSystemAnalysis.missing_system_profiles || []).length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="warning">
+                    这些系统缺少system_profile画像，校准能力有限：{(aiSystemAnalysis.missing_system_profiles || []).join('、')}
+                  </Text>
+                </div>
+              )}
+            </Col>
+
+            <Col span={24}>
+              <Text type="secondary">候选系统（知识库命中，可一键加入Tab）：</Text>
+              <div style={{ marginTop: 8 }}>
+                <Space wrap>
+                  {(aiSystemAnalysis.candidate_systems || []).slice(0, 8).map((cand) => {
+                    const exists = Object.prototype.hasOwnProperty.call(systemsData, cand?.name);
+                    return (
+                      <Space key={cand?.name} size={4}>
+                        <Tag>{cand?.name} <Text type="secondary">({cand?.score})</Text></Tag>
+                        {!exists && !confirmed && (
+                          <Button
+                            size="small"
+                            type="link"
+                            onClick={() => submitAddSystem({ name: cand?.name, type: '主系统', auto_breakdown: true })}
+                            disabled={saving || addingSystem}
+                          >
+                            加入
+                          </Button>
+                        )}
+                      </Space>
+                    );
+                  })}
+                </Space>
+              </div>
+            </Col>
+
+            {(aiSystemAnalysis.questions || []).length > 0 && (
+              <Col span={24}>
+                <Text type="secondary">待确认问题：</Text>
+                <ul style={{ margin: '8px 0 0 18px' }}>
+                  {(aiSystemAnalysis.questions || []).slice(0, 8).map((q, idx) => (
+                    <li key={idx}><Text>{String(q)}</Text></li>
+                  ))}
+                </ul>
+              </Col>
+            )}
+          </Row>
+        </Card>
+      )}
 
       {/* 统计信息 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -404,27 +715,6 @@ const EditPage = () => {
         </Col>
         <Col span={6}>
           <Statistic title="总工作量（人天）" value={stats.totalDays.toFixed(1)} />
-        </Col>
-        <Col span={4}>
-          <Statistic
-            title="高复杂度"
-            value={stats.complexityCount.高}
-            valueStyle={{ color: '#cf1322' }}
-          />
-        </Col>
-        <Col span={4}>
-          <Statistic
-            title="中复杂度"
-            value={stats.complexityCount.中}
-            valueStyle={{ color: '#fa8c16' }}
-          />
-        </Col>
-        <Col span={4}>
-          <Statistic
-            title="低复杂度"
-            value={stats.complexityCount.低}
-            valueStyle={{ color: '#52c41a' }}
-          />
         </Col>
       </Row>
 
@@ -439,6 +729,62 @@ const EditPage = () => {
           >
             添加功能点
           </Button>
+          <Popover
+            placement="bottom"
+            content={(
+              <Checkbox.Group
+                value={visibleColumns}
+                onChange={(values) => setVisibleColumns(values)}
+                options={[
+                  { label: '业务描述', value: '业务描述' },
+                  { label: '输入', value: '输入' },
+                  { label: '输出', value: '输出' },
+                  { label: '依赖项', value: '依赖项' },
+                  { label: '备注', value: '备注' },
+                ]}
+              />
+            )}
+            title="列设置"
+          >
+            <Button>列设置</Button>
+          </Popover>
+          <Button
+            onClick={() => openAddSystemModal()}
+            disabled={confirmed || saving}
+          >
+            新增系统
+          </Button>
+          <Button
+            onClick={() => {
+              setNewSystemName(currentSystem);
+              setRenameVisible(true);
+            }}
+            disabled={confirmed || !currentSystem}
+          >
+            重命名系统
+          </Button>
+          <Popconfirm
+            title="确定要重新拆分当前系统吗？将覆盖该系统下所有功能点（建议先查看修改历史）"
+            onConfirm={handleRebreakdownSystem}
+            okText="确定"
+            cancelText="取消"
+            disabled={confirmed || !currentSystem}
+          >
+            <Button disabled={confirmed || !currentSystem}>
+              重新拆分当前系统
+            </Button>
+          </Popconfirm>
+          <Popconfirm
+            title="确定要删除当前系统吗？该系统下所有功能点将被移除"
+            onConfirm={handleDeleteSystem}
+            okText="确定"
+            cancelText="取消"
+            disabled={confirmed || !currentSystem}
+          >
+            <Button danger disabled={confirmed || !currentSystem}>
+              删除系统
+            </Button>
+          </Popconfirm>
           <Button
             icon={<HistoryOutlined />}
             onClick={() => setHistoryVisible(true)}
@@ -447,9 +793,9 @@ const EditPage = () => {
           </Button>
           {!confirmed && (
             <Popconfirm
-              title="确认后将生成最终报告，确认后无法继续编辑"
+              title="提交后将等待管理员分配专家，提交后无法继续编辑"
               onConfirm={handleConfirm}
-              okText="确认完成"
+              okText="提交"
               cancelText="取消"
             >
               <Button
@@ -458,7 +804,7 @@ const EditPage = () => {
                 loading={loading}
                 disabled={saving}
               >
-                确认完成
+                提交给管理员
               </Button>
             </Popconfirm>
           )}
@@ -474,7 +820,7 @@ const EditPage = () => {
           key: system,
           children: (
             <Table
-              columns={columns}
+              columns={resolvedColumns}
               dataSource={systemsData[system]}
               rowKey={(record, index) => index}
               pagination={false}
@@ -524,32 +870,115 @@ const EditPage = () => {
             <TextArea rows={4} placeholder="详细描述该功能点的业务需求..." />
           </Form.Item>
           <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item
+                label="输入"
+                name="输入"
+              >
+                <TextArea rows={2} placeholder="输入项，多个用、或换行分隔" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                label="输出"
+                name="输出"
+              >
+                <TextArea rows={2} placeholder="输出项，多个用、或换行分隔" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                label="依赖项"
+                name="依赖项"
+              >
+                <TextArea rows={2} placeholder="依赖项，多个用、或换行分隔" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
             <Col span={12}>
               <Form.Item
                 label="预估人天"
                 name="预估人天"
                 rules={[
                   { required: true, message: '请输入预估人天' },
-                  { type: 'number', min: 0.5, max: 50, message: '人天范围: 0.5-50' }
+                  { type: 'number', min: 0.5, max: 5, message: '人天范围: 0.5-5' }
                 ]}
               >
-                <InputNumber step={0.5} min={0.5} max={50} placeholder="建议范围: 0.5-5" style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                label="复杂度"
-                name="复杂度"
-                rules={[{ required: true, message: '请选择复杂度' }]}
-              >
-                <Select placeholder="选择复杂度">
-                  <Option value="低">低</Option>
-                  <Option value="中">中</Option>
-                  <Option value="高">高</Option>
-                </Select>
+                <InputNumber step={0.5} min={0.5} max={5} placeholder="建议范围: 0.5-5" style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="新增系统Tab（默认自动拆分）"
+        open={addSystemVisible}
+        onCancel={() => setAddSystemVisible(false)}
+        onOk={async () => {
+          const values = await addSystemForm.validateFields();
+          await submitAddSystem(values);
+        }}
+        confirmLoading={addingSystem}
+        okText="新增并拆分"
+        cancelText="取消"
+      >
+        <Form
+          form={addSystemForm}
+          layout="vertical"
+          initialValues={{ type: '主系统', auto_breakdown: true }}
+        >
+          <Form.Item
+            label="系统名称"
+            name="name"
+            rules={[{ required: true, message: '请输入系统名称' }]}
+          >
+            <AutoComplete
+              options={systemSuggestions}
+              placeholder="输入系统名称（可直接输入，也可从候选/系统清单提示中选择）"
+              filterOption={(inputValue, option) =>
+                (option?.value || '').toUpperCase().includes((inputValue || '').toUpperCase())
+              }
+            />
+          </Form.Item>
+          <Form.Item label="系统类型" name="type">
+            <Select
+              options={[
+                { label: '主系统', value: '主系统' },
+                { label: '子系统', value: '子系统' },
+                { label: '上游系统', value: '上游系统' },
+                { label: '下游系统', value: '下游系统' },
+                { label: '配合系统', value: '配合系统' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="auto_breakdown" valuePropName="checked">
+            <Checkbox>新增后自动拆分功能点</Checkbox>
+          </Form.Item>
+          <Text type="secondary">
+            提示：即使自动拆分失败，也会保留系统Tab，便于你手工补齐功能点。
+          </Text>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="重命名系统"
+        open={renameVisible}
+        onCancel={() => setRenameVisible(false)}
+        onOk={handleRenameSystem}
+        confirmLoading={saving}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form layout="vertical">
+          <Form.Item label="新系统名称">
+            <Input
+              value={newSystemName}
+              onChange={(e) => setNewSystemName(e.target.value)}
+              placeholder="请输入新的系统名称"
+            />
+          </Form.Item>
         </Form>
       </Modal>
 
@@ -579,8 +1008,24 @@ const EditPage = () => {
               key: 'operation',
               width: 80,
               render: (op) => {
-                const opMap = { add: '添加', update: '修改', delete: '删除' };
-                const colorMap = { add: 'green', update: 'blue', delete: 'red' };
+                const opMap = {
+                  add: '添加',
+                  update: '修改',
+                  delete: '删除',
+                  add_system: '新增系统',
+                  rebreakdown_system: '重新拆分',
+                  rename_system: '重命名系统',
+                  delete_system: '删除系统'
+                };
+                const colorMap = {
+                  add: 'green',
+                  update: 'blue',
+                  delete: 'red',
+                  add_system: 'geekblue',
+                  rebreakdown_system: 'purple',
+                  rename_system: 'orange',
+                  delete_system: 'red'
+                };
                 return <Tag color={colorMap[op]}>{opMap[op]}</Tag>;
               },
             },
@@ -589,7 +1034,6 @@ const EditPage = () => {
               dataIndex: 'system',
               key: 'system',
               width: 150,
-              ellipsis: true,
             },
             {
               title: '字段',
@@ -603,7 +1047,6 @@ const EditPage = () => {
               dataIndex: 'old_value',
               key: 'old_value',
               width: 150,
-              ellipsis: true,
               render: (val) => val !== undefined ? String(val) : '-',
             },
             {
@@ -611,7 +1054,6 @@ const EditPage = () => {
               dataIndex: 'new_value',
               key: 'new_value',
               width: 150,
-              ellipsis: true,
               render: (val) => val !== undefined ? String(val) : '-',
             },
           ]}

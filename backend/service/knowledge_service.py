@@ -5,6 +5,9 @@
 import logging
 import os
 import json
+import uuid
+import re
+import csv
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from contextlib import contextmanager
@@ -15,8 +18,10 @@ except ImportError:
     METRICS_LOCK_AVAILABLE = False
 
 from backend.service.milvus_client import get_milvus_client
+from backend.service.local_vector_store import LocalVectorStore
 from backend.service.embedding_service import get_embedding_service
 from backend.service.document_parser import get_document_parser
+from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +31,250 @@ class KnowledgeService:
 
     # 知识类型
     TYPE_SYSTEM_PROFILE = "system_profile"  # 系统知识
-    TYPE_FEATURE_CASE = "feature_case"      # 功能案例
-    TYPE_TECH_SPEC = "tech_spec"            # 技术规范
-    METRICS_FILE = os.path.join("data", "knowledge_metrics.json")
-    METRICS_LOCK_FILE = f"{METRICS_FILE}.lock"
+
+    # 非结构化导入切分策略（本期：本地向量库）
+    UNSTRUCTURED_CHUNK_SIZE = 800
+    UNSTRUCTURED_CHUNK_OVERLAP = 120
+    MAX_UNSTRUCTURED_CHUNKS = 200
 
     def __init__(self):
         """初始化服务"""
-        self.milvus_client = get_milvus_client()
+        self.metrics_file = os.path.join(settings.REPORT_DIR, "knowledge_metrics.json")
+        self.metrics_lock_file = f"{self.metrics_file}.lock"
+        self.retrieval_log_file = os.path.join(settings.REPORT_DIR, "knowledge_retrieval_logs.json")
+        self.retrieval_log_lock_file = f"{self.retrieval_log_file}.lock"
+
+        self.vector_store_backend = settings.KNOWLEDGE_VECTOR_STORE or "local"
+        self.local_store_path = os.path.join(settings.REPORT_DIR, "knowledge_store.json")
+
+        if self.vector_store_backend == "milvus":
+            try:
+                self.vector_store = get_milvus_client()
+                logger.info("知识库向量存储后端: milvus")
+            except Exception as e:
+                logger.warning(f"Milvus不可用，回退到本地向量库: {e}")
+                self.vector_store_backend = "local"
+                self.vector_store = LocalVectorStore(self.local_store_path)
+        else:
+            self.vector_store_backend = "local"
+            self.vector_store = LocalVectorStore(self.local_store_path)
+            logger.info("知识库向量存储后端: local")
+
         self.embedding_service = get_embedding_service()
         self.document_parser = get_document_parser()
+        self._system_list: Optional[List[str]] = None
         logger.info("知识库服务初始化完成")
+
+    def _load_system_list(self) -> List[str]:
+        """加载标准系统列表（用于从文本/文件名粗略推断 system_name）。"""
+        if self._system_list is not None:
+            return self._system_list
+
+        system_list: List[str] = []
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        md_path = os.path.join(base_dir, "system_list.md")
+        if os.path.exists(md_path):
+            try:
+                with open(md_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or line.startswith(">"):
+                            continue
+                        if "系统名称" in line and "英文简称" in line:
+                            continue
+                        if "|" in line:
+                            parts = [p.strip() for p in line.split("|")]
+                            if parts and parts[0]:
+                                system_list.append(parts[0])
+                self._system_list = system_list
+                return system_list
+            except Exception as e:
+                logger.warning(f"加载system_list.md失败: {e}，尝试加载CSV文件")
+
+        csv_path = os.path.join(base_dir, "system_list.csv")
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.reader(f))
+                    if not rows:
+                        self._system_list = system_list
+                        return system_list
+
+                    header = rows[0]
+                    header_map = {str(cell).strip(): idx for idx, cell in enumerate(header) if cell}
+                    name_idx = None
+                    if "系统名称" in header_map:
+                        name_idx = header_map["系统名称"]
+                    elif "name" in header_map:
+                        name_idx = header_map["name"]
+
+                    data_rows = rows[1:] if name_idx is not None else rows
+                    if name_idx is None:
+                        name_idx = 0
+
+                    for row in data_rows:
+                        if name_idx < len(row):
+                            name = str(row[name_idx]).strip() if row[name_idx] is not None else ""
+                            if name:
+                                system_list.append(name)
+            except Exception as e:
+                logger.warning(f"加载system_list.csv失败: {e}")
+
+        self._system_list = system_list
+        return system_list
+
+    def _guess_system_name(self, text: str, filename: str) -> str:
+        """从文本/文件名猜测 system_name（尽量不为空，避免本地向量库拒绝写入）。"""
+        system_list = self._load_system_list()
+        haystack = text or ""
+
+        best = None
+        best_pos = None
+        if system_list and haystack:
+            # 简单匹配：命中位置越靠前越优，长度越长越优
+            for name in system_list:
+                if not name:
+                    continue
+                pos = haystack.find(name)
+                if pos < 0:
+                    continue
+                if best is None:
+                    best = name
+                    best_pos = pos
+                    continue
+                if pos < (best_pos or 0) or (pos == best_pos and len(name) > len(best)):
+                    best = name
+                    best_pos = pos
+
+        if best:
+            return best
+
+        stem = os.path.splitext(os.path.basename(filename or ""))[0].strip()
+        if stem:
+            stem = re.sub(r"[_\\-]+", " ", stem).strip()
+            return stem[:50]
+
+        return "通用"
+
+    def _coerce_to_text(self, parsed: Any) -> str:
+        """将解析结果尽量转为可用于 embedding 的纯文本。"""
+        if parsed is None:
+            return ""
+
+        if isinstance(parsed, str):
+            return parsed
+
+        if isinstance(parsed, bytes):
+            for encoding in ("utf-8", "utf-8-sig", "gbk"):
+                try:
+                    return parsed.decode(encoding)
+                except Exception:
+                    continue
+            return ""
+
+        if isinstance(parsed, list):
+            parts: List[str] = []
+            for item in parsed:
+                if isinstance(item, dict):
+                    line = " | ".join(
+                        f"{k}:{str(v).strip()}" for k, v in item.items() if str(v).strip()
+                    )
+                    if line.strip():
+                        parts.append(line)
+                elif isinstance(item, (list, tuple)):
+                    line = " | ".join(str(v).strip() for v in item if str(v).strip())
+                    if line.strip():
+                        parts.append(line)
+                else:
+                    s = str(item).strip()
+                    if s:
+                        parts.append(s)
+            return "\n".join(parts)
+
+        if isinstance(parsed, dict):
+            # DOCX
+            if "paragraphs" in parsed:
+                parts: List[str] = []
+                for para in parsed.get("paragraphs") or []:
+                    if isinstance(para, dict):
+                        t = str(para.get("text") or "").strip()
+                        if t:
+                            parts.append(t)
+                for table in parsed.get("tables") or []:
+                    if not isinstance(table, dict):
+                        continue
+                    for row in table.get("data") or []:
+                        if isinstance(row, list):
+                            line = " | ".join(str(v).strip() for v in row if str(v).strip())
+                            if line.strip():
+                                parts.append(line)
+                return "\n".join(parts)
+
+            # PDF
+            if "pages" in parsed:
+                parts: List[str] = []
+                for page in parsed.get("pages") or []:
+                    if isinstance(page, dict):
+                        t = str(page.get("text") or "").strip()
+                        if t:
+                            parts.append(t)
+                return "\n".join(parts)
+
+            # PPTX
+            if "slides" in parsed:
+                parts: List[str] = []
+                for slide in parsed.get("slides") or []:
+                    if isinstance(slide, dict):
+                        t = str(slide.get("text") or "").strip()
+                        if t:
+                            parts.append(t)
+                return "\n".join(parts)
+
+            # XLSX（sheet -> rows）
+            if parsed and all(isinstance(v, list) for v in parsed.values()):
+                parts: List[str] = []
+                for sheet_name, rows in parsed.items():
+                    if not isinstance(rows, list):
+                        continue
+                    parts.append(f"[Sheet] {sheet_name}")
+                    for row in rows[:200]:
+                        if isinstance(row, list):
+                            line = " | ".join(str(v).strip() for v in row if v is not None and str(v).strip())
+                            if line.strip():
+                                parts.append(line)
+                return "\n".join(parts)
+
+            # 兜底：JSON
+            try:
+                return json.dumps(parsed, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(parsed)
+
+        return str(parsed)
+
+    def _chunk_text(self, text: str) -> List[str]:
+        """按固定窗口切分文本，适配 embedding 单次输入长度限制。"""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return []
+
+        size = int(self.UNSTRUCTURED_CHUNK_SIZE)
+        overlap = int(self.UNSTRUCTURED_CHUNK_OVERLAP)
+        if size <= 0:
+            return [cleaned]
+        if overlap < 0 or overlap >= size:
+            overlap = max(min(120, size // 5), 0)
+
+        step = max(size - overlap, 1)
+        chunks: List[str] = []
+        for start in range(0, len(cleaned), step):
+            chunk = cleaned[start : start + size].strip()
+            if chunk:
+                chunks.append(chunk)
+            if len(chunks) >= int(self.MAX_UNSTRUCTURED_CHUNKS):
+                break
+        return chunks
 
     def _default_metrics(self) -> Dict[str, Any]:
         return {
@@ -64,8 +302,8 @@ class KnowledgeService:
     @contextmanager
     def _metrics_lock(self):
         if METRICS_LOCK_AVAILABLE:
-            os.makedirs("data", exist_ok=True)
-            with open(self.METRICS_LOCK_FILE, "a") as lock_file:
+            os.makedirs(os.path.dirname(self.metrics_lock_file) or ".", exist_ok=True)
+            with open(self.metrics_lock_file, "a") as lock_file:
                 fcntl.flock(lock_file, fcntl.LOCK_EX)
                 try:
                     yield
@@ -75,10 +313,10 @@ class KnowledgeService:
             yield
 
     def _load_metrics_unlocked(self) -> Dict[str, Any]:
-        if not os.path.exists(self.METRICS_FILE):
+        if not os.path.exists(self.metrics_file):
             return self._default_metrics()
         try:
-            with open(self.METRICS_FILE, "r", encoding="utf-8") as f:
+            with open(self.metrics_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return self._ensure_metrics_defaults(data)
         except Exception as e:
@@ -86,11 +324,11 @@ class KnowledgeService:
             return self._default_metrics()
 
     def _save_metrics_unlocked(self, data: Dict[str, Any]) -> None:
-        os.makedirs("data", exist_ok=True)
-        tmp_path = f"{self.METRICS_FILE}.tmp"
+        os.makedirs(os.path.dirname(self.metrics_file) or ".", exist_ok=True)
+        tmp_path = f"{self.metrics_file}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, self.METRICS_FILE)
+        os.replace(tmp_path, self.metrics_file)
 
     @contextmanager
     def _metrics_context(self):
@@ -103,13 +341,52 @@ class KnowledgeService:
         with self._metrics_lock():
             return self._load_metrics_unlocked()
 
+    @contextmanager
+    def _retrieval_lock(self):
+        if METRICS_LOCK_AVAILABLE:
+            os.makedirs(os.path.dirname(self.retrieval_log_lock_file) or ".", exist_ok=True)
+            with open(self.retrieval_log_lock_file, "a") as lock_file:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+        else:
+            yield
+
+    def _load_retrieval_logs_unlocked(self) -> List[Dict[str, Any]]:
+        if not os.path.exists(self.retrieval_log_file):
+            return []
+        try:
+            with open(self.retrieval_log_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.warning(f"读取知识检索日志失败: {e}")
+            return []
+
+    def _save_retrieval_logs_unlocked(self, items: List[Dict[str, Any]]) -> None:
+        os.makedirs(os.path.dirname(self.retrieval_log_file) or ".", exist_ok=True)
+        tmp_path = f"{self.retrieval_log_file}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, self.retrieval_log_file)
+
+    @contextmanager
+    def _retrieval_context(self):
+        with self._retrieval_lock():
+            items = self._load_retrieval_logs_unlocked()
+            yield items
+            self._save_retrieval_logs_unlocked(items)
+
     def import_from_file(
         self,
         file_content: bytes,
         filename: str,
         file_type: str = None,
         auto_extract: bool = True,
-        knowledge_type: Optional[str] = None
+        knowledge_type: Optional[str] = None,
+        system_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         从文件导入知识
@@ -132,6 +409,14 @@ class KnowledgeService:
         try:
             logger.info(f"开始导入文件: {filename}")
 
+            normalized_system = str(system_name or "").strip()
+            if not normalized_system:
+                raise ValueError("system_name不能为空")
+
+            normalized_type = str(knowledge_type or "").strip()
+            if normalized_type and normalized_type != self.TYPE_SYSTEM_PROFILE:
+                raise ValueError("当前仅支持导入 system_profile（系统知识）")
+
             # 1. 解析文档
             parsed_data = self.document_parser.parse(
                 file_content=file_content,
@@ -140,18 +425,21 @@ class KnowledgeService:
             )
 
             # 2. 提取结构化知识
+            extracted = {}
             if auto_extract:
                 extracted = self.document_parser.extract_system_knowledge(
                     parsed_data,
-                    expected_type=knowledge_type
+                    expected_type=self.TYPE_SYSTEM_PROFILE
                 )
-            else:
-                extracted = {"raw": parsed_data}
+
+            if extracted.get("type") != "system_profile" or not extracted.get("systems"):
+                raise ValueError("未能从文档中提取系统知识，请使用DOCX/PPTX模板填写后再导入")
 
             # 3. 导入到向量库
             result = self._import_extracted_data(
                 extracted_data=extracted,
-                source_file=filename
+                source_file=filename,
+                system_name=normalized_system
             )
 
             logger.info(f"文件导入完成: {result}")
@@ -170,7 +458,8 @@ class KnowledgeService:
     def _import_extracted_data(
         self,
         extracted_data: Dict[str, Any],
-        source_file: str
+        source_file: str,
+        system_name: str
     ) -> Dict[str, Any]:
         """
         导入提取的数据
@@ -197,20 +486,27 @@ class KnowledgeService:
             knowledge_list = []
             for system in systems:
                 try:
+                    system_record = dict(system or {})
+                    original_name = str(system_record.get("system_name") or "").strip()
+                    if original_name and original_name != system_name:
+                        system_record["original_system_name"] = original_name
+                    system_record["system_name"] = system_name
+
                     # 构建检索文本
-                    content = self._build_system_profile_text(system)
+                    content = self._build_system_profile_text(system_record)
 
                     # 生成embedding
                     embedding = self.embedding_service.generate_embedding(content)
 
                     # 构建元数据
                     metadata = {
-                        **system,
+                        **system_record,
+                        "kb_system_name": system_name,
                         "imported_at": datetime.now().isoformat()
                     }
 
                     knowledge_list.append({
-                        "system_name": system["system_name"],
+                        "system_name": system_name,
                         "knowledge_type": self.TYPE_SYSTEM_PROFILE,
                         "content": content,
                         "embedding": embedding,
@@ -218,68 +514,22 @@ class KnowledgeService:
                         "source_file": source_file
                     })
 
-                    success += 1
-
                 except Exception as e:
                     failed += 1
                     errors.append({
-                        "item": system.get("system_name", "unknown"),
+                        "item": (system or {}).get("system_name", "unknown"),
                         "error": str(e)
                     })
 
             # 批量插入
             if knowledge_list:
-                self.milvus_client.batch_insert_knowledge(knowledge_list)
-
-        # 功能案例
-        elif data_type == "feature_case":
-            cases = extracted_data.get("cases", [])
-            total = len(cases)
-
-            knowledge_list = []
-            for case in cases:
-                try:
-                    # 构建检索文本
-                    content = self._build_feature_case_text(case)
-
-                    # 生成embedding
-                    embedding = self.embedding_service.generate_embedding(content)
-
-                    # 构建元数据
-                    metadata = {
-                        **case,
-                        "imported_at": datetime.now().isoformat()
-                    }
-
-                    knowledge_list.append({
-                        "system_name": case["system_name"],
-                        "knowledge_type": self.TYPE_FEATURE_CASE,
-                        "content": content,
-                        "embedding": embedding,
-                        "metadata": metadata,
-                        "source_file": source_file
-                    })
-
-                    success += 1
-
-                except Exception as e:
-                    failed += 1
-                    errors.append({
-                        "item": case.get("feature_name", "unknown"),
-                        "error": str(e)
-                    })
-
-            # 批量插入
-            if knowledge_list:
-                self.milvus_client.batch_insert_knowledge(knowledge_list)
-
-        # 非结构化数据
-        elif data_type == "unstructured":
-            # TODO: 实现非结构化数据的智能提取
-            total = 0
-            success = 0
-            failed = 0
-            errors.append("暂不支持非结构化数据的自动导入")
+                inserted = self.vector_store.batch_insert_knowledge(knowledge_list)
+                success = int(inserted.get("success") or 0)
+                failed += int(inserted.get("failed") or 0)
+                if inserted.get("failed"):
+                    errors.append(f"部分条目写入向量库失败: {inserted.get('failed')}")
+        else:
+            errors.append("无法识别的导入数据类型（仅支持system_profile）")
 
         return {
             "total": total,
@@ -294,7 +544,11 @@ class KnowledgeService:
         system_name: str = None,
         knowledge_type: str = None,
         top_k: int = 5,
-        similarity_threshold: float = 0.6
+        similarity_threshold: float = 0.6,
+        task_id: Optional[str] = None,
+        module: Optional[str] = None,
+        feature_name: Optional[str] = None,
+        stage: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         检索相似知识
@@ -314,7 +568,7 @@ class KnowledgeService:
             query_embedding = self.embedding_service.generate_embedding(query_text)
 
             # 执行向量搜索
-            results = self.milvus_client.search_knowledge(
+            results = self.vector_store.search_knowledge(
                 query_embedding=query_embedding,
                 system_name=system_name,
                 knowledge_type=knowledge_type,
@@ -325,6 +579,17 @@ class KnowledgeService:
             # 记录检索事件（用于效果评估）
             max_similarity = max([r.get("similarity", 0.0) for r in results]) if results else 0.0
             self.log_search_event(success=len(results) > 0, similarity=max_similarity)
+            self.log_retrieval_event(
+                task_id=task_id,
+                system_name=system_name,
+                module=module,
+                feature_name=feature_name,
+                knowledge_type=knowledge_type,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+                results=results,
+                stage=stage
+            )
 
             logger.info(f"检索完成: 查询到 {len(results)} 条结果")
 
@@ -356,37 +621,26 @@ class KnowledgeService:
         current_length = 0
 
         for idx, knowledge in enumerate(knowledge_list, 1):
-            knowledge_type = knowledge["knowledge_type"]
-
-            # 系统知识
-            if knowledge_type == self.TYPE_SYSTEM_PROFILE:
-                metadata = knowledge["metadata"]
-                part = f"""【知识{idx}】{metadata['system_name']} ({metadata['system_short_name']})
-   - 业务目标: {metadata['business_goal']}
-   - 核心功能: {metadata['core_functions']}
-   - 技术栈: {metadata['tech_stack']}
-   - 架构特点: {metadata['architecture']}
-   - 性能指标: {metadata['performance']}
-   - 相似度: {knowledge['similarity']:.2f}
-"""
-
-            # 功能案例
-            elif knowledge_type == self.TYPE_FEATURE_CASE:
-                metadata = knowledge["metadata"]
-                part = f"""【案例{idx}】{metadata['feature_name']}
-   - 系统名称: {metadata['system_name']}
-   - 功能模块: {metadata['module']}
-   - 业务描述: {metadata['description']}
-   - 预估人天: {metadata['estimated_days']}
-   - 复杂度: {metadata['complexity']}
-   - 技术要点: {metadata['tech_points']}
-   - 依赖系统: {metadata['dependencies']}
-   - 实施案例: {metadata['project_case']}
-   - 相似度: {knowledge['similarity']:.2f}
-"""
-
-            else:
+            if not isinstance(knowledge, dict):
                 continue
+
+            knowledge_type = str(knowledge.get("knowledge_type") or "").strip()
+            if knowledge_type != self.TYPE_SYSTEM_PROFILE:
+                continue
+
+            metadata = knowledge.get("metadata") or {}
+            part = f"""【知识{idx}】{metadata.get('system_name', '')} ({metadata.get('system_short_name', '')})
+   - 业务目标: {metadata.get('business_goal', '')}
+   - 核心功能: {metadata.get('core_functions', '')}
+   - 系统边界(做什么): {metadata.get('in_scope', '')}
+   - 系统不做什么: {metadata.get('out_of_scope', '')}
+   - 主要集成点/上下游: {metadata.get('integration_points', '')}
+   - 关键约束: {metadata.get('key_constraints', '')}
+   - 技术栈: {metadata.get('tech_stack', '')}
+   - 架构特点: {metadata.get('architecture', '')}
+   - 性能指标: {metadata.get('performance', '')}
+   - 相似度: {knowledge.get('similarity', 0.0):.2f}
+"""
 
             # 检查长度
             if current_length + len(part) > max_length:
@@ -399,27 +653,23 @@ class KnowledgeService:
 
     def _build_system_profile_text(self, system: Dict[str, Any]) -> str:
         """构建系统知识的检索文本"""
-        return f"""系统名称:{system['system_name']} | \
-系统简称:{system['system_short_name']} | \
-业务目标:{system['business_goal']} | \
-核心功能:{system['core_functions']} | \
-技术栈:{system['tech_stack']} | \
-架构特点:{system['architecture']} | \
-性能指标:{system['performance']} | \
-主要用户:{system['main_users']}"""
+        system = system or {}
+        return (
+            f"系统名称:{system.get('system_name', '') or ''} | "
+            f"系统简称:{system.get('system_short_name', '') or ''} | "
+            f"系统边界(做什么):{system.get('in_scope', '') or ''} | "
+            f"系统不做什么:{system.get('out_of_scope', '') or ''} | "
+            f"主要集成点/上下游:{system.get('integration_points', '') or ''} | "
+            f"关键约束:{system.get('key_constraints', '') or ''} | "
+            f"业务目标:{system.get('business_goal', '') or ''} | "
+            f"核心功能:{system.get('core_functions', '') or ''} | "
+            f"技术栈:{system.get('tech_stack', '') or ''} | "
+            f"架构特点:{system.get('architecture', '') or ''} | "
+            f"性能指标:{system.get('performance', '') or ''} | "
+            f"主要用户:{system.get('main_users', '') or ''}"
+        )
 
-    def _build_feature_case_text(self, case: Dict[str, Any]) -> str:
-        """构建功能案例的检索文本"""
-        return f"""系统名称:{case['system_name']} | \
-功能模块:{case['module']} | \
-功能点:{case['feature_name']} | \
-业务描述:{case['description']} | \
-预估人天:{case['estimated_days']} | \
-复杂度:{case['complexity']} | \
-技术要点:{case['tech_points']} | \
-依赖系统:{case['dependencies']}"""
-
-    def get_knowledge_stats(self) -> Dict[str, Any]:
+    def get_knowledge_stats(self, system_name: Optional[str] = None) -> Dict[str, Any]:
         """
         获取知识库统计信息
 
@@ -427,143 +677,40 @@ class KnowledgeService:
             dict: 统计信息
         """
         try:
-            stats = self.milvus_client.get_collection_stats()
+            normalized_system = str(system_name or "").strip() or None
+            try:
+                stats = (
+                    self.vector_store.get_collection_stats(system_name=normalized_system)
+                    if normalized_system
+                    else self.vector_store.get_collection_stats()
+                ) or {}
+            except TypeError:
+                stats = self.vector_store.get_collection_stats() or {}
+                if normalized_system:
+                    stats["filtered_by_system_name"] = normalized_system
+            stats["vector_store_backend"] = self.vector_store_backend
+
+            counts: Dict[str, int] = {}
+            if hasattr(self.vector_store, "get_type_counts"):
+                try:
+                    try:
+                        counts = (
+                            self.vector_store.get_type_counts(system_name=normalized_system)
+                            if normalized_system
+                            else self.vector_store.get_type_counts()
+                        ) or {}
+                    except TypeError:
+                        counts = self.vector_store.get_type_counts() or {}
+                except Exception as e:
+                    logger.warning(f"读取知识类型统计失败: {e}")
+
+            stats["system_profile_count"] = int(counts.get(self.TYPE_SYSTEM_PROFILE, 0) or 0)
+            stats["feature_case_count"] = 0
+            stats["tech_spec_count"] = 0
             return stats
         except Exception as e:
             logger.error(f"获取统计信息失败: {str(e)}")
             return {}
-
-    def save_feature_case(
-        self,
-        system_name: str,
-        module: str,
-        feature_name: str,
-        description: str,
-        estimated_days: float,
-        complexity: str,
-        tech_points: str = "",
-        dependencies: str = "",
-        project_case: str = "",
-        source: str = "人工修正"
-    ) -> Dict[str, Any]:
-        """
-        保存单个功能案例到知识库
-
-        Args:
-            system_name: 系统名称
-            module: 功能模块
-            feature_name: 功能点名称
-            description: 业务描述
-            estimated_days: 预估人天
-            complexity: 复杂度（高/中/低）
-            tech_points: 技术要点
-            dependencies: 依赖系统
-            project_case: 实施案例
-            source: 来源（人工修正/历史案例）
-
-        Returns:
-            dict: 保存结果
-        """
-        try:
-            logger.info(f"保存功能案例: {system_name} - {feature_name}")
-
-            # 构建案例数据
-            case = {
-                "system_name": system_name,
-                "module": module,
-                "feature_name": feature_name,
-                "description": description,
-                "estimated_days": estimated_days,
-                "complexity": complexity,
-                "tech_points": tech_points,
-                "dependencies": dependencies,
-                "project_case": project_case,
-                "created_date": datetime.now().strftime("%Y-%m-%d")
-            }
-
-            # 构建检索文本
-            content = self._build_feature_case_text(case)
-
-            # 生成embedding
-            embedding = self.embedding_service.generate_embedding(content)
-
-            # 构建元数据
-            metadata = {
-                **case,
-                "source": source,
-                "imported_at": datetime.now().isoformat()
-            }
-
-            # 插入到Milvus
-            self.milvus_client.insert_knowledge(
-                system_name=system_name,
-                knowledge_type=self.TYPE_FEATURE_CASE,
-                content=content,
-                embedding=embedding,
-                metadata=metadata
-            )
-
-            # 追加到CSV文件
-            self._append_case_to_csv(case)
-
-            # 记录案例采纳事件（用于效果评估）
-            self.log_case_adoption()
-
-            logger.info(f"功能案例保存成功: {feature_name}")
-
-            return {
-                "status": "success",
-                "message": "案例保存成功",
-                "case": case
-            }
-
-        except Exception as e:
-            logger.error(f"保存功能案例失败: {str(e)}")
-            return {
-                "status": "failed",
-                "error": str(e)
-            }
-
-    def _append_case_to_csv(self, case: Dict[str, Any]):
-        """
-        追加案例到CSV文件
-
-        Args:
-            case: 案例数据
-        """
-        import os
-        import csv
-
-        csv_file = "data/feature_case_library.csv"
-
-        # 确保目录存在
-        os.makedirs("data", exist_ok=True)
-
-        # 检查文件是否存在，如果不存在则写入表头
-        file_exists = os.path.exists(csv_file)
-
-        # 准备数据行
-        row = {
-            "系统名称": case["system_name"],
-            "功能模块": case["module"],
-            "功能点名称": case["feature_name"],
-            "业务描述": case["description"],
-            "预估人天": case["estimated_days"],
-            "复杂度": case["complexity"],
-            "技术要点": case.get("tech_points", ""),
-            "依赖系统": case.get("dependencies", ""),
-            "实施案例": case.get("project_case", ""),
-            "创建日期": case["created_date"]
-        }
-
-        # 追加到CSV
-        with open(csv_file, 'a', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=row.keys())
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row)
-
-        logger.info(f"案例已追加到CSV: {csv_file}")
 
     def rebuild_index(self) -> Dict[str, Any]:
         """
@@ -573,11 +720,10 @@ class KnowledgeService:
             dict: 重建结果
         """
         try:
-            # TODO: 实现索引重建逻辑
-            return {
-                "status": "success",
-                "message": "索引重建功能待实现"
-            }
+            if hasattr(self.vector_store, "rebuild_index"):
+                return self.vector_store.rebuild_index()
+
+            return {"status": "success", "message": "当前存储后端无需重建索引"}
         except Exception as e:
             logger.error(f"重建索引失败: {str(e)}")
             return {
@@ -658,6 +804,84 @@ class KnowledgeService:
 
         except Exception as e:
             logger.warning(f"记录检索事件失败: {e}")
+
+    def log_retrieval_event(
+        self,
+        task_id: Optional[str] = None,
+        system_name: Optional[str] = None,
+        module: Optional[str] = None,
+        feature_name: Optional[str] = None,
+        knowledge_type: Optional[str] = None,
+        top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
+        results: Optional[List[Dict[str, Any]]] = None,
+        stage: Optional[str] = None
+    ) -> None:
+        try:
+            results = results or []
+            max_similarity = max([r.get("similarity", 0.0) for r in results]) if results else 0.0
+            hits = []
+            for item in results:
+                metadata = item.get("metadata") or {}
+                hits.append({
+                    "system_name": item.get("system_name"),
+                    "knowledge_type": item.get("knowledge_type"),
+                    "module": metadata.get("module"),
+                    "feature_name": metadata.get("feature_name"),
+                    "similarity": item.get("similarity"),
+                    "source_file": item.get("source_file")
+                })
+            log_item = {
+                "id": f"kh_{uuid.uuid4().hex[:10]}",
+                "task_id": task_id,
+                "system_name": system_name,
+                "module": module,
+                "feature_name": feature_name,
+                "knowledge_type": knowledge_type,
+                "top_k": top_k,
+                "similarity_threshold": similarity_threshold,
+                "hit_count": len(results),
+                "max_similarity": max_similarity,
+                "hits": hits,
+                "stage": stage,
+                "created_at": datetime.now().isoformat()
+            }
+            with self._retrieval_context() as items:
+                items.append(log_item)
+        except Exception as e:
+            logger.warning(f"记录知识检索日志失败: {e}")
+
+    def get_hit_rate(
+        self,
+        task_id: Optional[str] = None,
+        system_name: Optional[str] = None,
+        module: Optional[str] = None,
+        knowledge_type: Optional[str] = None
+    ) -> Optional[float]:
+        try:
+            with self._retrieval_lock():
+                logs = self._load_retrieval_logs_unlocked()
+            if not logs:
+                return None
+            filtered = []
+            for item in logs:
+                if task_id and item.get("task_id") != task_id:
+                    continue
+                if system_name and item.get("system_name") != system_name:
+                    continue
+                if module and item.get("module") != module:
+                    continue
+                if knowledge_type and item.get("knowledge_type") != knowledge_type:
+                    continue
+                filtered.append(item)
+            if not filtered:
+                return None
+            total = len(filtered)
+            hit_count = sum(1 for item in filtered if item.get("hit_count", 0) > 0)
+            return round((hit_count / total) * 100, 2)
+        except Exception as e:
+            logger.warning(f"计算知识命中率失败: {e}")
+            return None
 
     def log_case_adoption(self):
         """

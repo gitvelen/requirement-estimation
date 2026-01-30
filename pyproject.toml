@@ -47,6 +47,12 @@ dependencies = [
     # PDF解析（可选）
     "PyPDF2>=3.0.0",
 
+    # PDF生成
+    "reportlab>=4.0.0",
+
+    # JWT
+    "PyJWT>=2.8.0",
+
     # AI 相关
     "langchain>=0.1.0",
     "langchain-openai>=0.0.2",
@@ -62,6 +68,7 @@ dev = [
     "black>=23.0.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
+    "locust>=2.24.0",
 ]
 
 # 生产依赖（与 dependencies 相同，方便单独安装）
@@ -78,6 +85,8 @@ prod = [
     "langchain-openai>=0.0.2",
     "langgraph>=0.0.26",
     "dashscope>=1.14.0",
+    "reportlab>=4.0.0",
+    "PyJWT>=2.8.0",
 ]
 
 [project.urls]
@@ -95,6 +104,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
     "flake8>=6.0.0",
+    "locust>=2.24.0",
 ]
 
 [tool.uv.sources]

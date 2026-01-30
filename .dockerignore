@@ -7,6 +7,7 @@ __pycache__/
 env/
 venv/
 ENV/
+.venv/
 *.egg-info/
 dist/
 build/
@@ -17,6 +18,9 @@ build/
 
 # Node
 node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/
 npm-debug.log
 yarn-error.log
 
@@ -42,7 +46,8 @@ requirements.txt
 .coverage
 htmlcov/
 
-# 文档
+# 文档（排除 docs 目录下的文件，但保留系统清单模板）
 docs/
+!docs/系统清单模板.xlsx
 *.md
 !README.md

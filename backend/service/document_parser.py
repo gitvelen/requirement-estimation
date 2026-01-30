@@ -82,8 +82,7 @@ class DocumentParser:
         解析CSV文件
 
         支持的CSV格式：
-        1. 系统知识库: system_knowledge_base.csv
-        2. 功能案例库: feature_case_library.csv
+        - 系统知识库（system_profile）
         """
         try:
             # 解码为文本
@@ -181,7 +180,7 @@ class DocumentParser:
         """
         解析XLSX文件
 
-        支持多个Sheet，自动识别系统知识库和功能案例库格式
+        支持多个Sheet（解析为表格数据结构，结构化抽取以 system_profile 为主）
         """
         try:
             from openpyxl import load_workbook
@@ -278,41 +277,57 @@ class DocumentParser:
         - 标题层级
         """
         try:
-            from pptx import Presentation
+            import re
+            import zipfile
+            from xml.etree import ElementTree as ET
 
-            # 从字节加载PPT
-            prs = Presentation(BytesIO(file_content))
-
+            # PPTX 本质是 zip + XML，直接解析 slide XML 中的 <a:t> 文本即可。
             slides_data = []
+            with zipfile.ZipFile(BytesIO(file_content)) as zf:
+                slide_files = [
+                    name
+                    for name in zf.namelist()
+                    if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+                ]
 
-            # 提取每张幻灯片
-            for slide_num, slide in enumerate(prs.slides, 1):
-                slide_text = []
+                def slide_key(name: str) -> int:
+                    match = re.search(r"slide(\d+)\.xml$", name)
+                    return int(match.group(1)) if match else 0
 
-                # 提取文本框
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        slide_text.append(shape.text.strip())
+                slide_files.sort(key=slide_key)
 
-                if slide_text:
-                    slides_data.append({
-                        "slide": slide_num,
-                        "text": "\n".join(slide_text)
-                    })
+                for slide_path in slide_files:
+                    try:
+                        xml_bytes = zf.read(slide_path)
+                        root = ET.fromstring(xml_bytes)
+                        texts = []
+                        for node in root.iter():
+                            tag = node.tag or ""
+                            if tag.endswith("}t") or tag == "a:t":
+                                if node.text and node.text.strip():
+                                    texts.append(node.text.strip())
+                        slide_text = "\n".join(texts).strip()
+                        if slide_text:
+                            slides_data.append(
+                                {
+                                    "slide": slide_key(slide_path) or (len(slides_data) + 1),
+                                    "text": slide_text,
+                                }
+                            )
+                    except Exception as e:
+                        logger.warning(f"PPTX幻灯片解析失败: {slide_path}: {e}")
+                        continue
+
+                total_slides = len(slide_files)
 
             logger.info(f"PPTX解析成功: {len(slides_data)}张幻灯片")
 
             return {
                 "slides": slides_data,
                 "metadata": {
-                    "total_slides": len(prs.slides)
+                    "total_slides": total_slides
                 }
             }
-
-        except ImportError:
-            logger.warning("未安装python-pptx库，PPTX解析功能不可用")
-            logger.warning("请运行: pip install python-pptx")
-            return {"slides": [], "metadata": {}, "error": "缺少PPTX解析库"}
         except Exception as e:
             logger.error(f"PPTX解析失败: {str(e)}")
             raise
@@ -328,7 +343,7 @@ class DocumentParser:
             dict: 系统知识结构化数据
         """
         try:
-            normalized_expected = expected_type if expected_type in ("system_profile", "feature_case") else None
+            normalized_expected = expected_type if expected_type in ("system_profile",) else None
 
             # 如果是CSV数据（系统知识库格式）
             if isinstance(parsed_data, list) and len(parsed_data) > 0:
@@ -339,22 +354,19 @@ class DocumentParser:
                     extracted = self._extract_system_profile(parsed_data)
                     if extracted.get("count", 0) > 0:
                         return extracted
-                elif normalized_expected == "feature_case":
-                    extracted = self._extract_feature_cases(parsed_data)
-                    if extracted.get("count", 0) > 0:
-                        return extracted
 
                 # 识别字段
                 if "系统名称" in first_row or "系统简称" in first_row:
                     # 系统知识库格式
                     return self._extract_system_profile(parsed_data)
-                elif "功能点名称" in first_row or "功能点" in first_row:
-                    # 功能案例库格式
-                    return self._extract_feature_cases(parsed_data)
 
             # 如果是DOCX数据
             if isinstance(parsed_data, dict) and "paragraphs" in parsed_data:
                 return self._extract_from_docx(parsed_data, normalized_expected)
+
+            # 如果是PPTX数据
+            if isinstance(parsed_data, dict) and "slides" in parsed_data:
+                return self._extract_from_pptx(parsed_data)
 
             # 如果是XLSX数据
             if isinstance(parsed_data, dict) and "metadata" not in parsed_data:
@@ -382,7 +394,12 @@ class DocumentParser:
                 "architecture": row.get("架构特点", ""),
                 "performance": row.get("性能指标", ""),
                 "main_users": row.get("主要用户", ""),
-                "notes": row.get("备注", "")
+                "notes": row.get("备注", ""),
+                # 【新增】校准字段（可选）
+                "in_scope": row.get("系统职责/边界", "") or row.get("系统边界", "") or row.get("in_scope", ""),
+                "out_of_scope": row.get("系统不做什么", "") or row.get("out_of_scope", ""),
+                "integration_points": row.get("主要集成点/上下游", "") or row.get("集成点/上下游", "") or row.get("integration_points", ""),
+                "key_constraints": row.get("关键约束", "") or row.get("key_constraints", ""),
             }
 
             # 过滤空记录
@@ -395,69 +412,75 @@ class DocumentParser:
             "systems": systems
         }
 
-    def _extract_feature_cases(self, data: List[Dict]) -> Dict[str, Any]:
-        """从CSV数据提取功能案例"""
-        cases = []
-
-        for row in data:
-            case = {
-                "system_name": row.get("系统名称", ""),
-                "module": row.get("功能模块", ""),
-                "feature_name": row.get("功能点名称", row.get("功能点", "")),
-                "description": row.get("业务描述", ""),
-                "estimated_days": row.get("预估人天", 0),
-                "complexity": row.get("复杂度", "中"),
-                "tech_points": row.get("技术要点", ""),
-                "dependencies": row.get("依赖系统", ""),
-                "project_case": row.get("实施案例", ""),
-                "create_date": row.get("创建日期", "")
-            }
-
-            # 过滤空记录
-            if case["system_name"] and case["feature_name"]:
-                cases.append(case)
-
-        return {
-            "type": "feature_case",
-            "count": len(cases),
-            "cases": cases
-        }
-
     def _extract_from_docx(self, data: Dict, expected_type: Optional[str] = None) -> Dict[str, Any]:
         """从DOCX数据提取知识"""
         try:
             # 尝试智能提取
-            extracted = self._intelligent_extract_docx(data, expected_type)
+            extracted = self._intelligent_extract_docx(data)
 
-            if extracted and (extracted.get("systems") or extracted.get("cases")):
-                # 判断类型
-                if extracted.get("systems"):
-                    return {
-                        "type": "system_profile",
-                        "count": len(extracted["systems"]),
-                        "systems": extracted["systems"]
-                    }
-                elif extracted.get("cases"):
-                    return {
-                        "type": "feature_case",
-                        "count": len(extracted["cases"]),
-                        "cases": extracted["cases"]
-                    }
+            if extracted and extracted.get("systems"):
+                return {
+                    "type": "system_profile",
+                    "count": len(extracted["systems"]),
+                    "systems": extracted["systems"]
+                }
 
-            # 回退到非结构化数据
-            return {
-                "type": "unstructured",
-                "content": data
-            }
+            return {}
 
         except Exception as e:
-            logger.warning(f"智能提取失败，回退到非结构化: {e}")
-            return {
-                "type": "unstructured",
-                "content": data
-            }
+            logger.warning(f"智能提取失败: {e}")
+            return {}
 
-    def _intelligent_extract_docx(self, data: Dict, expected_type: Optional[str] = None) -> Dict[str, Any]:
+    def _intelligent_extract_system_profile_from_text(self, full_text: str) -> Dict[str, Any]:
+        """使用LLM从纯文本中提取系统知识(system_profile)。"""
+        try:
+            from backend.utils.llm_client import llm_client
+
+            prompt = f"""请从以下系统介绍/系统架构材料中，提取“系统知识(system_profile)”的结构化信息，并按JSON返回。
+
+材料内容：
+{(full_text or '')[:3500]}
+
+请以JSON格式返回（只返回JSON，不要任何解释）：
+{{
+  "systems": [
+    {{
+      "system_name": "系统名称",
+      "system_short_name": "系统简称",
+      "system_category": "系统分类",
+      "business_goal": "业务目标",
+      "core_functions": "核心功能（用顿号分隔）",
+      "tech_stack": "技术栈",
+      "architecture": "架构特点",
+      "performance": "性能指标",
+      "main_users": "主要用户",
+      "notes": "备注",
+      "in_scope": "系统职责/边界（做什么）",
+      "out_of_scope": "系统明确不做什么（避免误拆）",
+      "integration_points": "主要集成点/上下游（用顿号分隔）",
+      "key_constraints": "关键约束（合规/性能/数据敏感/发布窗口等）"
+    }}
+  ]
+}}
+"""
+
+            response = llm_client.chat_with_system_prompt(
+                system_prompt="你是一个专业的技术文档分析助手，擅长从系统介绍/架构材料中提取结构化信息。",
+                user_prompt=prompt,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            result = llm_client.extract_json(response)
+            systems = result.get("systems") if isinstance(result, dict) else None
+            if isinstance(systems, list) and systems:
+                logger.info(f"LLM智能提取完成: systems={len(systems)}")
+                return {"systems": systems}
+            return {}
+        except Exception as e:
+            logger.warning(f"LLM智能提取失败: {e}")
+            return {}
+
+    def _intelligent_extract_docx(self, data: Dict) -> Dict[str, Any]:
         """
         使用LLM智能提取DOCX中的结构化知识
 
@@ -480,76 +503,35 @@ class DocumentParser:
                         all_text.append(" | ".join(row))
 
             full_text = "\n".join(all_text)
-
-            # 使用LLM提取结构化数据
-            from backend.utils.llm_client import llm_client
-
-            # 判断文档类型
-            expected_hint = ""
-            if expected_type == "system_profile":
-                expected_hint = "文档类型预计为 system_profile（系统架构/系统说明），请优先按该类型提取。"
-            elif expected_type == "feature_case":
-                expected_hint = "文档类型预计为 feature_case（功能案例），请优先按该类型提取。"
-
-            prompt = f"""请分析以下文档内容，判断它是系统架构文档还是功能案例文档，并提取结构化信息。
-{expected_hint}
-
-文档内容：
-{full_text[:3000]}  # 限制长度
-
-请以JSON格式返回：
-{{
-  "document_type": "system_profile" 或 "feature_case",
-  "systems": [系统列表，如果文档类型是system_profile],
-  "cases": [功能案例列表，如果文档类型是feature_case]
-}}
-
-系统知识格式：
-{{
-  "system_name": "系统名称",
-  "system_short_name": "系统简称",
-  "system_category": "系统分类",
-  "business_goal": "业务目标",
-  "core_functions": "核心功能（用顿号分隔）",
-  "tech_stack": "技术栈",
-  "architecture": "架构特点",
-  "performance": "性能指标",
-  "main_users": "主要用户",
-  "notes": "备注"
-}}
-
-功能案例格式：
-{{
-  "system_name": "系统名称",
-  "module": "功能模块",
-  "feature_name": "功能点名称",
-  "description": "业务描述",
-  "estimated_days": 预估人天,
-  "complexity": "复杂度",
-  "tech_points": "技术要点",
-  "dependencies": "依赖系统",
-  "project_case": "实施案例"
-}}
-
-只返回JSON，不要其他说明文字。
-"""
-
-            response = llm_client.chat_with_system_prompt(
-                system_prompt="你是一个专业的文档分析助手，擅长从技术文档中提取结构化信息。",
-                user_prompt=prompt,
-                temperature=0.3,
-                max_tokens=2000
-            )
-
-            # 解析JSON响应
-            result = llm_client.extract_json(response)
-
-            logger.info(f"LLM智能提取完成: document_type={result.get('document_type')}")
-
-            return result
-
+            return self._intelligent_extract_system_profile_from_text(full_text)
         except Exception as e:
-            logger.warning(f"LLM智能提取失败: {e}")
+            logger.warning(f"DOCX智能提取失败: {e}")
+            return {}
+
+    def _extract_from_pptx(self, data: Dict) -> Dict[str, Any]:
+        """从PPTX数据提取系统知识"""
+        try:
+            slide_lines = []
+            for slide in data.get("slides") or []:
+                if not isinstance(slide, dict):
+                    continue
+                idx = slide.get("slide")
+                text = str(slide.get("text") or "").strip()
+                if not text:
+                    continue
+                slide_lines.append(f"[Slide {idx}] {text}")
+
+            full_text = "\n\n".join(slide_lines)
+            extracted = self._intelligent_extract_system_profile_from_text(full_text)
+            if extracted and extracted.get("systems"):
+                return {
+                    "type": "system_profile",
+                    "count": len(extracted["systems"]),
+                    "systems": extracted["systems"],
+                }
+            return {}
+        except Exception as e:
+            logger.warning(f"PPTX智能提取失败: {e}")
             return {}
 
     def _extract_from_xlsx(self, data: Dict, expected_type: Optional[str] = None) -> Dict[str, Any]:
@@ -559,7 +541,7 @@ class DocumentParser:
             if len(sheet_data) > 0:
                 first_row = sheet_data[0]
 
-                normalized_expected = expected_type if expected_type in ("system_profile", "feature_case") else None
+                normalized_expected = expected_type if expected_type in ("system_profile",) else None
                 if normalized_expected:
                     headers = [str(cell) for cell in first_row]
                     rows = []
@@ -570,7 +552,7 @@ class DocumentParser:
                                 row_dict[headers[i]] = str(cell) if cell is not None else ""
                         rows.append(row_dict)
 
-                    extracted = self._extract_system_profile(rows) if normalized_expected == "system_profile" else self._extract_feature_cases(rows)
+                    extracted = self._extract_system_profile(rows)
                     if extracted.get("count", 0) > 0:
                         return extracted
 
@@ -587,18 +569,6 @@ class DocumentParser:
                         rows.append(row_dict)
 
                     return self._extract_system_profile(rows)
-
-                elif "功能点名称" in first_row or "功能点" in first_row:
-                    headers = [str(cell) for cell in first_row]
-                    rows = []
-                    for row in sheet_data[1:]:
-                        row_dict = {}
-                        for i, cell in enumerate(row):
-                            if i < len(headers):
-                                row_dict[headers[i]] = str(cell) if cell is not None else ""
-                        rows.append(row_dict)
-
-                    return self._extract_feature_cases(rows)
 
         return {}
 

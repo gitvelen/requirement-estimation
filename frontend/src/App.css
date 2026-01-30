@@ -1,27 +1,17 @@
-.App {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+.evaluation-page .estimate-cell {
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-height: 28px;
 }
 
-.app-header {
-  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  padding: 20px;
-  text-align: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+.evaluation-page .estimate-ai {
+  background: transparent;
 }
 
-.app-header h1 {
-  margin: 0;
-  font-size: 28px;
+.evaluation-page .estimate-edited {
+  background: #e6f7ff;
 }
 
-.app-main {
-  flex: 1;
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
-  width: 100%;
-  box-sizing: border-box;
+.evaluation-page .row-high-deviation td {
+  background-color: #fff2f0 !important;
 }

@@ -14,8 +14,8 @@ class EmbeddingService:
     """Embedding生成服务"""
 
     # 模型配置
-    MODEL = "text-embedding-v2"
-    DIM = 1024  # 向量维度
+    MODEL = settings.EMBEDDING_MODEL
+    DIM = settings.EMBEDDING_DIM  # 向量维度
 
     def __init__(self):
         """初始化服务"""

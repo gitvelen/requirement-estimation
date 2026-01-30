@@ -108,7 +108,8 @@ class AgentOrchestrator:
             # 获取系统识别Agent（注入knowledge_service）
             sys_agent = get_system_identification_agent(self.knowledge_service)
             systems = sys_agent.identify(
-                requirement_data.get("requirement_content", "")
+                requirement_data.get("requirement_content", ""),
+                task_id=task_id
             )
 
             # 验证和标准化系统名称
@@ -119,6 +120,13 @@ class AgentOrchestrator:
                 raise ValueError("未识别到任何系统")
 
             sys_agent.validate_systems(systems)
+
+            # 【新增】构建系统校准分析（供编辑页展示与纠偏：候选系统/置信度/疑问清单）
+            ai_system_analysis = None
+            try:
+                ai_system_analysis = sys_agent.build_ai_system_analysis(systems)
+            except Exception as e:
+                logger.debug(f"[系统识别] 构建系统校准分析失败（忽略）: {e}")
 
             # 统计系统信息
             system_names = [s["name"] for s in systems]
@@ -157,7 +165,8 @@ class AgentOrchestrator:
                 features = feature_agent.breakdown(
                     requirement_data.get("requirement_content", ""),
                     system_name,
-                    system_type
+                    system_type,
+                    task_id=task_id
                 )
 
                 # 校验功能点中的系统名称
@@ -251,8 +260,8 @@ class AgentOrchestrator:
             logger.info("=" * 80)
             logger.info("")
 
-            # 【新增】返回report_path和systems_data，用于人机协作修正
-            return report_path, systems_data
+            # 【新增】返回report_path、systems_data与ai_system_analysis，用于人机协作修正
+            return report_path, systems_data, ai_system_analysis
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -282,9 +291,10 @@ class AgentOrchestrator:
             progress_callback: 进度回调函数
 
         Returns:
-            tuple: (report_path, systems_data)
+            tuple: (report_path, systems_data, ai_system_analysis)
                 - report_path: Excel报告文件路径
                 - systems_data: 所有系统的功能点数据
+                - ai_system_analysis: 系统校准分析（候选系统/置信度/疑问清单）
         """
         for attempt in range(max_retry):
             try:

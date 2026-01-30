@@ -156,7 +156,7 @@ health_check() {
     echo_info "执行健康检查..."
 
     # 检查 Python 环境
-    python3 --version || {
+    python --version || {
         echo_error "Python 不可用"
         exit 1
     }
@@ -168,7 +168,7 @@ health_check() {
     fi
 
     # 尝试导入主应用
-    python3 -c "import sys; sys.path.insert(0, '/app'); import backend.app" || {
+    python -c "import sys; sys.path.insert(0, '/app'); import backend.app" || {
         echo_error "应用导入失败，请检查依赖"
         exit 1
     }
@@ -185,7 +185,7 @@ show_startup_info() {
     echo_info "启动需求评估系统"
     echo_info "========================================"
     echo_info "项目名称: $(grep '^name = ' pyproject.toml | cut -d'"' -f2 | tr -d '"')"
-    echo_info "Python 版本: $(python3 --version)"
+    echo_info "Python 版本: $(python --version)"
     echo_info "工作目录: $(pwd)"
     echo_info "用户: $(whoami)"
     echo_info "端口: ${PORT:-443}"
@@ -224,20 +224,32 @@ main() {
     # 8. 启动主应用
     echo_info "启动应用..."
 
+    run_as_appuser() {
+        # root 启动时：先修复权限，再降权运行主进程（避免挂载目录权限导致 500，如登录写 users.json）
+        if [ "$(id -u)" = "0" ]; then
+            if command -v su >/dev/null 2>&1; then
+                local cmd
+                cmd=$(printf '%q ' "$@")
+                exec su -p -s /bin/bash appuser -c "$cmd"
+            fi
+        fi
+        exec "$@"
+    }
+
     # 如果有传入参数，执行参数命令
     # 否则使用默认启动命令
     if [ $# -gt 0 ]; then
         echo_info "执行命令: $@"
-        exec "$@"
+        run_as_appuser "$@"
     else
         # 默认启动命令 - 使用 uvicorn（PATH 中已包含虚拟环境）
         # 根据 DEBUG 模式决定 workers 和 reload
         if [ "${DEBUG:-false}" = "true" ]; then
             echo_info "调试模式：单进程 + 热重载"
-            exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --reload --workers 1 --log-level info
+            run_as_appuser uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --reload --workers 1 --log-level info
         else
             echo_info "生产模式：多进程 (${WORKERS:-4}) + 无热重载"
-            exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --workers ${WORKERS:-4} --log-level info
+            run_as_appuser uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-443} --workers ${WORKERS:-4} --log-level info
         fi
     fi
 }
