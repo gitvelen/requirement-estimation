@@ -1,0 +1,16 @@
+# 前端独立部署配置
+# 部署命令: docker-compose -f docker-compose.frontend.yml up -d
+
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: requirement-frontend
+    ports:
+      - "80:80"
+    env_file:
+      - .env.frontend
+    restart: unless-stopped

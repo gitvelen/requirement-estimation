@@ -1,0 +1,29 @@
+# 后端独立部署配置
+# 部署命令: docker-compose -f docker-compose.backend.yml up -d
+
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      args:
+        - UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+    container_name: requirement-backend
+    ports:
+      - "443:443"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./backend/config:/app/backend/config
+    env_file:
+      - .env.backend
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

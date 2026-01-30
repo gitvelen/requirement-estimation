@@ -1,14 +1,35 @@
-# 使用官方 Nginx 镜像
+# 前端构建镜像（独立部署 - 多阶段构建）
+# 构建阶段 + 运行阶段
+
+# ============ 构建阶段 ============
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# 复制依赖文件
+COPY package*.json ./
+
+# 安装依赖（使用国内镜像加速）
+RUN npm config set registry https://mirrors.cloud.tencent.com/npm/ && \
+    npm ci
+
+# 复制源码
+COPY . .
+
+# 构建前端
+RUN npm run build
+
+# ============ 运行阶段 ============
 FROM nginx:alpine
 
 # 删除默认配置
 RUN rm /etc/nginx/conf.d/default.conf
 
-# 复制自定义配置
-COPY nginx.conf /etc/nginx/nginx.conf
+# 复制自定义 nginx 配置（指向远程后端）
+COPY nginx-remote.conf /etc/nginx/nginx.conf
 
-# 复制构建好的前端文件
-COPY build/ /usr/share/nginx/html/
+# 从构建阶段复制构建产物
+COPY --from=builder /app/build /usr/share/nginx/html
 
 # 创建非root用户
 RUN addgroup -g 1001 -S nginx-app && \
