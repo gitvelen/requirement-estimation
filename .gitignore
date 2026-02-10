@@ -45,9 +45,16 @@ Thumbs.db
 logs/
 data/
 uploads/
+backups/
+reports/
 *.log
+memory.md
 .env
 .env.local
+.env.backend
+.env.frontend
+.env.backend.internal
+.env.frontend.internal
 
 # Node
 node_modules/
@@ -56,8 +63,6 @@ frontend/build/
 # Docker
 *.log
 
-# DOCS
-*.docx
-*.xlsx
-*.md
-*.csv
+# Docs (tracked); ignore local artifacts only
+*.md.bak_*
+docs/.claude/
