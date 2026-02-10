@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.internal
+      args:
+        UV_INDEX_URL: http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
+    image: requirement-backend:latest
+    container_name: requirement-backend
+    ports:
+      - "443:443"
+    env_file:
+      - .env.backend
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./backend/config:/app/backend/config
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  app-network:
+    driver: bridge

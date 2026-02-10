@@ -662,15 +662,18 @@ class SystemIdentificationAgent:
             excerpt = " ".join(content.split())[:220]
             has_structured = any(
                 (metadata.get(k) or "").strip()
-                for k in ("business_goal", "core_functions", "tech_stack", "architecture", "performance")
+                for k in ("business_goals", "business_goal", "core_functions", "tech_stack", "architecture", "performance")
             )
 
             title_name = metadata.get("system_name") or profile.get("system_name") or ""
             title_short = metadata.get("system_short_name") or ""
             extra_excerpt = f"   - 内容摘要: {excerpt}\n" if (not has_structured and excerpt) else ""
+            business_goals = metadata.get("business_goals", "")
+            if not str(business_goals or "").strip():
+                business_goals = metadata.get("business_goal", "")
 
             part = f"""【知识{idx}】{title_name} ({title_short})
-   - 业务目标: {metadata.get('business_goal', '')}
+   - 业务目标: {business_goals}
    - 核心功能: {metadata.get('core_functions', '')}
    - 系统边界(做什么): {metadata.get('in_scope', '')}
    - 系统不做什么: {metadata.get('out_of_scope', '')}

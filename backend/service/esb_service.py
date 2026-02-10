@@ -143,14 +143,27 @@ class EsbService:
                 header_map[key] = idx
         return header_map
 
-    def _resolve_mapping(self, header_map: Dict[str, int], mapping_override: Dict[str, str], aliases: Dict[str, List[str]]) -> Dict[str, str]:
+    def _resolve_mapping(self, header_map: Dict[str, int], mapping_override: Dict[str, Any], aliases: Dict[str, List[str]]) -> Dict[str, str]:
         resolved: Dict[str, str] = {}
         for field, candidates in aliases.items():
-            if mapping_override and mapping_override.get(field):
-                col_name = str(mapping_override[field]).strip()
-                if col_name in header_map:
-                    resolved[field] = col_name
-                    continue
+            override_candidates: List[str] = []
+            if mapping_override and field in mapping_override:
+                override_value = mapping_override.get(field)
+                if isinstance(override_value, list):
+                    override_candidates = [str(item).strip() for item in override_value if str(item).strip()]
+                elif override_value is not None:
+                    candidate = str(override_value).strip()
+                    if candidate:
+                        override_candidates = [candidate]
+
+            for candidate in override_candidates:
+                if candidate in header_map:
+                    resolved[field] = candidate
+                    break
+
+            if field in resolved:
+                continue
+
             for candidate in candidates:
                 if candidate in header_map:
                     resolved[field] = candidate
@@ -199,22 +212,36 @@ class EsbService:
             f"交易码:{entry.get('service_code','')}"
         ).strip()
 
+    def _entry_matches_system_id(self, entry: Dict[str, Any], target_system_id: Optional[str]) -> bool:
+        normalized_target = str(target_system_id or "").strip()
+        if not normalized_target:
+            return True
+
+        provider = str(entry.get("provider_system_id") or "").strip()
+        consumer = str(entry.get("consumer_system_id") or "").strip()
+        return provider == normalized_target or consumer == normalized_target
+
     def import_esb(
         self,
         file_content: bytes,
         filename: str,
-        mapping_json: Optional[Dict[str, str]] = None,
+        mapping_json: Optional[Dict[str, Any]] = None,
+        target_system_id: Optional[str] = None,
+        strict_embedding: bool = False,
     ) -> Dict[str, Any]:
         mapping_json = mapping_json or {}
         parsed_sheets = self._parse_file(file_content, filename)
         if not parsed_sheets:
             raise ValueError("ESB文件解析失败或为空")
 
+        normalized_target_system_id = str(target_system_id or "").strip()
+
         imported = 0
         skipped = 0
         errors: List[str] = []
         entries: List[Dict[str, Any]] = []
         system_summary: List[Dict[str, Any]] = []
+        missing_required_headers = False
 
         for sheet_name, rows in parsed_sheets.items():
             if not rows:
@@ -227,6 +254,7 @@ class EsbService:
             is_summary = ("system_id" in summary_mapping and "system_name" in summary_mapping and not is_detail)
 
             if not is_detail and not is_summary:
+                missing_required_headers = True
                 errors.append(f"Sheet {sheet_name}: 缺少必填列，已跳过")
                 continue
 
@@ -234,6 +262,9 @@ class EsbService:
                 for idx, row in enumerate(rows, start=2):
                     item = self._extract_summary_row(row, summary_mapping)
                     if not item.get("system_id") or not item.get("system_name"):
+                        skipped += 1
+                        continue
+                    if normalized_target_system_id and str(item.get("system_id") or "").strip() != normalized_target_system_id:
                         skipped += 1
                         continue
                     item["source_file"] = filename
@@ -249,6 +280,11 @@ class EsbService:
                     if reason:
                         errors.append(f"Sheet {sheet_name} row {idx}: {reason}")
                     continue
+
+                if normalized_target_system_id and not self._entry_matches_system_id(entry, normalized_target_system_id):
+                    skipped += 1
+                    continue
+
                 entry.update(
                     {
                         "source_file": filename,
@@ -259,6 +295,9 @@ class EsbService:
                 )
                 entries.append(entry)
 
+        if missing_required_headers and not entries and not system_summary:
+            raise ValueError("ESB文件缺少必填字段：provider_system_id, consumer_system_id, service_name, status")
+
         if entries:
             try:
                 embedding_service = self._ensure_embedding_service()
@@ -267,6 +306,8 @@ class EsbService:
                 for entry, emb in zip(entries, embeddings):
                     entry["embedding"] = emb
             except Exception as exc:
+                if strict_embedding:
+                    raise RuntimeError("embedding服务不可用") from exc
                 logger.warning(f"ESB embedding生成失败，降级为无embedding: {exc}")
                 for entry in entries:
                     entry["embedding"] = None
@@ -274,9 +315,27 @@ class EsbService:
         imported = len(entries)
 
         with self._store_context() as store:
-            store["entries"] = entries
+            existing_entries = store.get("entries") if isinstance(store.get("entries"), list) else []
+            if normalized_target_system_id:
+                retained_entries = [
+                    item for item in existing_entries
+                    if not self._entry_matches_system_id(item if isinstance(item, dict) else {}, normalized_target_system_id)
+                ]
+                store["entries"] = retained_entries + entries
+            else:
+                store["entries"] = entries
+
             if system_summary:
-                store["system_summary"] = system_summary
+                existing_summary = store.get("system_summary") if isinstance(store.get("system_summary"), list) else []
+                if normalized_target_system_id:
+                    retained_summary = [
+                        item for item in existing_summary
+                        if str((item or {}).get("system_id") or "").strip() != normalized_target_system_id
+                    ]
+                    store["system_summary"] = retained_summary + system_summary
+                else:
+                    store["system_summary"] = system_summary
+
             store["meta"]["updated_at"] = datetime.now().isoformat()
 
         return {

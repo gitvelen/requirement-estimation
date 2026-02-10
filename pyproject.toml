@@ -121,3 +121,9 @@ dev = [
 # 配置私有 PyPI 索引（内网私服）
 # url = "http://your-private-pypi-server/simple"
 # default = false
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::UserWarning:langchain_core._api.deprecation",
+    "ignore:'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction\\(\\) instead:DeprecationWarning:pymilvus.decorators",
+]

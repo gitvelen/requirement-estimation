@@ -3,7 +3,7 @@
 生产环境通过 X-API-Key 保护敏感接口
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import jwt
 from fastapi import Header, HTTPException, Depends
@@ -47,7 +47,7 @@ def require_admin_api_key(
 
 
 def create_access_token(payload: Dict[str, Any]) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     data = {**payload, "exp": expire}
     return jwt.encode(data, settings.JWT_SECRET, algorithm="HS256")
 

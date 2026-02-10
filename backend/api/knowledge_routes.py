@@ -2,14 +2,19 @@
 知识库管理API路由
 提供知识导入、检索、统计等接口
 """
+import json
 import logging
 import os
-from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+import uuid
+from typing import Any, Dict, Optional
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
 from pydantic import BaseModel
 
 from backend.service.knowledge_service import get_knowledge_service
+from backend.service.system_profile_service import get_system_profile_service
 from backend.api.auth import require_roles
+from backend.api.error_utils import build_error_response
+from backend.api import system_routes
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,309 @@ class SearchRequest(BaseModel):
     top_k: int = 5  # 返回结果数
     similarity_threshold: float = 0.6  # 相似度阈值
 
+
+
+
+SUPPORTED_IMPORT_EXTENSIONS = {".docx", ".doc", ".pdf", ".pptx", ".txt", ".xlsx", ".xls", ".csv"}
+
+
+def _parsed_to_text(parsed_data: Any) -> str:
+    if isinstance(parsed_data, str):
+        return parsed_data
+
+    if isinstance(parsed_data, list):
+        lines = []
+        for item in parsed_data:
+            if isinstance(item, dict):
+                line = " ".join(str(v).strip() for v in item.values() if str(v).strip())
+                if line:
+                    lines.append(line)
+            elif item is not None:
+                line = str(item).strip()
+                if line:
+                    lines.append(line)
+        return "\n".join(lines)
+
+    if isinstance(parsed_data, dict):
+        if "text" in parsed_data and isinstance(parsed_data.get("text"), str):
+            return str(parsed_data.get("text") or "")
+
+        if parsed_data and all(isinstance(v, list) for v in parsed_data.values()):
+            lines = []
+            for _, rows in parsed_data.items():
+                for row in rows:
+                    if isinstance(row, list):
+                        line = " | ".join(str(cell).strip() for cell in row if cell is not None and str(cell).strip())
+                        if line:
+                            lines.append(line)
+                    elif isinstance(row, dict):
+                        line = " ".join(str(v).strip() for v in row.values() if str(v).strip())
+                        if line:
+                            lines.append(line)
+            if lines:
+                return "\n".join(lines)
+
+        try:
+            return json.dumps(parsed_data, ensure_ascii=False)
+        except Exception:
+            return str(parsed_data)
+
+    return str(parsed_data)
+
+
+def _resolve_system_binding(system_id: str, system_name: str, guessed_system_name: str) -> Dict[str, str]:
+    normalized_id = str(system_id or "").strip()
+    normalized_name = str(system_name or "").strip()
+    guessed_name = str(guessed_system_name or "").strip()
+
+    if normalized_id:
+        owner_info = system_routes.resolve_system_owner(system_id=normalized_id)
+        if owner_info.get("system_found"):
+            return {
+                "system_id": str(owner_info.get("system_id") or normalized_id),
+                "system_name": str(owner_info.get("system_name") or ""),
+            }
+
+    if normalized_name:
+        owner_info = system_routes.resolve_system_owner(system_name=normalized_name)
+        if owner_info.get("system_found"):
+            return {
+                "system_id": str(owner_info.get("system_id") or ""),
+                "system_name": str(owner_info.get("system_name") or normalized_name),
+            }
+
+    if guessed_name:
+        owner_info = system_routes.resolve_system_owner(system_name=guessed_name)
+        if owner_info.get("system_found"):
+            return {
+                "system_id": str(owner_info.get("system_id") or ""),
+                "system_name": str(owner_info.get("system_name") or guessed_name),
+            }
+
+    return {"system_id": "", "system_name": ""}
+
+
+@router.post("/imports")
+async def import_knowledge_v2(
+    request: Request,
+    file: UploadFile = File(...),
+    knowledge_type: str = Form(...),
+    level: str = Form("normal"),
+    system_name: Optional[str] = Form(None),
+    system_id: Optional[str] = Form(None),
+    current_user: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    normalized_type = str(knowledge_type or "").strip().lower()
+    if normalized_type not in {"document", "code"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"reason": "knowledge_type 仅支持 document/code"},
+        )
+
+    normalized_level = str(level or "normal").strip().lower() or "normal"
+    if normalized_level not in {"normal", "l0"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"reason": "level 仅支持 normal/l0"},
+        )
+
+    if normalized_level == "l0" and normalized_type != "document":
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"reason": "仅 knowledge_type=document 支持 level=l0"},
+        )
+
+    if not file.filename:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+        )
+
+    ext = os.path.splitext(file.filename.lower())[1]
+    if ext not in SUPPORTED_IMPORT_EXTENSIONS:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"filename": file.filename},
+        )
+
+    try:
+        file_content = await file.read()
+        if not file_content:
+            raise ValueError("知识库文件解析失败")
+
+        if len(file_content) > 50 * 1024 * 1024:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="KNOW_001",
+                message="知识库文件类型不支持",
+                details={"reason": "文件大小超过50MB限制"},
+            )
+
+        knowledge_service = get_knowledge_service()
+
+        parsed_data = knowledge_service.document_parser.parse(
+            file_content=file_content,
+            filename=file.filename,
+        )
+        text_content = _parsed_to_text(parsed_data)
+        if not str(text_content or "").strip():
+            text_content = file_content.decode("utf-8", errors="ignore")
+
+        chunks = knowledge_service._chunk_text(text_content)
+        if not chunks:
+            raise ValueError("知识库文件解析失败")
+
+        provided_system_name = str(system_name or "").strip()
+        provided_system_id = str(system_id or "").strip()
+        explicit_binding = bool(provided_system_name or provided_system_id)
+        guessed_name = ""
+        if (not provided_system_name) and (not provided_system_id):
+            guessed_name = knowledge_service._guess_system_name(text_content[:3000], file.filename)
+
+        binding = _resolve_system_binding(
+            system_id=provided_system_id,
+            system_name=provided_system_name,
+            guessed_system_name=guessed_name,
+        )
+        bound_system_name = str(binding.get("system_name") or "").strip()
+        bound_system_id = str(binding.get("system_id") or "").strip()
+
+        if bound_system_name and bound_system_id:
+            ownership = system_routes.resolve_system_ownership(
+                current_user,
+                system_id=bound_system_id,
+                system_name=bound_system_name,
+            )
+            if not ownership.get("allowed_draft_write"):
+                owner_info = ownership.get("owner_info") or {}
+                resolved_owner_id = str(owner_info.get("resolved_owner_id") or "").strip()
+                resolved_backups = owner_info.get("resolved_backup_owner_ids") or []
+                has_backups = any(str(item).strip() for item in resolved_backups)
+                reason = "当前用户不是系统主责或B角"
+                if (not resolved_owner_id) and (not has_backups):
+                    reason = "系统清单未配置主责或B角（owner_id/owner_username/backup_owner_ids/backup_owner_usernames）"
+                elif owner_info.get("mapping_status") == "owner_username_unresolved":
+                    reason = "owner_username 未映射到有效用户"
+
+                if explicit_binding:
+                    return build_error_response(
+                        request=request,
+                        status_code=403,
+                        error_code="AUTH_001",
+                        message="权限不足",
+                        details={"reason": reason, "system_id": bound_system_id, "system_name": bound_system_name},
+                    )
+
+                # system binding is guessed; avoid unauthorized binding by falling back to UNASSIGNED
+                bound_system_name = ""
+                bound_system_id = ""
+
+        storage_system_name = bound_system_name or "UNASSIGNED"
+
+        try:
+            embeddings = knowledge_service.embedding_service.batch_generate_embeddings(chunks)
+        except Exception as exc:
+            return build_error_response(
+                request=request,
+                status_code=503,
+                error_code="EMB_001",
+                message="embedding服务不可用，请稍后重试",
+                details={"reason": str(exc)},
+            )
+
+        knowledge_list = []
+        for idx, chunk in enumerate(chunks):
+            embedding = embeddings[idx] if idx < len(embeddings) else []
+            metadata = {
+                "level": normalized_level,
+                "chunk_index": idx,
+                "source_filename": file.filename,
+                "bound_system_id": bound_system_id,
+                "bound_system_name": bound_system_name,
+                "imported_by": str(current_user.get("id") or current_user.get("username") or ""),
+            }
+            knowledge_list.append(
+                {
+                    "system_name": storage_system_name,
+                    "knowledge_type": normalized_type,
+                    "content": chunk,
+                    "embedding": embedding,
+                    "metadata": metadata,
+                    "source_file": file.filename,
+                }
+            )
+
+        insert_result = knowledge_service.vector_store.batch_insert_knowledge(knowledge_list)
+        imported = int(insert_result.get("success") or 0)
+        failed = int(insert_result.get("failed") or 0)
+        errors = []
+        if failed > 0:
+            errors.append(f"{failed} 条知识写入失败")
+        if not bound_system_name:
+            errors.append("未绑定系统，不更新完整度")
+
+        if imported > 0 and bound_system_name and normalized_type == "document":
+            profile_service = get_system_profile_service()
+            profile_service.mark_document_imported(
+                system_name=bound_system_name,
+                system_id=bound_system_id or None,
+                import_id=f"know_{uuid.uuid4().hex}",
+                source_file=file.filename,
+                level=normalized_level,
+                actor=current_user,
+            )
+
+            # 异步触发系统画像AI总结（失败不影响主流程）
+            try:
+                from backend.service.profile_summary_service import get_profile_summary_service
+
+                if bound_system_id and bound_system_name:
+                    get_profile_summary_service().trigger_summary(
+                        system_id=bound_system_id,
+                        system_name=bound_system_name,
+                        actor=current_user,
+                        reason="knowledge_import",
+                    )
+            except Exception as exc:
+                logger.warning("触发画像AI总结失败（忽略）: %s", exc)
+
+        return {
+            "imported": imported,
+            "failed": failed,
+            "errors": errors,
+        }
+    except ValueError as exc:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_002",
+            message="知识库文件解析失败",
+            details={"reason": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("知识导入失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_002",
+            message="知识库文件解析失败",
+            details={"reason": str(exc)},
+        )
 
 @router.post("/import")
 async def import_knowledge(
@@ -320,4 +628,3 @@ async def get_evaluation_metrics(
     except Exception as e:
         logger.error(f"获取评估指标失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"获取评估指标失败: {str(e)}")
-

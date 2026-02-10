@@ -17,7 +17,7 @@ export const NotificationProvider = ({ children }) => {
     try {
       setLoading(true);
       const response = await axios.get('/api/v1/notifications/unread-count');
-      setUnread(response.data.data?.unread || 0);
+      setUnread(Number(response.data?.unread_count || 0));
     } catch (error) {
       setUnread(0);
     } finally {

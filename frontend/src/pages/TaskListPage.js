@@ -1,112 +1,170 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Button, message, Card, Space, Typography, Tooltip, DatePicker, Select, Popconfirm, Tabs } from 'antd';
-import { EyeOutlined, DownloadOutlined, ReloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Button,
+  Card,
+  DatePicker,
+  message,
+  Space,
+  Tabs,
+  Tooltip,
+  Typography,
+} from 'antd';
+import {
+  DownloadOutlined,
+  EditOutlined,
+  EyeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import axios from 'axios';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import usePermission from '../hooks/usePermission';
 import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import StatusTag from '../components/StatusTag';
+import { formatDateTime, toIsoEndOfDay, toIsoStartOfDay } from '../utils/time';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
+const roleLabels = {
+  admin: '管理员',
+  manager: '项目经理',
+  expert: '专家',
+  viewer: '查看者',
+};
+
+const statusMap = {
+  pending: { color: 'default', text: '待处理' },
+  in_progress: { color: 'processing', text: '进行中' },
+  completed: { color: 'success', text: '已完成' },
+  closed: { color: 'default', text: '已关闭' },
+  unknown: { color: 'default', text: '未知' },
+};
+
+const aiStatusMap = {
+  pending: { color: 'default', text: '待处理' },
+  processing: { color: 'processing', text: '处理中' },
+  completed: { color: 'success', text: '已完成' },
+  failed: { color: 'error', text: '失败' },
+};
+
+const parseErrorMessage = (error, fallback) => {
+  const responseData = error?.response?.data;
+  return responseData?.message || responseData?.detail || fallback;
+};
+
 const TaskListPage = () => {
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const intervalRef = useRef(null);
+
+  const { activeRole, isAdmin, isManager, isExpert, isViewer } = usePermission();
+
+  const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const { isAdmin, isManager, isExpert } = usePermission();
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [activeTab, setActiveTab] = useState('ongoing');
   const [dateRange, setDateRange] = useState(null);
-  const [adminGroup, setAdminGroup] = useState('in_progress');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [taskGroups, setTaskGroups] = useState({
+    pending: { total: 0, items: [] },
+    in_progress: { total: 0, items: [] },
+    completed: { total: 0, items: [] },
+  });
 
-  const viewConfig = useMemo(() => {
-    if (location.pathname === '/tasks/my-evaluations') {
-      return {
-        endpoint: '/api/v1/profile/my-evaluations',
-        scope: 'assigned',
-        title: '我参与的评估',
-      };
+  const scope = useMemo(() => {
+    if (activeRole === 'admin' || activeRole === 'viewer') {
+      return 'all';
     }
-    if (location.pathname === '/tasks/my-tasks') {
-      return {
-        endpoint: '/api/v1/profile/my-tasks',
-        scope: 'created',
-        title: '我发起的任务',
-      };
+    if (activeRole === 'manager') {
+      return 'created';
     }
-    const params = new URLSearchParams(location.search);
-    const scopeParam = params.get('scope');
-    const defaultScope = isAdmin ? 'all' : isManager ? 'created' : 'assigned';
-    const finalScope = scopeParam || defaultScope;
-    const titleMap = {
-      all: '任务管理',
-      created: '我发起的任务',
-      assigned: '我参与的评估',
-    };
-    return {
-      endpoint: '/api/v1/tasks',
-      scope: finalScope,
-      title: location.pathname === '/tasks' ? '任务管理' : (titleMap[finalScope] || '评估任务列表'),
-    };
-  }, [location.pathname, location.search, isAdmin, isManager]);
+    if (activeRole === 'expert') {
+      return 'assigned';
+    }
+    return '';
+  }, [activeRole]);
 
-  const { endpoint, scope, title } = viewConfig;
-  const isEvaluationView = scope === 'assigned';
-
-  const fetchTasks = useCallback(async () => {
+  const fetchTaskGroups = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await axios.get(endpoint, {
-        params: endpoint === '/api/v1/tasks' && scope ? { scope } : undefined,
+
+      const params = {
+        group_by_status: true,
+        page,
+        page_size: pageSize,
+      };
+      if (scope) {
+        params.scope = scope;
+      }
+      if (dateRange && dateRange.length === 2) {
+        params.time_range = 'custom';
+        params.start_at = toIsoStartOfDay(dateRange[0]);
+        params.end_at = toIsoEndOfDay(dateRange[1]);
+      }
+
+      const response = await axios.get('/api/v1/tasks', { params });
+      const groups = response.data?.task_groups || {};
+      setTaskGroups({
+        pending: groups.pending || { total: 0, items: [] },
+        in_progress: groups.in_progress || { total: 0, items: [] },
+        completed: groups.completed || { total: 0, items: [] },
       });
-      setTasks(response.data.data || []);
     } catch (error) {
-      console.error('获取任务列表失败:', error);
-      message.error(error.response?.data?.detail || '获取任务列表失败');
+      message.error(parseErrorMessage(error, '获取任务列表失败'));
     } finally {
       setLoading(false);
     }
-  }, [endpoint, scope]);
+  }, [dateRange, page, pageSize, scope]);
 
   useEffect(() => {
-    fetchTasks();
+    fetchTaskGroups();
     if (autoRefresh) {
-      intervalRef.current = setInterval(fetchTasks, 3000);
+      intervalRef.current = setInterval(fetchTaskGroups, 3000);
     }
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
     };
-  }, [autoRefresh, fetchTasks]);
+  }, [autoRefresh, fetchTaskGroups]);
+
+  const combinedOngoingItems = useMemo(() => {
+    const merged = [
+      ...(taskGroups.pending?.items || []),
+      ...(taskGroups.in_progress?.items || []),
+    ];
+    merged.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return merged;
+  }, [taskGroups.in_progress?.items, taskGroups.pending?.items]);
 
   useEffect(() => {
-    const hasProcessingTasks = tasks.some(t => t.aiStatus === 'processing' || t.aiStatus === 'pending');
+    const candidates = activeTab === 'completed'
+      ? (taskGroups.completed?.items || [])
+      : combinedOngoingItems;
+    const hasProcessingTasks = candidates.some((task) => task.aiStatus === 'processing' || task.aiStatus === 'pending');
     if (hasProcessingTasks && !autoRefresh) {
       setAutoRefresh(true);
     } else if (!hasProcessingTasks && autoRefresh) {
       setAutoRefresh(false);
     }
-  }, [tasks, autoRefresh]);
+  }, [activeTab, autoRefresh, combinedOngoingItems, taskGroups.completed?.items]);
 
   const handleRefresh = async () => {
-    await fetchTasks();
+    await fetchTaskGroups();
     message.success('已刷新');
   };
 
-  const handleView = (taskId) => {
+  const handleView = useCallback((taskId) => {
     navigate(`/report/${taskId}`);
-  };
+  }, [navigate]);
 
-  const handleEdit = (taskId) => {
+  const handleEdit = useCallback((taskId) => {
     navigate(`/edit/${taskId}`);
-  };
+  }, [navigate]);
 
-  const handleEvaluate = (task) => {
+  const handleEvaluate = useCallback((task) => {
     if (task.myInviteToken) {
       navigate(`/evaluate/${task.id}?token=${encodeURIComponent(task.myInviteToken)}`);
       return;
@@ -115,9 +173,9 @@ const TaskListPage = () => {
     if (token) {
       navigate(`/evaluate/${task.id}?token=${encodeURIComponent(token)}`);
     }
-  };
+  }, [navigate]);
 
-  const handleDownload = async (taskId) => {
+  const handleDownload = useCallback(async (taskId) => {
     try {
       const response = await axios.get(`/api/v1/tasks/${taskId}/report`, {
         responseType: 'blob',
@@ -133,93 +191,18 @@ const TaskListPage = () => {
 
       message.success('下载成功');
     } catch (error) {
-      message.error(error.response?.data?.detail || '下载失败');
+      message.error(parseErrorMessage(error, '下载失败'));
     }
-  };
+  }, []);
 
-  const handleDelete = async (taskId) => {
-    try {
-      await axios.delete(`/api/v1/tasks/${taskId}`);
-      message.success('任务已删除');
-      fetchTasks();
-    } catch (error) {
-      message.error(error.response?.data?.detail || '删除失败');
-    }
-  };
-
-  const handleArchive = async (taskId) => {
-    try {
-      await axios.put(`/api/v1/tasks/${taskId}/archive`);
-      message.success('任务已归档');
-      fetchTasks();
-    } catch (error) {
-      message.error(error.response?.data?.detail || '归档失败');
-    }
-  };
-
-  const filteredTasks = useMemo(() => {
-    const toDate = (value) => {
-      if (!value) return null;
-      if (typeof value.toDate === 'function') return value.toDate();
-      return value instanceof Date ? value : new Date(value);
-    };
-    let result = [...tasks];
-    if (isAdmin && scope === 'all') {
-      const groupMap = {
-        in_progress: ['draft', 'awaiting_assignment', 'evaluating'],
-        completed: ['completed', 'archived'],
-      };
-      const allow = groupMap[adminGroup] || [];
-      result = result.filter((item) => allow.includes(item.status));
-    }
-    if (statusFilter && statusFilter !== 'all') {
-      result = result.filter((item) => item.status === statusFilter);
-    }
-    if (dateRange && dateRange.length === 2) {
-      const start = toDate(dateRange[0]);
-      const end = toDate(dateRange[1]);
-      if (start && end) {
-        const startTime = new Date(start.setHours(0, 0, 0, 0)).getTime();
-        const endTime = new Date(end.setHours(23, 59, 59, 999)).getTime();
-        result = result.filter((item) => {
-          const createdAt = toDate(item.createdAt);
-          if (!createdAt) return false;
-          const time = createdAt.getTime();
-          return time >= startTime && time <= endTime;
-        });
-      }
-    }
-    result.sort((a, b) => {
-      const aTime = toDate(a.createdAt)?.getTime() || 0;
-      const bTime = toDate(b.createdAt)?.getTime() || 0;
-      return bTime - aTime;
-    });
-    return result;
-  }, [tasks, statusFilter, dateRange, adminGroup, isAdmin, scope]);
-
-  const workflowStatusMap = {
-    draft: { color: 'default', text: '草稿' },
-    awaiting_assignment: { color: 'warning', text: '待分配' },
-    evaluating: { color: 'processing', text: '评估中' },
-    completed: { color: 'success', text: '已完成' },
-    archived: { color: 'default', text: '已归档' },
-  };
-
-  const aiStatusMap = {
-    pending: { color: 'default', text: '待处理' },
-    processing: { color: 'processing', text: '处理中' },
-    completed: { color: 'success', text: '已完成' },
-    failed: { color: 'error', text: '失败' },
-  };
-
-  const renderAiStatus = (status, progress, messageText) => (
+  const renderAiStatus = useCallback((status, progress, messageText) => (
     <Space direction="vertical" size={0}>
       <StatusTag status={status} map={aiStatusMap} />
       <Text type="secondary" style={{ fontSize: 12 }}>{progress ? `${progress}%` : '-'} {messageText || ''}</Text>
     </Space>
-  );
+  ), []);
 
-  const columns = [
+  const columns = useMemo(() => ([
     {
       title: '任务名称',
       dataIndex: 'name',
@@ -240,186 +223,155 @@ const TaskListPage = () => {
       render: (value) => value || '-',
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 120,
-      render: (value) => <StatusTag status={value} map={workflowStatusMap} />,
-    },
-    {
-      title: 'AI状态',
-      key: 'aiStatus',
-      width: 180,
-      render: (_, record) => renderAiStatus(record.aiStatus, record.progress, record.message),
-    },
-    {
-      title: '评估进度',
-      key: 'progress',
-      width: 120,
-      render: (_, record) => {
-        const progress = record.evaluationProgress || {};
-        if (record.status !== 'evaluating') {
-          return <Text type="secondary">-</Text>;
-        }
-        return <Text>{progress.submitted || 0}/{progress.total || 0}</Text>;
-      },
-    },
-    {
-      title: '当前轮次',
-      dataIndex: 'currentRound',
-      key: 'currentRound',
-      width: 100,
-      render: (round) => round || 1,
-    },
-    {
       title: '创建时间',
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
+      render: (value) => formatDateTime(value),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 120,
+      render: (value) => <StatusTag status={value || 'unknown'} map={statusMap} />,
+    },
+    {
+      title: 'AI状态',
+      key: 'aiStatus',
+      width: 200,
+      render: (_, record) => renderAiStatus(record.aiStatus, record.progress, record.message),
+    },
+    {
+      title: '评估进度',
+      key: 'evaluationProgress',
+      width: 120,
+      render: (_, record) => {
+        const progress = record.evaluationProgress || {};
+        const submitted = progress.submitted || 0;
+        const total = progress.total || 0;
+        return (
+          <Space direction="vertical" size={0}>
+            <Text>{submitted}/{total}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>已提交/总数</Text>
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
-      key: 'action',
-      width: 420,
+      key: 'actions',
+      width: 280,
       fixed: 'right',
       render: (_, record) => (
-        <Space size="small">
-          {record.status === 'draft' && isManager ? (
-            <Button
-              type="primary"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => handleEdit(record.id)}
-            >
-              编辑功能点
-            </Button>
-          ) : (
-            <Button
-              type="primary"
-              size="small"
-              icon={<EyeOutlined />}
-              onClick={() => handleView(record.id)}
-            >
-              查看
-            </Button>
+        <Space>
+          <Tooltip title="查看详情">
+            <Button size="small" icon={<EyeOutlined />} onClick={() => handleView(record.id)} />
+          </Tooltip>
+          {isManager && record.aiStatus === 'completed' && (
+            <Tooltip title="编辑功能点">
+              <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record.id)} />
+            </Tooltip>
           )}
-          {record.status === 'evaluating' && isExpert && (
-            <Button size="small" onClick={() => handleEvaluate(record)}>
-              进入评估
-            </Button>
-          )}
-          {(isAdmin || isManager) && (
-            <Button
-              size="small"
-              icon={<DownloadOutlined />}
-              onClick={() => handleDownload(record.id)}
-              disabled={record.status !== 'completed'}
-            >
-              下载报告
-            </Button>
-          )}
-          {(isAdmin || isManager) && ['draft', 'awaiting_assignment'].includes(record.status) && (
-            <Popconfirm
-              title="确定删除该任务吗？"
-              onConfirm={() => handleDelete(record.id)}
-              okText="删除"
-              cancelText="取消"
-            >
-              <Button size="small" danger>
-                删除
+          {isExpert && activeTab === 'ongoing' && (
+            <Tooltip title="进入评估">
+              <Button size="small" type="primary" onClick={() => handleEvaluate(record)}>
+                评估
               </Button>
-            </Popconfirm>
+            </Tooltip>
           )}
-          {(isAdmin || isManager) && record.status === 'completed' && (
-            <Popconfirm
-              title="确定归档该任务吗？"
-              onConfirm={() => handleArchive(record.id)}
-              okText="归档"
-              cancelText="取消"
-            >
-              <Button size="small">
-                归档
-              </Button>
-            </Popconfirm>
+          {(record.status === 'completed' || record.status === 'closed') && (
+            <Tooltip title="下载报告">
+              <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(record.id)} />
+            </Tooltip>
           )}
         </Space>
       ),
     },
+  ]), [activeTab, isExpert, isManager, handleDownload, handleEdit, handleEvaluate, handleView, renderAiStatus]);
+
+  const ongoingTotal = (taskGroups.pending?.total || 0) + (taskGroups.in_progress?.total || 0);
+  const completedTotal = taskGroups.completed?.total || 0;
+
+  const canCreateTask = isManager;
+  const canSeeTasks = isAdmin || isManager || isExpert || isViewer;
+  const roleLabel = roleLabels[activeRole] || activeRole || '-';
+
+  if (!canSeeTasks) {
+    return (
+      <Card>
+        <Text type="secondary">当前角色无任务管理权限。</Text>
+      </Card>
+    );
+  }
+
+  const tabItems = [
+    { key: 'ongoing', label: `进行中（${ongoingTotal}）` },
+    { key: 'completed', label: `已完成（${completedTotal}）` },
   ];
+
+  const dataSource = activeTab === 'completed' ? (taskGroups.completed?.items || []) : combinedOngoingItems;
+  const total = activeTab === 'completed' ? completedTotal : ongoingTotal;
 
   return (
     <div>
       <PageHeader
-        title={title}
-        extra={isManager && !isEvaluationView ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/upload')}>
-            发起评估
-          </Button>
-        ) : null}
-      />
-      <Card className="task-list-card">
-        {isAdmin && scope === 'all' && (
-          <Tabs
-            activeKey={adminGroup}
-            onChange={(key) => {
-              setAdminGroup(key);
-              setStatusFilter('all');
-            }}
-            items={[
-              { key: 'in_progress', label: '在途中' },
-              { key: 'completed', label: '已完成' },
-            ]}
-            style={{ marginBottom: 12 }}
-          />
-        )}
-        {isManager && isExpert && !isAdmin && location.pathname === '/tasks' && (
-          <Tabs
-            activeKey={scope === 'assigned' ? 'assigned' : 'created'}
-            onChange={(key) => {
-              const params = new URLSearchParams(location.search);
-              params.set('scope', key);
-              navigate(`/tasks?${params.toString()}`);
-              setStatusFilter('all');
-            }}
-            items={[
-              { key: 'created', label: '我发起的' },
-              { key: 'assigned', label: '我参与的' },
-            ]}
-            style={{ marginBottom: 12 }}
-          />
-        )}
-        <div style={{ marginBottom: 16 }}>
-          <Space wrap>
-            <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
+        title="任务管理"
+        subtitle={`当前视角：${roleLabel}`}
+        extra={(
+          <Space>
+            {canCreateTask && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate(`/upload${location.search || ''}`)}>
+                发起评估
+              </Button>
+            )}
+            <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
               刷新
             </Button>
-            <Select
-              value={statusFilter}
-              onChange={setStatusFilter}
-              style={{ width: 140 }}
-              options={[
-                { label: '全部状态', value: 'all' },
-                { label: '草稿', value: 'draft' },
-                { label: '待分配', value: 'awaiting_assignment' },
-                { label: '评估中', value: 'evaluating' },
-                { label: '已完成', value: 'completed' },
-                { label: '已归档', value: 'archived' },
-              ]}
-            />
-            <RangePicker value={dateRange} onChange={setDateRange} />
-            <Button onClick={() => { setStatusFilter('all'); setDateRange(null); }}>
-              清空筛选
-            </Button>
           </Space>
-        </div>
-        <DataTable
-          rowKey="id"
-          columns={columns}
-          dataSource={filteredTasks}
-          loading={loading}
-          scroll={{ x: 1400 }}
-          pagination={{ pageSize: 10 }}
-        />
+        )}
+      />
+
+      <Card>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space wrap>
+            <Tabs
+              activeKey={activeTab}
+              onChange={(key) => {
+                setActiveTab(key);
+                setPage(1);
+              }}
+              items={tabItems}
+            />
+            <RangePicker
+              value={dateRange}
+              onChange={(value) => {
+                setDateRange(value);
+                setPage(1);
+              }}
+            />
+          </Space>
+
+          <DataTable
+            rowKey="id"
+            columns={columns}
+            dataSource={dataSource}
+            loading={loading}
+            scroll={{ x: 1200 }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              onChange: (nextPage, nextSize) => {
+                setPage(nextPage);
+                if (nextSize !== pageSize) {
+                  setPageSize(nextSize);
+                }
+              },
+            }}
+          />
+        </Space>
       </Card>
     </div>
   );

@@ -18,7 +18,7 @@ except ImportError:
     FCNTL_AVAILABLE = False
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Depends, Query
@@ -32,8 +32,10 @@ from backend.service.knowledge_service import get_knowledge_service
 from backend.service import user_service
 from backend.utils.pdf_report import write_report_pdf
 from backend.api.auth import get_current_user, require_roles
+from backend.api import system_routes
 from backend.service.ai_effect_service import create_snapshots
 from backend.api.notification_routes import create_notification
+from backend.api.error_utils import build_error_response
 
 # 创建logger实例
 logger = logging.getLogger(__name__)
@@ -161,6 +163,10 @@ def _ensure_task_schema(task: Dict[str, Any]) -> None:
     task.setdefault("deviations", {})
     task.setdefault("round_means", {})
     task.setdefault("high_deviation_features", {})
+    task.setdefault("modification_traces", [])
+    task.setdefault("ai_initial_features", [])
+    task.setdefault("ai_initial_feature_count", int(task.get("ai_initial_feature_count") or 0))
+    task.setdefault("ai_involved", bool(task.get("ai_involved") or task.get("ai_initial_feature_count") or task.get("ai_initial_features")))
     task.setdefault("ai_status", task.get("status"))
     task.setdefault("requirement_content", task.get("requirement_content") or "")
     task.setdefault("ai_system_analysis", task.get("ai_system_analysis"))
@@ -173,6 +179,8 @@ def _ensure_task_schema(task: Dict[str, Any]) -> None:
     elif task.get("status") == "completed" and task["workflow_status"] == "draft":
         # AI完成但未提交给管理员
         task["workflow_status"] = "draft"
+
+    _freeze_task_if_needed(task)
 
 
 def _ensure_feature_ids(task: Dict[str, Any]) -> bool:
@@ -308,6 +316,116 @@ def _get_default_scope(user: Dict[str, Any]) -> str:
     return "all"
 
 
+def _compute_task_estimation_snapshot(task: Dict[str, Any]) -> Dict[str, Any]:
+    systems_data = task.get("systems_data") or {}
+    latest_round = None
+    round_means = task.get("round_means") or {}
+    for key in round_means.keys():
+        try:
+            round_no = int(key)
+        except (TypeError, ValueError):
+            continue
+        if latest_round is None or round_no > latest_round:
+            latest_round = round_no
+
+    latest_means: Dict[str, Any] = {}
+    if latest_round is not None:
+        latest_means = round_means.get(str(latest_round)) or {}
+
+    ai_total = 0.0
+    final_total = 0.0
+    ai_by_system = []
+    final_by_system = []
+
+    for system_name, features in systems_data.items():
+        if not isinstance(features, list):
+            continue
+        ai_sum = 0.0
+        final_sum = 0.0
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            ai_value = float(_get_ai_estimate(feature))
+            ai_sum += ai_value
+            feature_id = str(feature.get("id") or "").strip()
+            final_value = ai_value
+            if feature_id and feature_id in latest_means:
+                try:
+                    final_value = float(latest_means.get(feature_id) or 0.0)
+                except (TypeError, ValueError):
+                    final_value = ai_value
+            final_sum += final_value
+
+        ai_sum = round(ai_sum, 2)
+        final_sum = round(final_sum, 2)
+        ai_total += ai_sum
+        final_total += final_sum
+
+        owner_info = system_routes.resolve_system_owner(system_name=system_name)
+        system_id = owner_info.get("system_id") or ""
+        ai_by_system.append({"system_id": system_id, "system_name": system_name, "days": ai_sum})
+        final_by_system.append({"system_id": system_id, "system_name": system_name, "days": final_sum})
+
+    return {
+        "ai_total": round(ai_total, 2),
+        "final_total": round(final_total, 2),
+        "ai_by_system": ai_by_system,
+        "final_by_system": final_by_system,
+    }
+
+
+def _build_owner_snapshot(task: Dict[str, Any], final_by_system: List[Dict[str, Any]]) -> Dict[str, Any]:
+    owners = []
+    primary_owner = None
+    primary_days = -1.0
+
+    for item in final_by_system:
+        system_name = str(item.get("system_name") or "").strip()
+        final_days = float(item.get("days") or 0.0)
+        if not system_name:
+            continue
+
+        owner_info = system_routes.resolve_system_owner(system_name=system_name)
+        owner_entry = {
+            "system_id": owner_info.get("system_id") or "",
+            "system_name": system_name,
+            "owner_id": owner_info.get("resolved_owner_id") or "",
+            "owner_name": owner_info.get("owner_name") or "",
+            "final_days": round(final_days, 2),
+        }
+        owners.append(owner_entry)
+
+        if final_days > primary_days:
+            primary_days = final_days
+            primary_owner = owner_entry
+
+    snapshot = {"owners": owners}
+    if primary_owner:
+        snapshot["primary_owner_id"] = primary_owner.get("owner_id") or ""
+        snapshot["primary_owner_name"] = primary_owner.get("owner_name") or ""
+    else:
+        snapshot["primary_owner_id"] = ""
+        snapshot["primary_owner_name"] = ""
+    return snapshot
+
+
+def _freeze_task_if_needed(task: Dict[str, Any]) -> None:
+    if not isinstance(task, dict):
+        return
+    if task.get("workflow_status") != "completed":
+        return
+    if task.get("frozen_at"):
+        return
+
+    snapshot = _compute_task_estimation_snapshot(task)
+    task["frozen_at"] = datetime.now().isoformat()
+    task["ai_estimation_days_total"] = snapshot["ai_total"]
+    task["final_estimation_days_total"] = snapshot["final_total"]
+    task["ai_estimation_days_by_system"] = snapshot["ai_by_system"]
+    task["final_estimation_days_by_system"] = snapshot["final_by_system"]
+    task["owner_snapshot"] = _build_owner_snapshot(task, snapshot["final_by_system"])
+
+
 def _ensure_manager_access(task: Dict[str, Any], user: Dict[str, Any]) -> None:
     roles = user.get("roles", [])
     if "admin" in roles:
@@ -382,6 +500,44 @@ def _build_feature_index(task: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             if fid:
                 features_by_id[fid] = feature
     return features_by_id
+
+
+def _extract_ai_reasoning(feature: Dict[str, Any]) -> str:
+    for key in ("reasoning", "ai_reasoning", "AI推理", "AI分析理由", "推理", "analysis"):
+        value = feature.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_ai_initial_snapshot(systems_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    snapshots: List[Dict[str, Any]] = []
+    for system_name, features in (systems_data or {}).items():
+        if not isinstance(features, list):
+            continue
+        for index, feature in enumerate(features):
+            if not isinstance(feature, dict):
+                continue
+            feature_copy = dict(feature)
+            feature_id = str(feature_copy.get("id") or feature_copy.get("feature_id") or "").strip()
+            if not feature_id:
+                feature_id = f"feat_{uuid.uuid4().hex}"
+                feature_copy["id"] = feature_id
+            feature_copy.setdefault("系统", system_name)
+            snapshots.append(
+                {
+                    "feature_id": feature_id,
+                    "system_name": str(system_name),
+                    "reasoning": _extract_ai_reasoning(feature_copy),
+                    "feature": feature_copy,
+                    "captured_at": datetime.now().isoformat(),
+                    "sequence": index + 1,
+                }
+            )
+    return snapshots
 
 
 def _get_round_evaluations(task: Dict[str, Any], round_no: int) -> Dict[str, Dict[str, float]]:
@@ -531,6 +687,7 @@ def _finalize_round(task: Dict[str, Any], round_no: int) -> None:
     else:
         task["workflow_status"] = "completed"
         task["completed_at"] = datetime.now().isoformat()
+        _freeze_task_if_needed(task)
 
 
 def _safe_log_task_event():
@@ -552,14 +709,16 @@ def _safe_log_modification_event():
 
 
 def _sanitize_filename(filename: str, default_name: str = "upload.docx") -> str:
-    """将上传文件名清洗为安全的本地文件名"""
+    """将上传文件名清洗为安全的本地文件名（仅保留安全字符与白名单后缀）"""
     if not filename:
         return default_name
 
     cleaned = os.path.basename(filename.replace("\\", "/")).strip().replace("\x00", "")
     name, ext = os.path.splitext(cleaned)
-    if ext.lower() != ".docx":
-        ext = ".docx"
+    allowed_exts = {".docx", ".doc", ".xls"}
+    ext = ext.lower()
+    if ext not in allowed_exts:
+        ext = os.path.splitext(default_name)[1].lower() if default_name else ".docx"
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
     if not name:
         name = "upload"
@@ -991,8 +1150,36 @@ def process_task_sync(task_id: str, file_path: str):
                     task["message"] = message
             logger.info(f"[任务 {task_id}] 进度: {progress}% - {message}")
 
-        # 解析文档
-        requirement_data = docx_parser.parse(file_path)
+        # 解析文档（支持 .docx/.doc/.xls）
+        ext = os.path.splitext(str(file_path or ""))[1].lower()
+        if ext == ".docx":
+            requirement_data = docx_parser.parse(file_path)
+        elif ext == ".doc":
+            from backend.utils.old_format_parser import doc_bytes_to_text
+
+            with open(file_path, "rb") as f:
+                text = doc_bytes_to_text(f.read(), os.path.basename(file_path))
+            requirement_data = {
+                "requirement_name": "",
+                "requirement_summary": "",
+                "requirement_content": text,
+                "basic_info": {},
+                "all_paragraphs": [text] if text else [],
+            }
+        elif ext == ".xls":
+            from backend.utils.old_format_parser import xls_bytes_to_text
+
+            with open(file_path, "rb") as f:
+                text = xls_bytes_to_text(f.read(), os.path.basename(file_path))
+            requirement_data = {
+                "requirement_name": "",
+                "requirement_summary": "",
+                "requirement_content": text,
+                "basic_info": {},
+                "all_paragraphs": [text] if text else [],
+            }
+        else:
+            raise ValueError(f"不支持的文件类型: {ext}")
 
         # 提取文档文件名（不包含扩展名）作为需求名称
         task_snapshot = _get_task(task_id) or {}
@@ -1027,6 +1214,12 @@ def process_task_sync(task_id: str, file_path: str):
             task = data.get(task_id)
             if task:
                 task["systems_data"] = systems_data
+                _ensure_feature_ids(task)
+                if not task.get("ai_initial_features"):
+                    ai_initial_features = _build_ai_initial_snapshot(task.get("systems_data") or {})
+                    task["ai_initial_features"] = ai_initial_features
+                    task["ai_initial_feature_count"] = len(ai_initial_features)
+                    task["ai_involved"] = bool(ai_initial_features)
                 task["modifications"] = []  # 初始化为空列表
                 task["confirmed"] = False  # 初始状态为未确认
                 task["requirement_name"] = requirement_name
@@ -1815,8 +2008,10 @@ async def confirm_evaluation(task_id: str):
             if task_record:
                 task_record["confirmed"] = True
                 task_record["confirmed_at"] = confirmed_at
+                task_record["workflow_status"] = "completed"
                 task_record["report_path"] = report_path
                 task_record["message"] = "评估完成并已确认"
+                _freeze_task_if_needed(task_record)
 
         logger.info(f"[任务 {task_id}] 已确认，最终报告: {report_path}")
 
@@ -1908,6 +2103,7 @@ def _save_modifications_to_json(task_id: str, modifications: list):
 
 @router.post("/tasks")
 async def create_task_v2(
+    request: Request,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(""),
@@ -1916,23 +2112,53 @@ async def create_task_v2(
 ):
     """创建任务（v2）"""
     try:
-        if not file.filename or not file.filename.lower().endswith(".docx"):
-            raise HTTPException(status_code=400, detail="仅支持.docx格式文件")
+        if not file.filename:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="TASK_002",
+                message="任务文件类型不支持",
+            )
+
+        ext = os.path.splitext(file.filename.lower())[1]
+        allowed_exts = {".docx", ".doc", ".xls"}
+        if ext not in allowed_exts:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="TASK_002",
+                message="任务文件类型不支持",
+                details={"filename": file.filename, "supported": sorted(allowed_exts)},
+            )
 
         content = await file.read()
         if len(content) > settings.MAX_FILE_SIZE:
-            raise HTTPException(
+            return build_error_response(
+                request=request,
                 status_code=413,
-                detail=f"文件过大，最大允许{settings.MAX_FILE_SIZE // (1024*1024)}MB"
+                error_code="TASK_003",
+                message="文件过大",
+                details={
+                    "max_bytes": settings.MAX_FILE_SIZE,
+                    "max_mb": int(settings.MAX_FILE_SIZE // (1024 * 1024)),
+                },
             )
 
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                if mime_type != "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                    raise HTTPException(
+                allowed_mimes = {
+                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                    ".doc": {"application/msword", "application/vnd.ms-word"},
+                    ".xls": {"application/vnd.ms-excel"},
+                }
+                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
+                    return build_error_response(
+                        request=request,
                         status_code=400,
-                        detail=f"无效的文件类型: {mime_type}，仅支持.docx文件"
+                        error_code="TASK_002",
+                        message="任务文件类型不支持",
+                        details={"filename": file.filename, "mime_type": mime_type, "supported": sorted(allowed_exts)},
                     )
             except Exception as e:
                 logger.warning(f"MIME类型检测失败: {e}，继续处理")
@@ -1940,7 +2166,7 @@ async def create_task_v2(
         task_id = str(uuid.uuid4())
         upload_dir = settings.UPLOAD_DIR
         os.makedirs(upload_dir, exist_ok=True)
-        safe_filename = _sanitize_filename(file.filename)
+        safe_filename = _sanitize_filename(file.filename, default_name=f"upload{ext}")
         file_path = os.path.join(upload_dir, f"{task_id}_{safe_filename}")
         with open(file_path, "wb") as buffer:
             buffer.write(content)
@@ -1982,63 +2208,570 @@ async def create_task_v2(
         if background_tasks:
             background_tasks.add_task(process_task, task_id, file_path)
 
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {
-                "taskId": task_id,
-                "status": "processing",
-                "message": "AI正在分析文档，请稍候..."
-            }
-        }
+        return {"task_id": task_id, "status": "processing", "message": "AI正在分析文档，请稍候..."}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"创建任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="TASK_004",
+            message="任务文件解析失败",
+            details={"reason": str(e)},
+        )
 
 
-@router.get("/tasks")
-async def list_tasks_v2(
-    scope: Optional[str] = Query(None),
-    current_user: Dict[str, Any] = Depends(get_current_user)
+class DashboardQueryRequest(BaseModel):
+    page: str
+    perspective: str
+    filters: Optional[Dict[str, Any]] = None
+
+
+def _parse_dashboard_time_window(filters: Dict[str, Any]) -> Tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+    now = datetime.now()
+    time_range = str((filters or {}).get("time_range") or "").strip().lower()
+    if not time_range:
+        return None, None, None
+    if time_range == "last_7d":
+        return now - timedelta(days=7), now, None
+    if time_range == "last_30d":
+        return now - timedelta(days=30), now, None
+    if time_range == "this_month":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start, now, None
+    if time_range == "last_month":
+        current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = current_month_start - timedelta(microseconds=1)
+        start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start, end, None
+    if time_range == "custom":
+        start_at = str((filters or {}).get("start_at") or "").strip()
+        end_at = str((filters or {}).get("end_at") or "").strip()
+        if not start_at or not end_at:
+            return None, None, "time_range"
+        try:
+            return datetime.fromisoformat(start_at), datetime.fromisoformat(end_at), None
+        except Exception:
+            return None, None, "time_range"
+    return None, None, "time_range"
+
+
+@router.post("/efficiency/dashboard/query")
+async def query_efficiency_dashboard(
+    payload: DashboardQueryRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert", "viewer"])),
 ):
-    """获取任务列表（v2）"""
-    roles = current_user.get("roles", [])
-    selected_scope = scope or _get_default_scope(current_user)
-    if selected_scope not in {"all", "created", "assigned"}:
-        selected_scope = _get_default_scope(current_user)
-    if selected_scope == "all" and "admin" not in roles:
-        raise HTTPException(status_code=403, detail="无权查看全部任务")
-    if selected_scope == "created" and "manager" not in roles:
-        raise HTTPException(status_code=403, detail="无权查看发起任务")
-    if selected_scope == "assigned" and "expert" not in roles:
-        raise HTTPException(status_code=403, detail="无权查看评估任务")
+    page = str(payload.page or "").strip().lower()
+    perspective = str(payload.perspective or "").strip().lower()
+    if page not in {"overview", "rankings", "ai", "system", "flow"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_002",
+            message="报表参数不合法",
+            details={"field": "page"},
+        )
+    if perspective not in {"executive", "owner", "expert"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_002",
+            message="报表参数不合法",
+            details={"field": "perspective"},
+        )
+
+    filters = payload.filters if isinstance(payload.filters, dict) else {}
+    start_at, end_at, time_error = _parse_dashboard_time_window(filters)
+    if time_error:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_002",
+            message="报表参数不合法",
+            details={"field": time_error},
+        )
+
+    roles = set(current_user.get("roles", []))
+
+    filter_system_ids = set(_ensure_list(filters.get("system_ids")))
+    filter_project_ids = set(_ensure_list(filters.get("project_ids")))
+    filter_owner_id = str(filters.get("owner_id") or "").strip()
+    filter_expert_id = str(filters.get("expert_id") or "").strip()
 
     with _task_storage_context() as data:
         _cleanup_tasks(data)
         tasks = list(data.values())
 
-    result = []
+    scoped_tasks = []
     for task in tasks:
         _ensure_task_schema(task)
+        status_mapped = {
+            "draft": "pending",
+            "awaiting_assignment": "pending",
+            "evaluating": "in_progress",
+            "completed": "completed",
+            "archived": "closed",
+        }.get(str(task.get("workflow_status") or ""), "pending")
 
-        if selected_scope == "created":
-            creator_id = task.get("creator_id")
-            creator_name = task.get("creator_name")
-            if creator_id != current_user.get("id") and creator_name not in {
-                current_user.get("display_name"),
-                current_user.get("username")
-            }:
+        if status_mapped not in {"completed", "closed"}:
+            continue
+
+        if "admin" in roles or "viewer" in roles:
+            pass
+        elif "manager" in roles:
+            creator_ok = str(task.get("creator_id") or "") == str(current_user.get("id") or "")
+            owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+            owner_ok = str(owner_snapshot.get("primary_owner_id") or "") == str(current_user.get("id") or "")
+            if not (creator_ok or owner_ok):
                 continue
-        if selected_scope == "assigned":
+        elif "expert" in roles:
+            if not any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task)):
+                continue
+
+        frozen_at = str(task.get("frozen_at") or "").strip()
+        if not frozen_at:
+            continue
+        try:
+            frozen_dt = datetime.fromisoformat(frozen_at)
+        except Exception:
+            continue
+
+        if start_at and frozen_dt < start_at:
+            continue
+        if end_at and frozen_dt > end_at:
+            continue
+
+        if filters.get("ai_involved") is not None:
+            ai_flag = bool(task.get("ai_involved") or task.get("ai_initial_feature_count") or task.get("ai_initial_features"))
+            if ai_flag != bool(filters.get("ai_involved")):
+                continue
+
+        if filter_project_ids:
+            project_id = str(task.get("project_id") or "").strip()
+            if project_id not in filter_project_ids:
+                continue
+
+        by_system = task.get("final_estimation_days_by_system") if isinstance(task.get("final_estimation_days_by_system"), list) else []
+        task_system_ids = set()
+        for item in by_system:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("system_id") or item.get("system_name") or "").strip()
+            if sid:
+                task_system_ids.add(sid)
+        if filter_system_ids and not (task_system_ids & filter_system_ids):
+            continue
+
+        if filter_owner_id:
+            owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+            owner_id = str(owner_snapshot.get("primary_owner_id") or "").strip()
+            if owner_id != filter_owner_id:
+                continue
+
+        if filter_expert_id:
+            assignments = _get_active_assignments(task)
             matched = False
-            for assignment in _get_active_assignments(task):
-                if _assignment_matches_user(assignment, current_user):
+            for assignment in assignments:
+                expert_id = str(assignment.get("expert_id") or "").strip()
+                expert_name = str(assignment.get("expert_name") or "").strip()
+                if filter_expert_id in {expert_id, expert_name}:
                     matched = True
                     break
             if not matched:
                 continue
+
+        scoped_tasks.append(task)
+
+    sample_size = len(scoped_tasks)
+
+    total_final_days = sum(float(item.get("final_estimation_days_total") or 0.0) for item in scoped_tasks)
+    avg_final_days = round(total_final_days / sample_size, 2) if sample_size else 0.0
+    ai_involved_count = sum(1 for item in scoped_tasks if bool(item.get("ai_involved") or item.get("ai_initial_feature_count")))
+    ai_involved_rate = round(ai_involved_count / sample_size * 100, 2) if sample_size else 0.0
+
+    owner_counts: Dict[str, int] = {}
+    system_days: Dict[str, float] = {}
+    system_task_counts: Dict[str, int] = {}
+    hit_count = 0
+    ai_metric_count = 0
+    bias_values = []
+
+    for task in scoped_tasks:
+        owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+        owner_id = str(owner_snapshot.get("primary_owner_id") or "").strip() or "UNASSIGNED"
+        owner_counts[owner_id] = owner_counts.get(owner_id, 0) + 1
+
+        counted_system_ids = set()
+        for item in task.get("final_estimation_days_by_system") or []:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("system_id") or item.get("system_name") or "UNASSIGNED").strip()
+            if filter_system_ids and sid not in filter_system_ids:
+                continue
+            system_days[sid] = system_days.get(sid, 0.0) + float(item.get("days") or 0.0)
+            if sid not in counted_system_ids:
+                system_task_counts[sid] = system_task_counts.get(sid, 0) + 1
+                counted_system_ids.add(sid)
+
+        ai_total = float(task.get("ai_estimation_days_total") or 0.0)
+        final_total = float(task.get("final_estimation_days_total") or 0.0)
+        if final_total > 0:
+            ai_metric_count += 1
+            abs_error = abs(ai_total - final_total)
+            hit = (abs_error / final_total) <= 0.2 if final_total >= 1 else abs_error <= 0.5
+            if hit:
+                hit_count += 1
+            bias_values.append(ai_total - final_total)
+
+    owner_ranking = sorted(owner_counts.items(), key=lambda item: item[1], reverse=True)
+    system_ranking = sorted(system_days.items(), key=lambda item: item[1], reverse=True)
+    system_count_ranking = sorted(system_task_counts.items(), key=lambda item: item[1], reverse=True)
+    ai_hit_rate = round(hit_count / ai_metric_count * 100, 2) if ai_metric_count else 0.0
+    ai_bias = round(statistics.mean(bias_values), 2) if bias_values else 0.0
+
+    shared_filters = {
+        "time_range": filters.get("time_range"),
+        "start_at": filters.get("start_at"),
+        "end_at": filters.get("end_at"),
+        "ai_involved": filters.get("ai_involved"),
+    }
+    if len(filter_system_ids) == 1:
+        shared_filters["system_id"] = next(iter(filter_system_ids))
+    if len(filter_project_ids) == 1:
+        shared_filters["project_id"] = next(iter(filter_project_ids))
+    if filter_owner_id:
+        shared_filters["owner_id"] = filter_owner_id
+    if filter_expert_id:
+        shared_filters["expert_id"] = filter_expert_id
+
+    widgets = []
+    if page == "overview":
+        widgets = [
+            {
+                "widget_id": "task_completion_overview",
+                "title": "评估任务完成概览",
+                "sample_size": sample_size,
+                "data": {"task_count": sample_size, "avg_final_days": avg_final_days},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "ai_involved_rate",
+                "title": "AI参与率",
+                "sample_size": sample_size,
+                "data": {"rate": ai_involved_rate, "count": ai_involved_count},
+                "drilldown_filters": shared_filters,
+            },
+        ]
+    elif page == "rankings":
+        widgets = [
+            {
+                "widget_id": "owner_task_ranking",
+                "title": "负责人处理量排行",
+                "sample_size": sample_size,
+                "data": {
+                    "items": [
+                        {
+                            "owner_id": oid,
+                            "task_count": cnt,
+                            "drilldown_filters": {**shared_filters, "owner_id": oid},
+                        }
+                        for oid, cnt in owner_ranking[:10]
+                    ]
+                },
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "system_impact_ranking",
+                "title": "系统影响排行",
+                "sample_size": sample_size,
+                "data": {
+                    "items": [
+                        {
+                            "system_id": sid,
+                            "days": round(days, 2),
+                            "drilldown_filters": {**shared_filters, "system_id": sid},
+                        }
+                        for sid, days in system_ranking[:10]
+                    ]
+                },
+                "drilldown_filters": shared_filters,
+            },
+        ]
+    elif page == "ai":
+        widgets = [
+            {
+                "widget_id": "ai_accuracy_overview",
+                "title": "AI准确率概览",
+                "sample_size": ai_metric_count,
+                "data": {"hit_rate": ai_hit_rate, "sample_size": ai_metric_count},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "ai_bias_overview",
+                "title": "AI偏差概览",
+                "sample_size": ai_metric_count,
+                "data": {"bias": ai_bias},
+                "drilldown_filters": shared_filters,
+            },
+        ]
+    elif page == "system":
+        widgets = [
+            {
+                "widget_id": "system_remodel_count_top",
+                "title": "系统改造次数Top",
+                "sample_size": sample_size,
+                "data": {
+                    "items": [
+                        {
+                            "system_id": sid,
+                            "task_count": count,
+                            "drilldown_filters": {**shared_filters, "system_id": sid},
+                        }
+                        for sid, count in system_count_ranking[:10]
+                    ]
+                },
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "system_remodel_workload_top",
+                "title": "系统改造工作量Top",
+                "sample_size": sample_size,
+                "data": {
+                    "items": [
+                        {
+                            "system_id": sid,
+                            "days": round(days, 2),
+                            "drilldown_filters": {**shared_filters, "system_id": sid},
+                        }
+                        for sid, days in system_ranking[:10]
+                    ]
+                },
+                "drilldown_filters": shared_filters,
+            },
+        ]
+    elif page == "flow":
+        cycle_times = []
+        for task in scoped_tasks:
+            created_at = str(task.get("created_at") or "").strip()
+            frozen_at = str(task.get("frozen_at") or "").strip()
+            if not created_at or not frozen_at:
+                continue
+            try:
+                cycle_times.append((datetime.fromisoformat(frozen_at) - datetime.fromisoformat(created_at)).total_seconds() / 86400)
+            except Exception:
+                continue
+        avg_cycle = round(statistics.mean(cycle_times), 2) if cycle_times else 0.0
+
+        widgets = [
+            {
+                "widget_id": "flow_cycle_time",
+                "title": "流程周期",
+                "sample_size": len(cycle_times),
+                "data": {"avg_days": avg_cycle},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "flow_throughput",
+                "title": "流程吞吐",
+                "sample_size": sample_size,
+                "data": {"completed_tasks": sample_size},
+                "drilldown_filters": shared_filters,
+            },
+        ]
+
+    return {
+        "result": {
+            "page": page,
+            "perspective": perspective,
+            "widgets": widgets,
+        }
+    }
+
+
+@router.get("/tasks")
+async def list_tasks_v2(
+    scope: Optional[str] = Query(None),
+    group_by_status: bool = Query(False),
+    time_range: Optional[str] = Query(None),
+    start_at: Optional[str] = Query(None),
+    end_at: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    system_id: Optional[str] = Query(None),
+    owner_id: Optional[str] = Query(None),
+    expert_id: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    ai_involved: Optional[bool] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取任务列表（v2 / API-010）"""
+
+    roles = set(current_user.get("roles", []))
+    allowed_roles = {"admin", "manager", "expert", "viewer"}
+    if not (roles & allowed_roles):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+    def _map_status(workflow_status: str) -> str:
+        mapping = {
+            "draft": "pending",
+            "awaiting_assignment": "pending",
+            "evaluating": "in_progress",
+            "completed": "completed",
+            "archived": "closed",
+        }
+        return mapping.get(str(workflow_status or "").strip(), "pending")
+
+    def _parse_time_window() -> Tuple[Optional[datetime], Optional[datetime]]:
+        if not time_range:
+            return None, None
+
+        now = datetime.now()
+        value = str(time_range).strip().lower()
+        if value == "last_7d":
+            return now - timedelta(days=7), now
+        if value == "last_30d":
+            return now - timedelta(days=30), now
+        if value == "this_month":
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return month_start, now
+        if value == "last_month":
+            current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_month_end = current_month_start - timedelta(microseconds=1)
+            last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return last_month_start, last_month_end
+        if value == "custom":
+            if not start_at or not end_at:
+                return None, None
+            try:
+                return datetime.fromisoformat(start_at), datetime.fromisoformat(end_at)
+            except Exception:
+                return None, None
+        return None, None
+
+    def _match_scope(task: Dict[str, Any]) -> bool:
+        explicit_scope = str(scope or "").strip().lower()
+        if explicit_scope:
+            if explicit_scope not in {"all", "created", "assigned"}:
+                return False
+            if explicit_scope == "all":
+                return bool({"admin", "viewer"} & roles)
+            if explicit_scope == "created":
+                if "manager" not in roles:
+                    return False
+                creator_id = task.get("creator_id")
+                creator_name = task.get("creator_name")
+                return creator_id == current_user.get("id") or creator_name in {
+                    current_user.get("display_name"),
+                    current_user.get("username"),
+                }
+            if explicit_scope == "assigned":
+                if "expert" not in roles:
+                    return False
+                return any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task))
+
+        if "admin" in roles or "viewer" in roles:
+            return True
+        if "expert" in roles:
+            return any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task))
+        if "manager" in roles:
+            creator_id = task.get("creator_id")
+            creator_name = task.get("creator_name")
+            if creator_id == current_user.get("id") or creator_name in {
+                current_user.get("display_name"),
+                current_user.get("username"),
+            }:
+                return True
+            owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+            primary_owner_id = str(owner_snapshot.get("primary_owner_id") or "").strip()
+            return bool(primary_owner_id and primary_owner_id == str(current_user.get("id") or "").strip())
+        return False
+
+    def _extract_filter_time(task: Dict[str, Any], mapped_status: str) -> Optional[datetime]:
+        if mapped_status in {"completed", "closed"}:
+            candidates = [task.get("frozen_at"), task.get("confirmed_at"), task.get("completed_at"), task.get("created_at")]
+        else:
+            candidates = [task.get("created_at")]
+        for value in candidates:
+            text_value = str(value or "").strip()
+            if not text_value:
+                continue
+            try:
+                return datetime.fromisoformat(text_value)
+            except Exception:
+                continue
+        return None
+
+    def _match_filters(task: Dict[str, Any], mapped_status: str) -> bool:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status and normalized_status != mapped_status:
+            return False
+
+        normalized_system_id = str(system_id or "").strip()
+        if normalized_system_id:
+            systems = task.get("final_estimation_days_by_system") if isinstance(task.get("final_estimation_days_by_system"), list) else []
+            if not any(str(item.get("system_id") or "").strip() == normalized_system_id for item in systems if isinstance(item, dict)):
+                return False
+
+        normalized_owner_id = str(owner_id or "").strip()
+        if normalized_owner_id:
+            owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+            owner_ids = {str(owner_snapshot.get("primary_owner_id") or "").strip()}
+            for item in owner_snapshot.get("owners") or []:
+                if isinstance(item, dict):
+                    owner_ids.add(str(item.get("owner_id") or "").strip())
+            owner_ids.discard("")
+            if normalized_owner_id not in owner_ids:
+                return False
+
+        normalized_expert_id = str(expert_id or "").strip()
+        if normalized_expert_id:
+            assignments = task.get("expert_assignments") if isinstance(task.get("expert_assignments"), list) else []
+            if not any(
+                isinstance(item, dict) and str(item.get("expert_id") or "").strip() == normalized_expert_id
+                for item in assignments
+            ):
+                return False
+
+        normalized_project_id = str(project_id or "").strip()
+        if normalized_project_id and str(task.get("project_id") or "").strip() != normalized_project_id:
+            return False
+
+        if ai_involved is not None:
+            ai_flag = bool(task.get("ai_involved") or task.get("ai_initial_feature_count") or task.get("ai_initial_features"))
+            if ai_flag != bool(ai_involved):
+                return False
+
+        return True
+
+    window_start, window_end = _parse_time_window()
+
+    with _task_storage_context() as data:
+        _cleanup_tasks(data)
+        tasks = list(data.values())
+
+    items = []
+    for task in tasks:
+        _ensure_task_schema(task)
+
+        if not _match_scope(task):
+            continue
+
+        mapped_status = _map_status(task.get("workflow_status"))
+
+        if window_start or window_end:
+            filter_time = _extract_filter_time(task, mapped_status)
+            if not filter_time:
+                continue
+            if window_start and filter_time < window_start:
+                continue
+            if window_end and filter_time > window_end:
+                continue
+
+        if not _match_filters(task, mapped_status):
+            continue
 
         active_assignments = _get_active_assignments(task)
         round_no = task.get("current_round", 1)
@@ -2055,10 +2788,11 @@ async def list_tasks_v2(
                     my_invite_token = assignment.get("invite_token")
                     break
 
-        result.append({
+        items.append({
             "id": task.get("task_id"),
             "name": task.get("name"),
-            "status": task.get("workflow_status"),
+            "status": mapped_status,
+            "workflowStatus": task.get("workflow_status"),
             "aiStatus": task.get("ai_status") or task.get("status"),
             "progress": task.get("progress"),
             "message": task.get("message"),
@@ -2066,21 +2800,53 @@ async def list_tasks_v2(
             "maxRounds": task.get("max_rounds"),
             "creatorName": task.get("creator_name"),
             "createdAt": task.get("created_at"),
+            "frozenAt": task.get("frozen_at"),
             "systems": task.get("systems", []),
+            "ownerSnapshot": task.get("owner_snapshot"),
             "evaluationProgress": {
                 "submitted": submitted,
                 "total": len(active_assignments)
             },
             "reportVersions": task.get("report_versions", []),
-            "myInviteToken": my_invite_token
+            "myInviteToken": my_invite_token,
         })
 
-    result.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+    items.sort(key=lambda x: str(x.get("createdAt") or ""), reverse=True)
+
+    if group_by_status:
+        pending_items = [item for item in items if item.get("status") == "pending"]
+        in_progress_items = [item for item in items if item.get("status") == "in_progress"]
+        completed_items = [item for item in items if item.get("status") in {"completed", "closed"}]
+
+        def _paginate(group_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            return {
+                "total": len(group_items),
+                "items": group_items[start_idx:end_idx],
+            }
+
+        return {
+            "task_groups": {
+                "pending": _paginate(pending_items),
+                "in_progress": _paginate(in_progress_items),
+                "completed": _paginate(completed_items),
+            },
+            "page": page,
+            "page_size": page_size,
+        }
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    paged_items = items[start_idx:end_idx]
+
     return {
         "code": 200,
         "message": "success",
-        "data": result,
-        "total": len(result)
+        "data": paged_items,
+        "total": len(items),
+        "page": page,
+        "page_size": page_size,
     }
 
 
@@ -2133,7 +2899,7 @@ async def get_task_ai_progress(
 @router.get("/tasks/{task_id}")
 async def get_task_detail_v2(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     """获取任务详情（v2）"""
     with _task_storage_context() as data:
@@ -2159,7 +2925,13 @@ async def get_task_detail_v2(
             "invite_link": f"/evaluate/{task_id}?token={invite_token}" if invite_token else None
         })
 
-    _ensure_manager_access(task, current_user)
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
 
     return {
         "code": 200,
@@ -2365,7 +3137,7 @@ async def revoke_invite(
 @router.put("/tasks/{task_id}/archive")
 async def archive_task(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     with _task_storage_context() as data:
         task = data.get(task_id)
@@ -2381,7 +3153,7 @@ async def archive_task(
 @router.delete("/tasks/{task_id}")
 async def delete_task_v2(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     with _task_storage_context() as data:
         task = data.get(task_id)
@@ -2399,13 +3171,21 @@ async def delete_task_v2(
 @router.get("/tasks/{task_id}/reports")
 async def list_report_versions(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     _ensure_task_schema(task)
-    _ensure_manager_access(task, current_user)
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
+
     return {
         "code": 200,
         "data": {
@@ -2418,14 +3198,21 @@ async def list_report_versions(
 @router.get("/tasks/{task_id}/high-deviation")
 async def get_task_high_deviation(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     _ensure_task_schema(task)
     _ensure_feature_ids(task)
-    _ensure_manager_access(task, current_user)
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
 
     deviations = task.get("deviations", {})
     if not deviations:
@@ -2480,13 +3267,21 @@ async def get_task_high_deviation(
 async def download_report_version(
     task_id: str,
     report_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     _ensure_task_schema(task)
-    _ensure_manager_access(task, current_user)
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
+
     report = next((item for item in task.get("report_versions", []) if item.get("id") == report_id), None)
     if not report:
         raise HTTPException(status_code=404, detail="报告不存在")
@@ -2503,22 +3298,86 @@ async def download_report_version(
 @router.get("/tasks/{task_id}/report")
 async def download_latest_report(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    request: Request,
+    format: str = Query("pdf"),
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
+    normalized_format = str(format or "pdf").strip().lower()
+    if normalized_format not in {"pdf", "docx"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_002",
+            message="报表参数不合法",
+            details={"field": "format", "expected": ["pdf"]},
+        )
+    if normalized_format == "docx":
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_002",
+            message="报表参数不合法",
+            details={"field": "format", "supported": ["pdf"]},
+        )
+
     task = _get_task(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="TASK_001",
+            message="评估任务不存在",
+            details={"task_id": task_id},
+        )
+
     _ensure_task_schema(task)
-    _ensure_manager_access(task, current_user)
-    if not task.get("report_versions"):
-        raise HTTPException(status_code=404, detail="报告不存在")
+
+    roles = current_user.get("roles", [])
+    if "expert" in roles and "admin" not in roles and "manager" not in roles:
+        assigned = any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task))
+        if not assigned:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "专家未参与该任务", "task_id": task_id},
+            )
+    else:
+        try:
+            _ensure_manager_access(task, current_user)
+        except HTTPException:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "无权访问该任务", "task_id": task_id},
+            )
+
+    if task.get("workflow_status") != "completed" or not task.get("report_versions"):
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_003",
+            message="任务未完成或报告未生成，请稍后重试",
+            details={"task_id": task_id},
+        )
+
     latest = sorted(
         task.get("report_versions", []),
         key=lambda item: (item.get("round", 0), item.get("version", 0))
     )[-1]
     report_path = latest.get("file_path")
     if not report_path or not os.path.exists(report_path):
-        raise HTTPException(status_code=404, detail="报告文件不存在")
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="REPORT_003",
+            message="任务未完成或报告未生成，请稍后重试",
+            details={"task_id": task_id},
+        )
+
     return FileResponse(
         path=report_path,
         filename=os.path.basename(report_path),
@@ -2529,13 +3388,20 @@ async def download_latest_report(
 @router.get("/tasks/{task_id}/document")
 async def download_task_document(
     task_id: str,
-    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
 ):
     task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     _ensure_task_schema(task)
-    _ensure_manager_access(task, current_user)
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
 
     file_path = task.get("file_path")
     if not file_path or not os.path.exists(file_path):
@@ -2817,6 +3683,540 @@ async def get_evaluation_progress(task_id: str):
             "total": len(active_assignments),
             "assignments": active_assignments
         }
+    }
+
+
+def _expert_has_task_access(task: Dict[str, Any], current_user: Dict[str, Any]) -> bool:
+    return any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task))
+
+
+def _compute_expert_deviation_report(task: Dict[str, Any]) -> Dict[str, Any]:
+    _ensure_feature_ids(task)
+    features_by_id = _build_feature_index(task)
+    evaluations = task.get("evaluations") if isinstance(task.get("evaluations"), dict) else {}
+
+    latest_round = None
+    for key in evaluations.keys():
+        try:
+            round_no = int(key)
+        except (TypeError, ValueError):
+            continue
+        if latest_round is None or round_no > latest_round:
+            latest_round = round_no
+
+    if latest_round is None:
+        return {"summary": {"avg_deviation_pct": 0.0, "direction": "无数据"}, "by_feature": []}
+
+    round_key = str(latest_round)
+    round_evaluations = evaluations.get(round_key) or {}
+
+    by_feature = []
+    deviation_values = []
+
+    for feature_id, feature in features_by_id.items():
+        expert_values = []
+        for _, expert_map in round_evaluations.items():
+            if not isinstance(expert_map, dict):
+                continue
+            if feature_id not in expert_map:
+                continue
+            try:
+                expert_values.append(float(expert_map.get(feature_id) or 0.0))
+            except (TypeError, ValueError):
+                continue
+
+        if not expert_values:
+            continue
+
+        expert_mean = round(statistics.mean(expert_values), 2)
+        ai_days = round(float(_get_ai_estimate(feature)), 2)
+        base = max(expert_mean, 0.1)
+        deviation_pct = round((ai_days - expert_mean) / base * 100, 2)
+        deviation_values.append(deviation_pct)
+
+        by_feature.append(
+            {
+                "feature_id": feature_id,
+                "description": feature.get("功能点") or feature.get("name") or "",
+                "system_name": feature.get("系统") or feature.get("system") or "",
+                "ai_days": ai_days,
+                "expert_mean_days": expert_mean,
+                "deviation_pct": deviation_pct,
+            }
+        )
+
+    avg_deviation = round(statistics.mean(deviation_values), 2) if deviation_values else 0.0
+    direction = "AI低估" if avg_deviation < -10 else "AI高估" if avg_deviation > 10 else "基本一致"
+
+    by_feature.sort(key=lambda item: abs(item.get("deviation_pct") or 0), reverse=True)
+    return {
+        "summary": {
+            "avg_deviation_pct": avg_deviation,
+            "direction": direction,
+            "round": latest_round,
+            "feature_count": len(by_feature),
+        },
+        "by_feature": by_feature,
+    }
+
+
+@router.post("/internal/tasks/{task_id}/expert-deviations/compute")
+async def compute_expert_deviations(
+    task_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    with _task_storage_context() as data:
+        task = data.get(task_id)
+        if not task:
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="TASK_001",
+                message="评估任务不存在",
+                details={"task_id": task_id},
+            )
+
+        _ensure_task_schema(task)
+        report = _compute_expert_deviation_report(task)
+        task["expert_deviation_report"] = report
+
+    return {"deviation_report": report}
+
+
+@router.get("/tasks/{task_id}/expert-deviations")
+async def get_expert_deviations(
+    task_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"])),
+):
+    task = _get_task(task_id)
+    if not task:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="TASK_001",
+            message="评估任务不存在",
+            details={"task_id": task_id},
+        )
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            try:
+                _ensure_manager_access(task, current_user)
+            except HTTPException:
+                return build_error_response(
+                    request=request,
+                    status_code=403,
+                    error_code="AUTH_001",
+                    message="权限不足",
+                    details={"reason": "无权访问该任务", "task_id": task_id},
+                )
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                return build_error_response(
+                    request=request,
+                    status_code=403,
+                    error_code="AUTH_001",
+                    message="权限不足",
+                    details={"reason": "专家未参与该任务", "task_id": task_id},
+                )
+
+    report = task.get("expert_deviation_report")
+    if not isinstance(report, dict):
+        report = _compute_expert_deviation_report(task)
+
+    return {"deviation_report": report}
+
+
+@router.get("/tasks/{task_id}/evaluation")
+async def get_task_evaluation_detail(
+    task_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"])),
+):
+    task = _get_task(task_id)
+    if not task:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="TASK_001",
+            message="评估任务不存在",
+            details={"task_id": task_id},
+        )
+
+    _ensure_task_schema(task)
+    _ensure_feature_ids(task)
+
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            try:
+                _ensure_manager_access(task, current_user)
+            except HTTPException:
+                return build_error_response(
+                    request=request,
+                    status_code=403,
+                    error_code="AUTH_001",
+                    message="权限不足",
+                    details={"reason": "无权访问该任务", "task_id": task_id},
+                )
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                return build_error_response(
+                    request=request,
+                    status_code=403,
+                    error_code="AUTH_001",
+                    message="权限不足",
+                    details={"reason": "专家未参与该任务", "task_id": task_id},
+                )
+
+    features_payload = []
+    systems_data = task.get("systems_data") or {}
+    for system_name, features in systems_data.items():
+        if not isinstance(features, list):
+            continue
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            features_payload.append(
+                {
+                    "feature_id": feature.get("id"),
+                    "description": feature.get("功能点") or feature.get("description") or feature.get("name") or "",
+                    "complexity_level": feature.get("complexity_level") or feature.get("复杂度等级"),
+                    "complexity_score": feature.get("complexity_score") or feature.get("复杂度分数"),
+                    "estimation_days": _get_ai_estimate(feature),
+                    "reasoning": feature.get("reasoning") or feature.get("AI分析理由") or "",
+                    "system_name": system_name,
+                }
+            )
+
+    systems = list((task.get("systems") or systems_data.keys()))
+    primary_system = systems[0] if systems else ""
+    mapped_status = {
+        "draft": "pending",
+        "awaiting_assignment": "pending",
+        "evaluating": "in_progress",
+        "completed": "completed",
+        "archived": "closed",
+    }.get(str(task.get("workflow_status") or ""), "pending")
+
+    return {
+        "task_id": task.get("task_id"),
+        "task_name": task.get("name"),
+        "system_name": primary_system,
+        "status": mapped_status,
+        "features": features_payload,
+    }
+
+
+class InternalSystemProfileRetrieveRequest(BaseModel):
+    system_name: str
+    query: str
+    top_k: int = 20
+
+
+class InternalComplexityEvaluateRequest(BaseModel):
+    feature_description: str
+    system_context: Optional[Dict[str, Any]] = None
+
+
+def _calc_profile_completeness_score(profile: Optional[Dict[str, Any]]) -> int:
+    if not profile:
+        return 0
+    completeness = profile.get("completeness") if isinstance(profile.get("completeness"), dict) else {}
+    code_score = 30 if bool(completeness.get("code_scan")) else 0
+    doc_count = int(completeness.get("documents_normal") or profile.get("document_count") or 0)
+    if doc_count >= 11:
+        doc_score = 40
+    elif doc_count >= 6:
+        doc_score = 30
+    elif doc_count >= 1:
+        doc_score = 10
+    else:
+        doc_score = 0
+    esb_score = 30 if bool(completeness.get("esb")) else 0
+    return max(0, min(100, code_score + doc_score + esb_score))
+
+
+@router.post("/internal/system-profiles/retrieve")
+async def retrieve_system_profile_context(
+    payload: InternalSystemProfileRetrieveRequest,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    system_name = str(payload.system_name or "").strip()
+    query = str(payload.query or "").strip()
+    top_k = max(1, min(int(payload.top_k or 20), 50))
+
+    if not system_name or not query:
+        return build_error_response(
+            request=request,
+            status_code=403,
+            error_code="AUTH_001",
+            message="权限不足",
+            details={"reason": "system_name 与 query 必填"},
+        )
+
+    from backend.service.system_profile_service import get_system_profile_service
+    from backend.service.esb_service import get_esb_service
+    from backend.service.code_scan_service import get_code_scan_service
+
+    profile_service = get_system_profile_service()
+    profile = profile_service.get_profile(system_name)
+
+    knowledge_service = get_knowledge_service()
+    code_service = get_code_scan_service()
+    esb_service = get_esb_service()
+
+    capabilities = []
+    documents = []
+    esb_integrations = []
+    degraded = False
+
+    try:
+        query_embedding = knowledge_service.embedding_service.generate_embedding(query)
+
+        try:
+            documents = knowledge_service.vector_store.search_knowledge(
+                query_embedding,
+                system_name=system_name,
+                knowledge_type="document",
+                top_k=top_k,
+                similarity_threshold=0.0,
+            )
+        except Exception:
+            degraded = True
+            documents = []
+
+        try:
+            capabilities = code_service.vector_store.search_knowledge(
+                query_embedding,
+                system_name=system_name,
+                knowledge_type="capability_item",
+                top_k=top_k,
+                similarity_threshold=0.0,
+            )
+        except Exception:
+            degraded = True
+            capabilities = []
+    except Exception:
+        degraded = True
+
+    try:
+        esb_integrations = esb_service.search_esb(
+            query=query,
+            system_name=system_name,
+            top_k=top_k,
+            similarity_threshold=0.0,
+        )
+    except Exception:
+        degraded = True
+        esb_integrations = []
+
+    return {
+        "system_profile": profile or {},
+        "capabilities": capabilities,
+        "documents": documents,
+        "esb_integrations": esb_integrations,
+        "completeness_score": int(profile.get("completeness_score") if isinstance(profile, dict) and profile.get("completeness_score") is not None else _calc_profile_completeness_score(profile)),
+        "degraded": degraded,
+    }
+
+
+@router.post("/internal/complexity/evaluate")
+async def evaluate_complexity_internal(
+    payload: InternalComplexityEvaluateRequest,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    feature_description = str(payload.feature_description or "").strip()
+    if not feature_description:
+        return build_error_response(
+            request=request,
+            status_code=403,
+            error_code="AUTH_001",
+            message="权限不足",
+            details={"reason": "feature_description 必填"},
+        )
+
+    context = payload.system_context if isinstance(payload.system_context, dict) else {}
+    integration_points = context.get("integration_points") if isinstance(context.get("integration_points"), list) else []
+
+    text = feature_description
+    rule_keywords = ["规则", "校验", "审批", "风控", "条件", "分支"]
+    integration_keywords = ["接口", "对接", "调用", "系统", "ESB", "MQ", "同步", "异步"]
+    tech_keywords = ["重构", "性能", "并发", "迁移", "高可用", "容灾", "改造", "分布式"]
+
+    business_hits = sum(1 for key in rule_keywords if key in text)
+    integration_hits = sum(1 for key in integration_keywords if key in text)
+    technical_hits = sum(1 for key in tech_keywords if key in text)
+
+    business_rules_score = min(35, 8 + business_hits * 4 + min(len(text) // 120, 5))
+    integration_score = min(35, 5 + integration_hits * 5 + min(len(integration_points) * 4, 12))
+    technical_difficulty_score = min(30, 6 + technical_hits * 4 + min(len(text) // 160, 4))
+
+    complexity_score = max(0, min(100, business_rules_score + integration_score + technical_difficulty_score))
+    if complexity_score >= 71:
+        level = "high"
+    elif complexity_score >= 41:
+        level = "medium"
+    else:
+        level = "low"
+
+    reasoning = (
+        f"规则信号{business_hits}项、集成信号{integration_hits}项、技术信号{technical_hits}项，"
+        f"综合得分{complexity_score}。"
+    )
+
+    return {
+        "complexity_level": level,
+        "complexity_score": complexity_score,
+        "business_rules_score": business_rules_score,
+        "integration_score": integration_score,
+        "technical_difficulty_score": technical_difficulty_score,
+        "reasoning": reasoning,
+    }
+
+
+class ModificationTraceRequest(BaseModel):
+    operation: str
+    feature_id: str
+    reason_code: str
+    notes: Optional[str] = None
+
+
+def _find_original_ai_reasoning(task: Dict[str, Any], feature_id: str) -> str:
+    target_id = str(feature_id or "").strip()
+    if not target_id:
+        return ""
+
+    for item in task.get("ai_initial_features") or []:
+        if not isinstance(item, dict):
+            continue
+        item_feature_id = str(item.get("feature_id") or (item.get("feature") or {}).get("id") or "").strip()
+        if item_feature_id != target_id:
+            continue
+        reasoning = str(item.get("reasoning") or (item.get("feature") or {}).get("reasoning") or "").strip()
+        if not reasoning:
+            reasoning = str((item.get("feature") or {}).get("AI分析理由") or "").strip()
+        return reasoning
+    return ""
+
+
+def _cleanup_modification_traces(task: Dict[str, Any]) -> None:
+    retention_days = int(os.getenv("MOD_TRACE_RETENTION_DAYS", "180"))
+    traces = task.get("modification_traces") if isinstance(task.get("modification_traces"), list) else []
+    if retention_days <= 0 or not traces:
+        task["modification_traces"] = traces
+        return
+
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    kept = []
+    for trace in traces:
+        if not isinstance(trace, dict):
+            continue
+        recorded_at = str(trace.get("recorded_at") or "").strip()
+        if not recorded_at:
+            continue
+        try:
+            recorded_dt = datetime.fromisoformat(recorded_at)
+        except Exception:
+            continue
+        if recorded_dt >= cutoff:
+            kept.append(trace)
+    task["modification_traces"] = kept
+
+
+@router.post("/tasks/{task_id}/modification-traces")
+async def create_modification_trace(
+    task_id: str,
+    payload: ModificationTraceRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    operation = str(payload.operation or "").strip().lower()
+    feature_id = str(payload.feature_id or "").strip()
+    reason_code = str(payload.reason_code or "").strip()
+    notes = str(payload.notes or "").strip()
+
+    if operation not in {"delete", "adjust", "add"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="TRACE_001",
+            message="修改原因不能为空",
+            details={"reason": "operation 仅支持 delete/adjust/add"},
+        )
+
+    if not feature_id or not reason_code:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="TRACE_001",
+            message="修改原因不能为空",
+            details={"reason": "feature_id 与 reason_code 必填"},
+        )
+
+    now = datetime.now().isoformat()
+
+    with _task_storage_context() as data:
+        task = data.get(task_id)
+        if not task:
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="TASK_001",
+                message="评估任务不存在",
+                details={"task_id": task_id},
+            )
+
+        _ensure_task_schema(task)
+
+        creator_id = str(task.get("creator_id") or "").strip()
+        current_user_id = str(current_user.get("id") or "").strip()
+        if creator_id and creator_id != current_user_id:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "仅任务创建者可写入修改轨迹", "task_id": task_id},
+            )
+
+        _cleanup_modification_traces(task)
+
+        original_ai_reasoning = _find_original_ai_reasoning(task, feature_id)
+        if len(original_ai_reasoning) > 1000:
+            original_ai_reasoning = original_ai_reasoning[:1000] + "...(truncated)"
+
+        trace = {
+            "trace_id": f"trace_{uuid.uuid4().hex}",
+            "operation": operation,
+            "feature_id": feature_id,
+            "reason_code": reason_code,
+            "notes": notes,
+            "actor": current_user_id,
+            "recorded_at": now,
+            "original_ai_reasoning": original_ai_reasoning,
+        }
+
+        trace_size = len(json.dumps(trace, ensure_ascii=False).encode("utf-8"))
+        if trace_size > 10 * 1024:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="TRACE_001",
+                message="修改原因不能为空",
+                details={"reason": "单条轨迹超过10KB限制"},
+            )
+
+        task.setdefault("modification_traces", []).append(trace)
+
+    return {
+        "trace_id": trace["trace_id"],
+        "recorded_at": trace["recorded_at"],
     }
 
 

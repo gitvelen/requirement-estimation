@@ -121,7 +121,10 @@ EOF
 print_info "步骤 7/7: 构建并启动前端容器（可能需要几分钟）"
 ssh root@${FRONTEND_SERVER} << EOF
 cd ${REMOTE_DIR}
-docker-compose -f docker-compose.frontend.yml up -d --build
+if ! docker-compose -f docker-compose.frontend.yml up -d --build; then
+    echo "BuildKit 构建失败，回退到经典构建模式（DOCKER_BUILDKIT=0）..."
+    DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose -f docker-compose.frontend.yml up -d --build
+fi
 EOF
 
 # 验证部署

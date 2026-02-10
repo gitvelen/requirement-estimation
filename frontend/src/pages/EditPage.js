@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Row, Col, Statistic, Form, InputNumber, Popover, Checkbox, AutoComplete, Select } from 'antd';
+import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Row, Col, Statistic, Form, InputNumber, Popover, Checkbox, AutoComplete, Select, Tooltip } from 'antd';
 import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import ExpandableText from '../components/ExpandableText';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -36,6 +37,7 @@ const EditPage = () => {
   ]);
   const [renameVisible, setRenameVisible] = useState(false);
   const [newSystemName, setNewSystemName] = useState('');
+  const [systemCompletenessMap, setSystemCompletenessMap] = useState({});
 
   const [addSystemForm] = Form.useForm();
 
@@ -98,6 +100,46 @@ const EditPage = () => {
     setSystemSuggestions(uniq.map(name => ({ value: name })));
   }, [mainSystemNames, aiSystemAnalysis]);
 
+  const resolveCompletenessTagColor = (score) => {
+    if (!Number.isFinite(score)) {
+      return 'default';
+    }
+    if (score < 60) {
+      return 'error';
+    }
+    if (score < 80) {
+      return 'warning';
+    }
+    return 'success';
+  };
+
+  const fetchSystemCompleteness = useCallback(async (systemNames) => {
+    if (!systemNames.length) {
+      setSystemCompletenessMap({});
+      return;
+    }
+
+    const pairs = await Promise.all(
+      systemNames.map(async (systemName) => {
+        try {
+          const response = await axios.get('/api/v1/system-profiles/completeness', {
+            params: { system_name: systemName },
+          });
+          return [systemName, { ...(response.data || {}), unknown: false }];
+        } catch (error) {
+          return [systemName, { unknown: true }];
+        }
+      })
+    );
+
+    setSystemCompletenessMap(Object.fromEntries(pairs));
+  }, []);
+
+  useEffect(() => {
+    const names = Object.keys(systemsData);
+    fetchSystemCompleteness(names);
+  }, [systemsData, fetchSystemCompleteness]);
+
   const normalizeListField = (value) => {
     if (Array.isArray(value)) {
       return value.join('、');
@@ -117,39 +159,7 @@ const EditPage = () => {
     if (!raw) {
       return <Text type="secondary">-</Text>;
     }
-    const tagColors = {
-      归属依据: 'blue',
-      系统约束: 'purple',
-      集成点: 'geekblue',
-      知识引用: 'cyan',
-      待确认: 'orange',
-      归属复核: 'red',
-    };
-    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    return (
-      <div>
-        {lines.map((line, idx) => {
-          const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
-          if (!match) {
-            return (
-              <div key={`${idx}-${line}`} style={{ marginBottom: 4 }}>
-                <Text style={{ whiteSpace: 'pre-wrap' }}>{line}</Text>
-              </div>
-            );
-          }
-          const label = match[1];
-          const content = match[2] || '';
-          return (
-            <div key={`${idx}-${label}`} style={{ marginBottom: 4 }}>
-              <Tag color={tagColors[label] || 'default'} style={{ marginRight: 6 }}>
-                {label}
-              </Tag>
-              <Text style={{ whiteSpace: 'pre-wrap' }}>{content}</Text>
-            </div>
-          );
-        })}
-      </div>
-    );
+    return <ExpandableText value={raw} limit={50} withTooltip />;
   };
 
   // 打开编辑Modal
@@ -579,6 +589,28 @@ const EditPage = () => {
 
   const stats = calculateStats();
 
+  const renderSystemTabLabel = (systemName) => {
+    const info = systemCompletenessMap[systemName] || {};
+    const score = Number(info.completeness_score);
+    const hasScore = Number.isFinite(score) && !info.unknown;
+    const breakdown = info.breakdown || { code_scan: 0, documents: 0, esb: 0 };
+    const completenessText = hasScore ? `${score}` : '未知';
+    const tooltip = hasScore
+      ? `完整度：${score}（代码${breakdown.code_scan || 0}，文档${breakdown.documents || 0}，ESB${breakdown.esb || 0}）`
+      : '完整度未知';
+
+    return (
+      <Tooltip title={tooltip}>
+        <Space size={6}>
+          <span>{`${systemName} (${systemsData[systemName].length})`}</span>
+          <Tag color={resolveCompletenessTagColor(hasScore ? score : NaN)}>
+            完整度 {completenessText}
+          </Tag>
+        </Space>
+      </Tooltip>
+    );
+  };
+
   if (loading) {
     return <Card loading={true}>加载中...</Card>;
   }
@@ -599,114 +631,6 @@ const EditPage = () => {
           </Tag>
         </Space>
       </div>
-
-      {/* 系统校准卡片（知识库A档：用于提升系统识别/拆分归属准确性） */}
-      {aiSystemAnalysis && (
-        <Card
-          size="small"
-          style={{ marginBottom: 16 }}
-          title="系统校准（知识库）"
-          extra={(
-            <Button size="small" onClick={() => openAddSystemModal()} disabled={confirmed || saving}>
-              新增系统（默认自动拆分）
-            </Button>
-          )}
-        >
-          <Row gutter={[16, 8]}>
-            <Col span={24}>
-              <Text type="secondary">已选系统（鼠标悬停查看理由/知识引用）：</Text>
-              <div style={{ marginTop: 8 }}>
-                <Space wrap>
-                  {(aiSystemAnalysis.selected_systems || []).map((sys) => {
-                    const confidence = sys?.confidence || '中';
-                    const color = confidence === '高' ? 'green' : confidence === '低' ? 'orange' : 'blue';
-                    const kbHits = sys?.kb_hits || [];
-                    const reasons = sys?.reasons || [];
-                    const pop = (
-                      <div style={{ maxWidth: 520 }}>
-                        <div><Text strong>类型：</Text><Text>{sys?.type || '-'}</Text></div>
-                        <div><Text strong>置信度：</Text><Text>{confidence}</Text></div>
-                        {reasons.length > 0 && (
-                          <div style={{ marginTop: 8 }}>
-                            <Text strong>理由：</Text>
-                            <ul style={{ margin: '4px 0 0 18px' }}>
-                              {reasons.map((r, idx) => <li key={idx}><Text>{String(r)}</Text></li>)}
-                            </ul>
-                          </div>
-                        )}
-                        <div style={{ marginTop: 8 }}>
-                          <Text strong>知识引用：</Text>
-                          {kbHits.length === 0 ? (
-                            <Text type="secondary"> 无（该系统未导入system_profile）</Text>
-                          ) : (
-                            <ul style={{ margin: '4px 0 0 18px' }}>
-                              {kbHits.map((h, idx) => (
-                                <li key={idx}>
-                                  <Text>{h?.source_file || 'system_profile'}</Text>
-                                  <Text type="secondary"> (sim={h?.similarity})</Text>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      </div>
-                    );
-                    return (
-                      <Popover key={sys?.name} content={pop} title={sys?.name}>
-                        <Tag color={color}>{sys?.name}</Tag>
-                      </Popover>
-                    );
-                  })}
-                </Space>
-              </div>
-              {(aiSystemAnalysis.missing_system_profiles || []).length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <Text type="warning">
-                    这些系统缺少system_profile画像，校准能力有限：{(aiSystemAnalysis.missing_system_profiles || []).join('、')}
-                  </Text>
-                </div>
-              )}
-            </Col>
-
-            <Col span={24}>
-              <Text type="secondary">候选系统（知识库命中，可一键加入Tab）：</Text>
-              <div style={{ marginTop: 8 }}>
-                <Space wrap>
-                  {(aiSystemAnalysis.candidate_systems || []).slice(0, 8).map((cand) => {
-                    const exists = Object.prototype.hasOwnProperty.call(systemsData, cand?.name);
-                    return (
-                      <Space key={cand?.name} size={4}>
-                        <Tag>{cand?.name} <Text type="secondary">({cand?.score})</Text></Tag>
-                        {!exists && !confirmed && (
-                          <Button
-                            size="small"
-                            type="link"
-                            onClick={() => submitAddSystem({ name: cand?.name, type: '主系统', auto_breakdown: true })}
-                            disabled={saving || addingSystem}
-                          >
-                            加入
-                          </Button>
-                        )}
-                      </Space>
-                    );
-                  })}
-                </Space>
-              </div>
-            </Col>
-
-            {(aiSystemAnalysis.questions || []).length > 0 && (
-              <Col span={24}>
-                <Text type="secondary">待确认问题：</Text>
-                <ul style={{ margin: '8px 0 0 18px' }}>
-                  {(aiSystemAnalysis.questions || []).slice(0, 8).map((q, idx) => (
-                    <li key={idx}><Text>{String(q)}</Text></li>
-                  ))}
-                </ul>
-              </Col>
-            )}
-          </Row>
-        </Card>
-      )}
 
       {/* 统计信息 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -816,7 +740,7 @@ const EditPage = () => {
         activeKey={currentSystem}
         onChange={setCurrentSystem}
         items={Object.keys(systemsData).map(system => ({
-          label: `${system} (${systemsData[system].length})`,
+          label: renderSystemTabLabel(system),
           key: system,
           children: (
             <Table

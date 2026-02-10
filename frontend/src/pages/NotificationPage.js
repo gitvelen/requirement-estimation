@@ -1,43 +1,61 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { Button, Card, Tag, Space, message, Popconfirm, Badge, Tooltip } from 'antd';
-import { ReloadOutlined, BellOutlined, TeamOutlined, FileTextOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge, Button, Card, message, Popconfirm, Space, Tag, Tooltip, Typography } from 'antd';
+import { BellOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import useNotification from '../hooks/useNotification';
 import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import StatusTag from '../components/StatusTag';
+import { formatDateTime } from '../utils/time';
+
+const { Text } = Typography;
+
+const parseErrorMessage = (error, fallback) => {
+  const responseData = error?.response?.data;
+  return responseData?.message || responseData?.detail || fallback;
+};
 
 const NotificationPage = () => {
-  const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState([]);
+  const navigate = useNavigate();
   const { refreshUnread } = useNotification() || {};
 
-  const fetchNotifications = useCallback(async () => {
+  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+
+  const fetchNotifications = useCallback(async (nextPage, nextSize) => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/v1/notifications');
-      setItems(response.data.data || []);
+      const response = await axios.get('/api/v1/notifications', {
+        params: { page: nextPage, page_size: nextSize },
+      });
+      setItems(response.data?.items || []);
+      setTotal(Number(response.data?.total || 0));
       if (refreshUnread) {
         refreshUnread();
       }
     } catch (error) {
-      message.error(error.response?.data?.detail || '获取通知失败');
+      message.error(parseErrorMessage(error, '获取通知失败'));
     } finally {
       setLoading(false);
     }
   }, [refreshUnread]);
 
   useEffect(() => {
-    fetchNotifications();
-  }, [fetchNotifications]);
+    fetchNotifications(1, pageSize);
+    setPage(1);
+  }, [fetchNotifications, pageSize]);
 
-  const markRead = async (id) => {
+  const markRead = async (notificationId) => {
     try {
-      await axios.put(`/api/v1/notifications/${id}/read`);
+      await axios.put(`/api/v1/notifications/${encodeURIComponent(notificationId)}/read`);
       message.success('已标记为已读');
-      fetchNotifications();
+      fetchNotifications(page, pageSize);
     } catch (error) {
-      message.error(error.response?.data?.detail || '操作失败');
+      message.error(parseErrorMessage(error, '操作失败'));
     }
   };
 
@@ -45,9 +63,9 @@ const NotificationPage = () => {
     try {
       await axios.put('/api/v1/notifications/read-all');
       message.success('已全部标记为已读');
-      fetchNotifications();
+      fetchNotifications(page, pageSize);
     } catch (error) {
-      message.error(error.response?.data?.detail || '操作失败');
+      message.error(parseErrorMessage(error, '操作失败'));
     }
   };
 
@@ -55,29 +73,29 @@ const NotificationPage = () => {
     try {
       await axios.delete('/api/v1/notifications/clear-read');
       message.success('已清空已读通知');
-      fetchNotifications();
+      fetchNotifications(1, pageSize);
+      setPage(1);
     } catch (error) {
-      message.error(error.response?.data?.detail || '操作失败');
+      message.error(parseErrorMessage(error, '操作失败'));
     }
   };
 
-  const deleteItem = async (id) => {
+  const deleteItem = async (notificationId) => {
     try {
-      await axios.delete(`/api/v1/notifications/${id}`);
+      await axios.delete(`/api/v1/notifications/${encodeURIComponent(notificationId)}`);
       message.success('通知已删除');
-      fetchNotifications();
+      fetchNotifications(page, pageSize);
     } catch (error) {
-      message.error(error.response?.data?.detail || '删除失败');
+      message.error(parseErrorMessage(error, '删除失败'));
     }
   };
 
-  const typeMeta = {
-    task_assignment: { label: '待分配', color: 'gold', icon: <TeamOutlined /> },
-    expert_invite: { label: '专家邀请', color: 'blue', icon: <BellOutlined /> },
-    next_round: { label: '下一轮评估', color: 'orange', icon: <BellOutlined /> },
+  const typeMeta = useMemo(() => ({
+    system_profile_summary_ready: { label: '画像AI总结完成', color: 'green', icon: <BellOutlined /> },
+    system_profile_summary_failed: { label: '画像AI总结失败', color: 'red', icon: <BellOutlined /> },
     report_generated: { label: '报告生成', color: 'green', icon: <FileTextOutlined /> },
     system: { label: '系统通知', color: 'default', icon: <BellOutlined /> },
-  };
+  }), []);
 
   const columns = [
     {
@@ -85,12 +103,13 @@ const NotificationPage = () => {
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
+      render: (value) => formatDateTime(value),
     },
     {
       title: '类型',
       dataIndex: 'type',
       key: 'type',
-      width: 120,
+      width: 160,
       render: (value) => {
         const meta = typeMeta[value] || typeMeta.system;
         return (
@@ -102,55 +121,91 @@ const NotificationPage = () => {
     },
     {
       title: '标题',
-      dataIndex: 'title',
       key: 'title',
-      width: 200,
-      render: (value, record) => (
-        <Space>
-          {!record.is_read && <Badge color="red" />}
-          <span>{value || '-'}</span>
-        </Space>
-      ),
+      width: 220,
+      render: (_, record) => {
+        const payload = record.payload && typeof record.payload === 'object' ? record.payload : {};
+        const title = payload.title || '-';
+        return (
+          <Space>
+            {record.status !== 'read' && <Badge color="red" />}
+            <span>{title}</span>
+          </Space>
+        );
+      },
     },
     {
       title: '内容',
-      dataIndex: 'content',
       key: 'content',
-      render: (value) => value || '-',
+      render: (_, record) => {
+        const payload = record.payload && typeof record.payload === 'object' ? record.payload : {};
+        const content = payload.content || '-';
+        const errorReason = payload.error_reason || '';
+        return (
+          <Space direction="vertical" size={0}>
+            <span>{content}</span>
+            {errorReason ? <Text type="secondary">{String(errorReason)}</Text> : null}
+          </Space>
+        );
+      },
     },
     {
       title: '状态',
-      dataIndex: 'is_read',
-      key: 'is_read',
+      dataIndex: 'status',
+      key: 'status',
       width: 100,
       render: (value) => (
-        <StatusTag status={value ? 'read' : 'unread'} map={{
-          read: { color: 'default', text: '已读' },
-          unread: { color: 'processing', text: '未读' },
-        }}
+        <StatusTag
+          status={value || 'unread'}
+          map={{
+            read: { color: 'default', text: '已读' },
+            unread: { color: 'processing', text: '未读' },
+          }}
         />
       ),
     },
     {
       title: '操作',
       key: 'action',
-      width: 180,
-      render: (_, record) => (
-        <Space>
-          {!record.is_read && (
-            <Tooltip title="标记为已读">
-              <Button size="small" onClick={() => markRead(record.id)}>
-                标记已读
+      width: 260,
+      render: (_, record) => {
+        const payload = record.payload && typeof record.payload === 'object' ? record.payload : {};
+        const link = String(payload.link || '').trim();
+        const openLink = async () => {
+          if (record.status !== 'read') {
+            await markRead(record.notification_id);
+          }
+          if (link.startsWith('/')) {
+            navigate(link);
+          } else if (link) {
+            window.open(link, '_blank', 'noopener,noreferrer');
+          }
+        };
+
+        return (
+          <Space>
+            {link ? (
+              <Tooltip title="打开详情">
+                <Button size="small" onClick={openLink}>
+                  打开
+                </Button>
+              </Tooltip>
+            ) : null}
+            {record.status !== 'read' ? (
+              <Tooltip title="标记为已读">
+                <Button size="small" onClick={() => markRead(record.notification_id)}>
+                  标记已读
+                </Button>
+              </Tooltip>
+            ) : null}
+            <Popconfirm title="确定删除此通知吗？" onConfirm={() => deleteItem(record.notification_id)}>
+              <Button size="small" danger>
+                删除
               </Button>
-            </Tooltip>
-          )}
-          <Popconfirm title="确定删除此通知吗？" onConfirm={() => deleteItem(record.id)}>
-            <Button size="small" danger>
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -160,13 +215,13 @@ const NotificationPage = () => {
         title="消息通知"
         extra={(
           <Space>
-            <Button icon={<ReloadOutlined />} onClick={fetchNotifications}>
+            <Button icon={<ReloadOutlined />} onClick={() => fetchNotifications(page, pageSize)} loading={loading}>
               刷新
             </Button>
-            <Button onClick={markAllRead}>
+            <Button onClick={markAllRead} disabled={!items.length}>
               全部已读
             </Button>
-            <Button onClick={clearRead}>
+            <Button onClick={clearRead} disabled={!items.length}>
               清空已读
             </Button>
           </Space>
@@ -174,11 +229,23 @@ const NotificationPage = () => {
       />
       <Card>
         <DataTable
-          rowKey="id"
+          rowKey="notification_id"
           columns={columns}
           dataSource={items}
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            onChange: (nextPage, nextSize) => {
+              setPage(nextPage);
+              if (nextSize !== pageSize) {
+                setPageSize(nextSize);
+              }
+              fetchNotifications(nextPage, nextSize);
+            },
+          }}
         />
       </Card>
     </div>

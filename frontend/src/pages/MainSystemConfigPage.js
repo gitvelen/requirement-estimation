@@ -222,37 +222,41 @@ const MainSystemConfigPage = ({ embedded = false }) => {
   return (
     <div style={{ padding: embedded ? 0 : '24px' }}>
       <Card>
-        <div style={{ marginBottom: 16 }}>
-          <Title level={3}>标准主系统配置</Title>
-          <Text type="secondary">
-            配置标准主系统列表，用于系统识别和名称标准化
-          </Text>
-        </div>
+        {!embedded && (
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <Title level={3}>标准主系统配置</Title>
+              <Text type="secondary">
+                配置标准主系统列表，用于系统识别和名称标准化
+              </Text>
+            </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={handleAdd}
-            >
-              新增系统
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={fetchSystems}
-              loading={loading}
-            >
-              刷新
-            </Button>
-            <Button
-              icon={<SaveOutlined />}
-              onClick={handleReload}
-            >
-              重新加载（热更新）
-            </Button>
-          </Space>
-        </div>
+            <div style={{ marginBottom: 16 }}>
+              <Space>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  onClick={handleAdd}
+                >
+                  新增系统
+                </Button>
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={fetchSystems}
+                  loading={loading}
+                >
+                  刷新
+                </Button>
+                <Button
+                  icon={<SaveOutlined />}
+                  onClick={handleReload}
+                >
+                  重新加载（热更新）
+                </Button>
+              </Space>
+            </div>
+          </>
+        )}
 
         <Table
           columns={columns}

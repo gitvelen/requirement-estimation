@@ -1,12 +1,41 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { Alert, Button, Card, Checkbox, Input, InputNumber, message, Popover, Space, Table, Tabs, Tag, Typography } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Collapse,
+  Input,
+  InputNumber,
+  message,
+  Popover,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+} from 'antd';
 import axios from 'axios';
+import ExpandableText from '../components/ExpandableText';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 
 const COLUMN_SETTING_KEY = 'EVALUATION_VISIBLE_COLUMNS';
 const DEFAULT_VISIBLE_COLUMNS = ['业务描述', '输入', '输出', '依赖项', '备注'];
+
+const resolveCompletenessTagColor = (score) => {
+  if (!Number.isFinite(score)) {
+    return 'default';
+  }
+  if (score < 60) {
+    return 'error';
+  }
+  if (score < 80) {
+    return 'warning';
+  }
+  return 'success';
+};
 
 const EvaluationPage = () => {
   const { taskId } = useParams();
@@ -24,6 +53,9 @@ const EvaluationPage = () => {
   const [roundNo, setRoundNo] = useState(1);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [highDeviationFeatures, setHighDeviationFeatures] = useState([]);
+
+  const [completenessMap, setCompletenessMap] = useState({});
+
   const [visibleColumns, setVisibleColumns] = useState(() => {
     try {
       const raw = localStorage.getItem(COLUMN_SETTING_KEY);
@@ -32,7 +64,7 @@ const EvaluationPage = () => {
         return parsed;
       }
     } catch (error) {
-      // ignore storage errors
+      return DEFAULT_VISIBLE_COLUMNS;
     }
     return DEFAULT_VISIBLE_COLUMNS;
   });
@@ -49,6 +81,28 @@ const EvaluationPage = () => {
     }
   }, [location.search, taskId]);
 
+  const fetchCompletenessBatch = useCallback(async (systemNames) => {
+    if (!systemNames.length) {
+      setCompletenessMap({});
+      return;
+    }
+
+    const pairs = await Promise.all(
+      systemNames.map(async (systemName) => {
+        try {
+          const response = await axios.get('/api/v1/system-profiles/completeness', {
+            params: { system_name: systemName },
+          });
+          return [systemName, { ...(response.data || {}), unknown: false }];
+        } catch (error) {
+          return [systemName, { unknown: true }];
+        }
+      })
+    );
+
+    setCompletenessMap(Object.fromEntries(pairs));
+  }, []);
+
   const fetchEvaluation = useCallback(async (inviteToken) => {
     try {
       setLoading(true);
@@ -56,23 +110,23 @@ const EvaluationPage = () => {
         params: { token: inviteToken },
       });
       const payload = response.data.data;
+      const features = payload.features || {};
+      const systemNames = Object.keys(features);
+
       setTaskInfo(payload.task);
-      setSystemsData(payload.features || {});
-      const systemNames = Object.keys(payload.features || {});
-      if (systemNames.length > 0) {
-        setCurrentSystem(systemNames[0]);
-      }
+      setSystemsData(features);
+      setCurrentSystem((prev) => (prev && systemNames.includes(prev) ? prev : (systemNames[0] || '')));
       setDraftValues(payload.myEvaluation?.draftData || {});
       setHasSubmitted(payload.myEvaluation?.hasSubmitted || false);
       setRoundNo(payload.task?.currentRound || 1);
       setHighDeviationFeatures(payload.highDeviationFeatures || []);
+      fetchCompletenessBatch(systemNames);
     } catch (error) {
-      console.error('获取评估数据失败:', error);
       message.error(error.response?.data?.detail || '获取评估数据失败');
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [taskId, fetchCompletenessBatch]);
 
   useEffect(() => {
     if (tokenReady && token) {
@@ -84,7 +138,7 @@ const EvaluationPage = () => {
     try {
       localStorage.setItem(COLUMN_SETTING_KEY, JSON.stringify(visibleColumns));
     } catch (error) {
-      // ignore storage errors
+      return;
     }
   }, [visibleColumns]);
 
@@ -106,9 +160,11 @@ const EvaluationPage = () => {
   const handleSubmit = async () => {
     try {
       const evaluations = {};
-      Object.values(systemsData).forEach(list => {
-        list.forEach(item => {
-          const value = draftValues[item.id] !== undefined ? draftValues[item.id] : (item.myEvaluation !== null && item.myEvaluation !== undefined ? item.myEvaluation : item.aiEstimatedDays);
+      Object.values(systemsData).forEach((list) => {
+        list.forEach((item) => {
+          const value = draftValues[item.id] !== undefined
+            ? draftValues[item.id]
+            : (item.myEvaluation !== null && item.myEvaluation !== undefined ? item.myEvaluation : item.aiEstimatedDays);
           evaluations[item.id] = value;
         });
       });
@@ -120,7 +176,7 @@ const EvaluationPage = () => {
         params: { token },
       });
       message.success('评估已提交');
-      setTimeout(() => navigate('/tasks'), 1500);
+      setTimeout(() => navigate('/tasks'), 1200);
     } catch (error) {
       message.error(error.response?.data?.detail || '提交失败');
     }
@@ -161,7 +217,7 @@ const EvaluationPage = () => {
           autoFocus
           value={displayValue}
           onChange={(value) => {
-            setDraftValues(prev => ({ ...prev, [record.id]: value }));
+            setDraftValues((prev) => ({ ...prev, [record.id]: value }));
           }}
           onBlur={() => {
             setEditingId(null);
@@ -194,6 +250,7 @@ const EvaluationPage = () => {
     if (!raw) {
       return <Text type="secondary">-</Text>;
     }
+
     const tagColors = {
       归属依据: 'blue',
       系统约束: 'purple',
@@ -202,26 +259,25 @@ const EvaluationPage = () => {
       待确认: 'orange',
       归属复核: 'red',
     };
+
     const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     return (
       <div>
-        {lines.map((line, idx) => {
+        {lines.map((line, index) => {
           const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
           if (!match) {
             return (
-              <div key={`${idx}-${line}`} style={{ marginBottom: 4 }}>
-                <Text style={{ whiteSpace: 'pre-wrap' }}>{line}</Text>
+              <div key={`${index}_${line}`} style={{ marginBottom: 6 }}>
+                <ExpandableText value={line} limit={150} />
               </div>
             );
           }
           const label = match[1];
           const content = match[2] || '';
           return (
-            <div key={`${idx}-${label}`} style={{ marginBottom: 4 }}>
-              <Tag color={tagColors[label] || 'default'} style={{ marginRight: 6 }}>
-                {label}
-              </Tag>
-              <Text style={{ whiteSpace: 'pre-wrap' }}>{content}</Text>
+            <div key={`${index}_${label}`} style={{ marginBottom: 6 }}>
+              <Tag color={tagColors[label] || 'default'} style={{ marginRight: 6 }}>{label}</Tag>
+              <ExpandableText value={content} limit={150} empty="-" />
             </div>
           );
         })}
@@ -232,31 +288,37 @@ const EvaluationPage = () => {
   const baseColumns = [
     { title: '序号', dataIndex: 'sequence', key: 'sequence', width: 80 },
     { title: '功能模块', dataIndex: 'module', key: 'module', width: 120 },
-    { title: '功能点', dataIndex: 'name', key: 'name', width: 160 },
+    { title: '功能点', dataIndex: 'name', key: 'name', width: 160, render: (value) => <ExpandableText value={value} limit={40} /> },
   ];
 
   const optionalColumns = {
-    业务描述: { title: '业务描述', dataIndex: 'description', key: 'description', width: 240 },
+    业务描述: {
+      title: '业务描述',
+      dataIndex: 'description',
+      key: 'description',
+      width: 280,
+      render: (value) => <ExpandableText value={value} limit={80} />,
+    },
     输入: {
       title: '输入',
       dataIndex: 'inputs',
       key: 'inputs',
-      width: 160,
-      render: (items) => (items && items.length ? items.join('、') : '-'),
+      width: 200,
+      render: (items) => <ExpandableText value={(items || []).join('、')} limit={80} />,
     },
     输出: {
       title: '输出',
       dataIndex: 'outputs',
       key: 'outputs',
-      width: 160,
-      render: (items) => (items && items.length ? items.join('、') : '-'),
+      width: 200,
+      render: (items) => <ExpandableText value={(items || []).join('、')} limit={80} />,
     },
     依赖项: {
       title: '依赖项',
       dataIndex: 'dependencies',
       key: 'dependencies',
-      width: 160,
-      render: (items) => (items && items.length ? items.join('、') : '-'),
+      width: 200,
+      render: (items) => <ExpandableText value={(items || []).join('、')} limit={80} />,
     },
   };
 
@@ -271,7 +333,7 @@ const EvaluationPage = () => {
     title: '备注',
     dataIndex: 'remark',
     key: 'remark',
-    width: 200,
+    width: 240,
     render: (value) => renderRemark(value),
   };
 
@@ -289,21 +351,40 @@ const EvaluationPage = () => {
       .map((option) => option.value)
       .filter((key) => visibleColumns.includes(key) && optionalColumns[key])
       .map((key) => optionalColumns[key]),
-    {
-      ...estimateColumn,
-    },
+    estimateColumn,
     ...(visibleColumns.includes('备注') ? [remarkColumn] : []),
   ];
+
+  const renderCompletenessTabLabel = (systemName) => {
+    const info = completenessMap[systemName] || {};
+    const score = Number(info.completeness_score);
+    const hasScore = Number.isFinite(score) && !info.unknown;
+    const breakdown = info.breakdown || { code_scan: 0, documents: 0, esb: 0 };
+    const tooltip = hasScore
+      ? `完整度：${score}（代码${breakdown.code_scan || 0}，文档${breakdown.documents || 0}，ESB${breakdown.esb || 0}）`
+      : '完整度未知';
+
+    return (
+      <Popover content={tooltip} title={systemName}>
+        <Space size={6}>
+          <span>{systemName}</span>
+          <Tag color={resolveCompletenessTagColor(hasScore ? score : NaN)}>
+            {hasScore ? `完整度 ${score}` : '完整度未知'}
+          </Tag>
+        </Space>
+      </Popover>
+    );
+  };
+
+  const currentCompleteness = completenessMap[currentSystem] || {};
+  const currentScore = Number(currentCompleteness.completeness_score);
+  const currentHasScore = Number.isFinite(currentScore) && !currentCompleteness.unknown;
 
   if (!tokenReady) {
     return (
       <Card title="输入邀请Token" style={{ maxWidth: 480, margin: '0 auto' }}>
         <Space direction="vertical" style={{ width: '100%' }}>
-          <Input
-            placeholder="请输入邀请Token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
+          <Input placeholder="请输入邀请Token" value={token} onChange={(event) => setToken(event.target.value)} />
           <Button
             type="primary"
             onClick={() => {
@@ -326,10 +407,8 @@ const EvaluationPage = () => {
     <div className="evaluation-page">
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Card>
-          <Space direction="vertical" size={8}>
-            <Text type="secondary">
-              灰色数值为AI预估，点击可修改。未修改的值将以AI预估作为您的评估结果。
-            </Text>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Text type="secondary">灰色数值为AI预估，点击可修改。未修改的值将以AI预估作为您的评估结果。</Text>
             {roundNo > 1 && (
               <Alert
                 type="warning"
@@ -338,11 +417,37 @@ const EvaluationPage = () => {
               />
             )}
             {taskInfo && (
-              <Text>
-                任务：{taskInfo.name || taskInfo.id} ｜ 当前轮次：{roundNo}
-              </Text>
+              <Space wrap>
+                <Text>任务：{taskInfo.name || taskInfo.id} ｜ 当前轮次：{roundNo} ｜ 系统：{currentSystem || '-'}</Text>
+                <Tag color={resolveCompletenessTagColor(currentHasScore ? currentScore : NaN)}>
+                  {currentHasScore ? `当前系统完整度 ${currentScore}` : '当前系统完整度未知'}
+                </Tag>
+              </Space>
             )}
           </Space>
+        </Card>
+
+
+        <Card title="COSMIC简明规则（只读）">
+          <Collapse
+            defaultActiveKey={[]}
+            items={[
+              {
+                key: 'rule-guide',
+                label: '查看业务语言说明与拆分示例',
+                children: (
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Paragraph>
+                      细粒度：每个按钮/操作可拆分为独立功能点；中等粒度：一个完整交易流程（输入+校验+处理+返回）作为一个功能点；粗粒度：一个业务模块作为一个功能点。
+                    </Paragraph>
+                    <Paragraph type="secondary">
+                      评估时优先保证“功能边界清晰、输入输出明确”，避免过细拆分导致噪声。
+                    </Paragraph>
+                  </Space>
+                ),
+              },
+            ]}
+          />
         </Card>
 
         <Card loading={loading}>
@@ -352,33 +457,28 @@ const EvaluationPage = () => {
                 placement="bottom"
                 title="列设置"
                 content={(
-                  <Checkbox.Group
-                    value={visibleColumns}
-                    options={columnOptions}
-                    onChange={(values) => setVisibleColumns(values)}
-                  />
+                  <Checkbox.Group value={visibleColumns} options={columnOptions} onChange={(values) => setVisibleColumns(values)} />
                 )}
               >
                 <Button>列设置</Button>
               </Popover>
-              <Button onClick={() => setVisibleColumns(DEFAULT_VISIBLE_COLUMNS)}>
-                重置列
-              </Button>
+              <Button onClick={() => setVisibleColumns(DEFAULT_VISIBLE_COLUMNS)}>重置列</Button>
             </Space>
           </div>
+
           <Tabs
             activeKey={currentSystem}
             onChange={setCurrentSystem}
-            items={Object.keys(systemsData).map(systemName => ({
+            items={Object.keys(systemsData).map((systemName) => ({
               key: systemName,
-              label: systemName,
+              label: renderCompletenessTabLabel(systemName),
               children: (
                 <Table
                   rowKey="id"
                   dataSource={systemsData[systemName]}
                   columns={resolvedColumns}
                   pagination={false}
-                  scroll={{ x: 1200 }}
+                  scroll={{ x: 1400 }}
                   rowClassName={(record) => (highDeviationSet.has(record.id) ? 'row-high-deviation' : '')}
                 />
               ),

@@ -1,11 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Avatar, Badge, Dropdown, Layout, Menu, Space, Typography } from 'antd';
 import {
   BellOutlined,
   FileTextOutlined,
   SettingOutlined,
   UserOutlined,
-  BarChartOutlined,
+  DashboardOutlined,
+  ApartmentOutlined,
+  DownOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import useAuth from '../hooks/useAuth';
@@ -20,11 +22,12 @@ const roleLabels = {
   admin: '管理员',
   manager: '项目经理',
   expert: '专家',
+  viewer: '查看者',
 };
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
-  const { roles, isAdmin, isManager, isExpert, hasAnyRole } = usePermission();
+  const { roles, activeRole, setActiveRole, isAdmin, isManager, isExpert, isViewer } = usePermission();
   const { unread, refreshUnread } = useNotification() || {};
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
@@ -37,20 +40,11 @@ const MainLayout = () => {
   }, [refreshUnread, location.pathname]);
 
   const taskMenuItem = useMemo(() => {
-    if (isAdmin) {
+    if (isAdmin || isManager || isExpert || isViewer) {
       return { key: '/tasks', label: '任务管理', icon: <FileTextOutlined /> };
-    }
-    if (isManager && isExpert) {
-      return { key: '/tasks', label: '任务管理', icon: <FileTextOutlined /> };
-    }
-    if (isManager) {
-      return { key: '/tasks/my-tasks', label: '任务管理', icon: <FileTextOutlined /> };
-    }
-    if (isExpert) {
-      return { key: '/tasks/my-evaluations', label: '任务管理', icon: <FileTextOutlined /> };
     }
     return null;
-  }, [isAdmin, isManager, isExpert]);
+  }, [isAdmin, isManager, isExpert, isViewer]);
 
   const menuItems = useMemo(() => {
     const items = [];
@@ -59,31 +53,38 @@ const MainLayout = () => {
       items.push(taskMenuItem);
     }
 
-    if (hasAnyRole(['admin', 'manager'])) {
-      const configChildren = [];
-      if (isAdmin) {
-        configChildren.push({ key: '/config/system-list', label: '系统清单' });
-        configChildren.push({ key: '/config/cosmic', label: '规则管理' });
-        configChildren.push({ key: '/users', label: '用户管理' });
-      }
-      if (isManager) {
-        configChildren.push({ key: '/knowledge', label: '知识库管理' });
-      }
-      if (configChildren.length) {
-        items.push({
-          key: 'config-group',
-          label: '配置管理',
-          icon: <SettingOutlined />,
-          children: configChildren,
-        });
-      }
+    // 项目经理：系统画像菜单（知识导入 + 信息看板）
+    if (isManager) {
+      items.push({
+        key: 'system-profile-group',
+        label: '系统画像',
+        icon: <ApartmentOutlined />,
+        children: [
+          { key: '/system-profiles/import', label: '知识导入' },
+          { key: '/system-profiles/board', label: '信息看板' },
+        ],
+      });
     }
 
-    if (hasAnyRole(['admin', 'manager', 'expert'])) {
+    // 管理员：配置管理菜单（系统清单 + 规则管理 + 用户管理）
+    if (isAdmin) {
       items.push({
-        key: '/reports/ai-effect',
-        label: '效果统计',
-        icon: <BarChartOutlined />,
+        key: 'config-group',
+        label: '配置管理',
+        icon: <SettingOutlined />,
+        children: [
+          { key: '/config/system-list', label: '系统清单' },
+          { key: '/config/cosmic', label: '规则管理' },
+          { key: '/users', label: '用户管理' },
+        ],
+      });
+    }
+
+    if (isAdmin || isManager || isExpert || isViewer) {
+      items.push({
+        key: '/dashboard',
+        label: '效能看板',
+        icon: <DashboardOutlined />,
       });
     }
 
@@ -106,22 +107,53 @@ const MainLayout = () => {
     });
 
     return items;
-  }, [taskMenuItem, hasAnyRole, isAdmin, isManager, unread]);
+  }, [taskMenuItem, isAdmin, isManager, isExpert, isViewer, unread]);
 
   const selectedKey = useMemo(() => {
     if (location.pathname.startsWith('/tasks')) {
       return taskMenuItem?.key || '/tasks';
     }
+    if (location.pathname.startsWith('/dashboard')) {
+      return '/dashboard';
+    }
+    if (location.pathname.startsWith('/system-profiles')) {
+      if (location.pathname.startsWith('/system-profiles/import')) {
+        return '/system-profiles/import';
+      }
+      return '/system-profiles/board';
+    }
     return location.pathname;
   }, [location.pathname, taskMenuItem]);
 
   const handleMenuClick = ({ key }) => {
-    navigate(key);
+    const path = String(key || '');
+    if (path.startsWith('/system-profiles')) {
+      navigate(`${path}${location.search || ''}`);
+      return;
+    }
+    navigate(path);
   };
 
-  const roleTags = roles.length
-    ? roles.map((role) => roleLabels[role] || role).join(' / ')
-    : '未分配';
+  const handleSwitchRole = useCallback((nextRole) => {
+    const normalized = String(nextRole || '').trim();
+    if (!normalized || normalized === activeRole) {
+      return;
+    }
+    setActiveRole(normalized);
+    const targetPath = normalized === 'admin' || normalized === 'viewer' ? '/dashboard' : '/tasks';
+    navigate(targetPath, { replace: true });
+  }, [activeRole, navigate, setActiveRole]);
+
+  const roleMenu = useMemo(() => ({
+    items: (roles || []).map((role) => ({
+      key: role,
+      label: roleLabels[role] || role,
+      disabled: role === activeRole,
+      onClick: () => handleSwitchRole(role),
+    })),
+  }), [roles, activeRole, handleSwitchRole]);
+
+  const activeRoleLabel = roleLabels[activeRole] || activeRole || '未分配';
 
   const userMenu = {
     items: [
@@ -143,13 +175,7 @@ const MainLayout = () => {
 
   return (
     <Layout className="app-layout">
-      <Sider
-        collapsible
-        collapsed={collapsed}
-        onCollapse={setCollapsed}
-        width={220}
-        className="app-sider"
-      >
+      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220} className="app-sider">
         <div className="app-logo">
           <div className="app-logo-mark">REQ</div>
           {!collapsed && <div className="app-logo-text">需求评估系统</div>}
@@ -169,7 +195,12 @@ const MainLayout = () => {
           </div>
           <div className="app-header-right">
             <Space size={16} align="center">
-              <span className="app-role-badge">{roleTags}</span>
+              <Dropdown menu={roleMenu} placement="bottomRight" disabled={(roles || []).length <= 1}>
+                <Space className="app-role-badge" align="center" style={{ cursor: (roles || []).length <= 1 ? 'default' : 'pointer' }}>
+                  <span>{activeRoleLabel}</span>
+                  {(roles || []).length > 1 && <DownOutlined style={{ fontSize: 12 }} />}
+                </Space>
+              </Dropdown>
               <Badge count={unread} size="small">
                 <BellOutlined className="app-header-icon" onClick={() => navigate('/notifications')} />
               </Badge>

@@ -5,12 +5,14 @@ FastAPI主程序
 import logging
 import sys
 import os
+from contextlib import asynccontextmanager
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from backend.config.config import settings
 from backend.api.routes import router
@@ -18,6 +20,8 @@ from backend.api.subsystem_routes import router as subsystem_router
 from backend.api.cosmic_routes import router as cosmic_router
 from backend.api.system_routes import router as system_router
 from backend.api.knowledge_routes import router as knowledge_router
+from backend.api.evidence_routes import router as evidence_router
+from backend.api.evidence_level_routes import router as evidence_level_router
 from backend.api.user_routes import router as user_router
 from backend.api.notification_routes import router as notification_router
 from backend.api.report_routes import router as report_router
@@ -25,6 +29,10 @@ from backend.api.auth_routes import router as auth_router
 from backend.api.profile_routes import router as profile_router
 from backend.api.department_routes import router as department_router
 from backend.api.system_list_routes import router as system_list_router
+from backend.api.system_profile_routes import router as system_profile_router
+from backend.api.code_scan_routes import router as code_scan_router
+from backend.api.esb_routes import router as esb_router
+from backend.api.error_utils import ApiError, build_error_payload
 from backend.utils.pdf_report import get_font_info
 
 # 配置日志
@@ -47,11 +55,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    """应用生命周期事件"""
+    logger.info("=" * 60)
+    logger.info(f"{settings.APP_NAME} 启动中...")
+    logger.info(f"版本: {settings.APP_VERSION}")
+    logger.info(f"调试模式: {settings.DEBUG}")
+    logger.info(f"监听地址: {settings.HOST}:{settings.PORT}")
+    logger.info(f"API前缀: {settings.API_PREFIX}")
+    logger.info(f"工作进程数: {settings.WORKERS}")
+    font_info = get_font_info()
+    if font_info.get("reportlab_available"):
+        font_path = font_info.get("font_path") or font_info.get("source")
+        logger.info(f"PDF字体: {font_info.get('font_name')} ({font_path})")
+    else:
+        logger.info("PDF字体: reportlab 未安装，使用最小PDF模式")
+    logger.info("=" * 60)
+    yield
+    logger.info(f"{settings.APP_NAME} 正在关闭...")
+
+
 # 创建FastAPI应用
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="基于Agent智能体的业务需求工作量评估系统"
+    description="基于Agent智能体的业务需求工作量评估系统",
+    lifespan=app_lifespan,
 )
 
 # 配置CORS
@@ -69,6 +99,8 @@ app.include_router(subsystem_router)
 app.include_router(cosmic_router)
 app.include_router(system_router)
 app.include_router(knowledge_router)
+app.include_router(evidence_router)
+app.include_router(evidence_level_router)
 app.include_router(user_router)
 app.include_router(notification_router)
 app.include_router(report_router)
@@ -76,6 +108,20 @@ app.include_router(auth_router)
 app.include_router(profile_router)
 app.include_router(department_router)
 app.include_router(system_list_router)
+app.include_router(system_profile_router)
+app.include_router(code_scan_router)
+app.include_router(esb_router)
+
+
+@app.exception_handler(ApiError)
+async def api_error_exception_handler(request: Request, exc: ApiError):
+    payload = build_error_payload(
+        request=request,
+        error_code=exc.error_code,
+        message=exc.message,
+        details=exc.details,
+    )
+    return JSONResponse(status_code=exc.status_code, content=payload)
 
 # 创建必要的目录
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -84,33 +130,6 @@ os.makedirs("logs", exist_ok=True)
 
 # 静态文件服务（用于前端）
 # app.mount("/", StaticFiles(directory="../frontend/build", html=True), name="static")
-
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动事件"""
-    logger.info("=" * 60)
-    logger.info(f"{settings.APP_NAME} 启动中...")
-    logger.info(f"版本: {settings.APP_VERSION}")
-    logger.info(f"调试模式: {settings.DEBUG}")
-    logger.info(f"监听地址: {settings.HOST}:{settings.PORT}")
-    logger.info(f"API前缀: {settings.API_PREFIX}")
-    logger.info(f"工作进程数: {settings.WORKERS}")
-    font_info = get_font_info()
-    if font_info.get("reportlab_available"):
-        font_path = font_info.get("font_path") or font_info.get("source")
-        logger.info(f"PDF字体: {font_info.get('font_name')} ({font_path})")
-    else:
-        logger.info("PDF字体: reportlab 未安装，使用最小PDF模式")
-    logger.info("=" * 60)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭事件"""
-    logger.info(f"{settings.APP_NAME} 正在关闭...")
-
-
 if __name__ == "__main__":
     import uvicorn
 

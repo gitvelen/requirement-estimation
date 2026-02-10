@@ -18,7 +18,9 @@ class DocumentParser:
     # 支持的文件类型
     SUPPORTED_TYPES = {
         "csv": "text/csv",
+        "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls": "application/vnd.ms-excel",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pdf": "application/pdf",
         "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -66,8 +68,12 @@ class DocumentParser:
         # 根据类型解析
         if file_type == "csv":
             return self._parse_csv(file_content)
+        elif file_type == "doc":
+            return self._parse_doc(file_content, filename)
         elif file_type == "docx":
             return self._parse_docx(file_content)
+        elif file_type == "xls":
+            return self._parse_xls(file_content, filename)
         elif file_type == "xlsx":
             return self._parse_xlsx(file_content)
         elif file_type == "pdf":
@@ -331,6 +337,27 @@ class DocumentParser:
         except Exception as e:
             logger.error(f"PPTX解析失败: {str(e)}")
             raise
+
+    def _parse_doc(self, file_content: bytes, filename: str) -> Dict[str, Any]:
+        """
+        解析 DOC（Word 97-2003）文件
+
+        通过 headless libreoffice 转换为纯文本（满足 REQ-NF-007：隔离目录/超时/清理）。
+        """
+        from backend.utils.old_format_parser import doc_bytes_to_text
+
+        text = doc_bytes_to_text(file_content, filename)
+        return {"text": text}
+
+    def _parse_xls(self, file_content: bytes, filename: str) -> Dict[str, Any]:
+        """
+        解析 XLS（Excel 97-2003）文件
+
+        通过 headless libreoffice 转换为 xlsx 后复用 openpyxl 解析（满足 REQ-NF-007：隔离目录/超时/清理）。
+        """
+        from backend.utils.old_format_parser import xls_bytes_to_sheet_rows
+
+        return xls_bytes_to_sheet_rows(file_content, filename)
 
     def extract_system_knowledge(self, parsed_data: Any, expected_type: Optional[str] = None) -> Dict[str, Any]:
         """

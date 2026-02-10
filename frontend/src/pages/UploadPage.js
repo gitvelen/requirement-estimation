@@ -42,7 +42,8 @@ const UploadPage = () => {
       navigate('/tasks/my-tasks');
 
     } catch (error) {
-      message.error(error.response?.data?.detail || '文件上传失败');
+      const payload = error.response?.data;
+      message.error(payload?.message || payload?.detail || '文件上传失败');
     } finally {
       setUploading(false);
     }
@@ -53,9 +54,10 @@ const UploadPage = () => {
       setFileList([]);
     },
     beforeUpload: (file) => {
-      const isDocx = file.name.toLowerCase().endsWith('.docx');
-      if (!isDocx) {
-        message.error('仅支持.docx格式文件');
+      const lowerName = file.name.toLowerCase();
+      const isSupported = lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || lowerName.endsWith('.xls');
+      if (!isSupported) {
+        message.error('仅支持 .docx / .doc / .xls 格式文件');
         return false;
       }
       const isLt10M = file.size / 1024 / 1024 < 10;
@@ -67,6 +69,7 @@ const UploadPage = () => {
       return false;
     },
     fileList,
+    accept: '.docx,.doc,.xls',
   };
 
   return (
@@ -101,7 +104,7 @@ const UploadPage = () => {
             <InboxOutlined />
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
-          <p className="ant-upload-hint">支持.docx格式的需求文档，文件大小不超过10MB</p>
+          <p className="ant-upload-hint">支持 .docx / .doc / .xls 格式的需求文档，文件大小不超过10MB</p>
         </Upload.Dragger>
 
         <div style={{ marginTop: 24, textAlign: 'center' }}>
@@ -119,7 +122,7 @@ const UploadPage = () => {
         <div style={{ marginTop: 24 }}>
           <h3>使用说明</h3>
           <ul>
-            <li>上传需求文档（.docx格式）</li>
+            <li>上传需求文档（.docx / .doc / .xls 格式）</li>
             <li>系统将自动解析需求内容并拆分功能点</li>
             <li>AI完成初评后进入草稿状态，可继续编辑</li>
           </ul>

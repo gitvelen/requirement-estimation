@@ -9,7 +9,10 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
+import hashlib
+import shutil
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -28,6 +31,12 @@ from backend.service.local_vector_store import LocalVectorStore
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SCAN_OPTIONS = {
+    "paths": ["src/main/java"],
+    "exclude_dirs": [".git", "target", "build"],
+}
+
+
 class CodeScanService:
     """Spring Boot 代码扫描（最小可用）"""
 
@@ -41,9 +50,17 @@ class CodeScanService:
     ) -> None:
         self.jobs_path = jobs_path or os.path.join(settings.REPORT_DIR, "code_scan_jobs.json")
         self.result_dir = result_dir or os.path.join(settings.REPORT_DIR, "code_scan_results")
+        self.extract_dir = os.path.join(settings.REPORT_DIR, "code_scan_extract")
         self.jobs_lock_path = f"{self.jobs_path}.lock"
         self._mutex = threading.RLock()
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="code_scan_worker")
+        self.max_workers = 5
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="code_scan_worker")
+
+        self.repo_allowlist_roots = self._load_repo_allowlist_roots()
+        self.enable_git_url = str(os.getenv("CODE_SCAN_ENABLE_GIT_URL", "false")).lower() == "true"
+        self.git_allowed_hosts = self._load_git_allowed_hosts()
+        self.max_archive_size_bytes = int(os.getenv("CODE_SCAN_ARCHIVE_MAX_BYTES", str(300 * 1024 * 1024)))
+        self.max_archive_files = int(os.getenv("CODE_SCAN_ARCHIVE_MAX_FILES", "20000"))
 
         self.store_path = store_path or os.path.join(settings.REPORT_DIR, "knowledge_store.json")
         self.embedding_service = embedding_service
@@ -73,6 +90,23 @@ class CodeScanService:
         except Exception as exc:
             logger.warning(f"读取代码扫描任务失败: {exc}")
             return []
+
+    def _load_repo_allowlist_roots(self) -> List[str]:
+        configured = os.getenv("CODE_SCAN_REPO_ALLOWLIST", "")
+        roots = [item.strip() for item in configured.split(",") if item.strip()]
+        if not roots:
+            roots = [os.path.realpath(os.path.join(settings.REPORT_DIR, "repos"))]
+        normalized: List[str] = []
+        for root in roots:
+            real_root = os.path.realpath(root)
+            if real_root not in normalized:
+                normalized.append(real_root)
+        return normalized
+
+    def _load_git_allowed_hosts(self) -> List[str]:
+        configured = os.getenv("CODE_SCAN_GIT_ALLOWED_HOSTS", "")
+        hosts = [item.strip().lower() for item in configured.split(",") if item.strip()]
+        return hosts
 
     def _save_jobs_unlocked(self, jobs: List[Dict[str, Any]]) -> None:
         os.makedirs(os.path.dirname(self.jobs_path) or ".", exist_ok=True)
@@ -105,6 +139,121 @@ class CodeScanService:
                     job.update(updates)
                     break
 
+    def _normalize_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized: Dict[str, Any] = {
+            "paths": list(DEFAULT_SCAN_OPTIONS["paths"]),
+            "exclude_dirs": list(DEFAULT_SCAN_OPTIONS["exclude_dirs"]),
+        }
+        if not isinstance(options, dict):
+            return normalized
+
+        raw_paths = options.get("paths")
+        if isinstance(raw_paths, list):
+            paths = [str(item).strip() for item in raw_paths if str(item).strip()]
+            if paths:
+                normalized["paths"] = paths
+
+        raw_excludes = options.get("exclude_dirs")
+        if isinstance(raw_excludes, list):
+            excludes = [str(item).strip() for item in raw_excludes if str(item).strip()]
+            if excludes:
+                normalized["exclude_dirs"] = excludes
+
+        return normalized
+
+    def _calc_options_hash(self, options: Dict[str, Any]) -> str:
+        payload = json.dumps(options or {}, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _calc_repo_hash(self, source_type: str, source_value: str) -> str:
+        payload = f"{source_type}:{source_value}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _find_existing_job(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        repo_hash: str,
+        options_hash: str,
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock():
+            jobs = self._load_jobs_unlocked()
+
+        for job in reversed(jobs):
+            if str(job.get("system_id") or "") != str(system_id or ""):
+                continue
+            if str(job.get("system_name") or "") != str(system_name or ""):
+                continue
+            if str(job.get("repo_hash") or "") != repo_hash:
+                continue
+            if str(job.get("options_hash") or "") != options_hash:
+                continue
+            return job
+        return None
+
+    def _is_repo_path_allowed(self, repo_path: str) -> bool:
+        real_repo_path = os.path.realpath(repo_path)
+        for root in self.repo_allowlist_roots:
+            if real_repo_path == root or real_repo_path.startswith(root + os.sep):
+                return True
+        return False
+
+    def _parse_git_host(self, repo_url: str) -> str:
+        value = str(repo_url or "").strip()
+        if not value:
+            return ""
+        if value.startswith("ssh://"):
+            host_segment = value.split("ssh://", 1)[1]
+            host = host_segment.split("/", 1)[0].split(":", 1)[0]
+            return host.lower()
+        if value.startswith("http://") or value.startswith("https://"):
+            host_segment = value.split("//", 1)[1]
+            host = host_segment.split("/", 1)[0].split(":", 1)[0]
+            return host.lower()
+
+        if "@" in value and ":" in value:
+            segment = value.split("@", 1)[1]
+            host = segment.split(":", 1)[0]
+            return host.lower()
+        return ""
+
+    def _is_git_repo_path(self, value: str) -> bool:
+        path = str(value or "").strip()
+        if not path:
+            return False
+        if path.startswith(("http://", "https://", "ssh://")):
+            return True
+        return "@" in path and ":" in path
+
+    def _validate_git_url(self, repo_url: str) -> None:
+        value = str(repo_url or "").strip()
+        if not value:
+            raise ValueError("代码仓库路径不能为空")
+
+        if not self.enable_git_url:
+            raise PermissionError("Git URL 扫描未启用")
+
+        is_http = value.startswith("http://") or value.startswith("https://")
+        is_ssh = value.startswith("ssh://") or ("@" in value and ":" in value)
+        if not (is_http or is_ssh):
+            raise PermissionError("Git URL 协议不支持")
+
+        host = self._parse_git_host(value)
+        if not host:
+            raise PermissionError("Git URL host 无法解析")
+        if self.git_allowed_hosts and host not in self.git_allowed_hosts:
+            raise PermissionError(f"Git URL host 不在 allowlist: {host}")
+
+    def _get_running_count(self) -> int:
+        with self._lock():
+            jobs = self._load_jobs_unlocked()
+        return sum(1 for job in jobs if job.get("status") == "running")
+
+    def _next_status(self) -> str:
+        running_count = self._get_running_count()
+        return "running" if running_count < self.max_workers else "queued"
+
     def run_scan(
         self,
         system_name: str,
@@ -112,28 +261,83 @@ class CodeScanService:
         repo_path: str,
         options: Optional[Dict[str, Any]],
         created_by: str,
+        force: bool = False,
+        repo_source_override: Optional[str] = None,
+        repo_hash_override: Optional[str] = None,
+        repo_input_override: Optional[str] = None,
+        skip_repo_path_validation: bool = False,
     ) -> str:
-        if not repo_path or not os.path.isdir(repo_path):
-            raise ValueError("repo_path无效或不存在")
         if not system_name:
             raise ValueError("system_name不能为空")
 
+        normalized_path = str(repo_path or "").strip()
+        if not normalized_path:
+            raise ValueError("repo_path无效或不存在")
+
+        normalized_options = self._normalize_options(options)
+        options_hash = self._calc_options_hash(normalized_options)
+
+        if repo_source_override:
+            repo_source = str(repo_source_override).strip() or "local"
+            local_repo_path = ""
+            if repo_source in {"local", "archive"}:
+                local_repo_path = os.path.realpath(normalized_path) if normalized_path else ""
+            repo_hash = str(repo_hash_override or "").strip()
+            if not repo_hash:
+                repo_hash = self._calc_repo_hash(repo_source or "custom", normalized_path)
+        elif self._is_git_repo_path(normalized_path):
+            self._validate_git_url(normalized_path)
+            repo_source = "git"
+            repo_hash = self._calc_repo_hash("git", normalized_path)
+            # 当前阶段先记录任务，不执行真实clone；后续若开启可扩展
+            local_repo_path = ""
+        else:
+            if not os.path.isabs(normalized_path):
+                raise PermissionError("repo_path必须为绝对路径")
+            if not os.path.isdir(normalized_path):
+                raise ValueError("repo_path无效或不存在")
+            if (not skip_repo_path_validation) and (not self._is_repo_path_allowed(normalized_path)):
+                raise PermissionError("repo_path不在允许目录内")
+            repo_source = "local"
+            repo_hash = self._calc_repo_hash("local", os.path.realpath(normalized_path))
+            local_repo_path = os.path.realpath(normalized_path)
+
+        repo_input_value = str(repo_input_override or normalized_path)
+
+        if not force:
+            existing = self._find_existing_job(
+                system_id=str(system_id or ""),
+                system_name=str(system_name or ""),
+                repo_hash=repo_hash,
+                options_hash=options_hash,
+            )
+            if existing:
+                return str(existing.get("job_id"))
+
         job_id = f"scan_{uuid.uuid4().hex}"
         created_at = datetime.now().isoformat()
+        status = self._next_status()
 
         job = {
             "job_id": job_id,
             "system_id": system_id or "",
             "system_name": system_name,
-            "repo_path": repo_path,
-            "status": "queued",
+            "repo_path": local_repo_path,
+            "repo_input": repo_input_value,
+            "repo_source": repo_source,
+            "repo_hash": repo_hash,
+            "options_hash": options_hash,
+            "status": status,
             "progress": 0.0,
             "result_path": "",
             "error": "",
-            "options": options or {},
+            "options": normalized_options,
             "created_by": created_by or "",
             "created_at": created_at,
             "finished_at": "",
+            "force": bool(force),
+            "ingested": False,
+            "ingested_at": "",
         }
 
         with self._jobs_context() as jobs:
@@ -151,6 +355,28 @@ class CodeScanService:
         system_name = job.get("system_name")
         system_id = job.get("system_id")
         options = job.get("options") or {}
+
+        if job.get("status") == "queued":
+            while True:
+                if self._get_running_count() < self.max_workers:
+                    self._update_job(job_id, {"status": "running", "progress": 0.01})
+                    break
+                current_job = self._get_job(job_id) or {}
+                if current_job.get("status") not in {"queued", "running"}:
+                    return
+                time.sleep(0.2)
+
+        if job.get("repo_source") == "git":
+            self._update_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "progress": 1.0,
+                    "error": "当前环境未启用 Git URL 拉取，请改用本地路径或 repo_archive",
+                    "finished_at": datetime.now().isoformat(),
+                },
+            )
+            return
 
         self._update_job(job_id, {"status": "running", "progress": 0.01})
 
@@ -574,10 +800,14 @@ class CodeScanService:
         if job.get("status") != "completed":
             raise ValueError("扫描未完成")
 
+        if job.get("ingested"):
+            return {"success": 0, "failed": 0, "errors": []}
+
         result = self.get_result(job_id)
         items = result.get("items") or []
         if not items:
-            return {"success": 0, "failed": 0}
+            self._update_job(job_id, {"ingested": True, "ingested_at": datetime.now().isoformat()})
+            return {"success": 0, "failed": 0, "errors": []}
 
         texts: List[str] = []
         payloads: List[Dict[str, Any]] = []
@@ -618,7 +848,126 @@ class CodeScanService:
                 }
             )
 
-        return self.vector_store.batch_insert_knowledge(knowledge_items)
+        insert_result = self.vector_store.batch_insert_knowledge(knowledge_items)
+        self._update_job(job_id, {"ingested": True, "ingested_at": datetime.now().isoformat()})
+        result_with_errors = {
+            "success": int(insert_result.get("success", 0)),
+            "failed": int(insert_result.get("failed", 0)),
+            "errors": [],
+        }
+        return result_with_errors
+
+    def _safe_extract_archive(self, archive_path: str, target_dir: str) -> None:
+        import tarfile
+        import zipfile
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        total_size = 0
+        total_files = 0
+
+        def _ensure_target(path: str) -> None:
+            real_target = os.path.realpath(path)
+            real_base = os.path.realpath(target_dir)
+            if not (real_target == real_base or real_target.startswith(real_base + os.sep)):
+                raise ValueError("压缩包包含非法路径")
+
+        if zipfile.is_zipfile(archive_path):
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                for member in zf.infolist():
+                    total_files += 1
+                    if total_files > self.max_archive_files:
+                        raise OverflowError("解压文件数超限")
+                    total_size += int(member.file_size or 0)
+                    if total_size > self.max_archive_size_bytes:
+                        raise OverflowError("解压后大小超限")
+                    if member.is_dir():
+                        continue
+                    unix_mode = (member.external_attr >> 16) & 0o170000
+                    if unix_mode == 0o120000:
+                        raise ValueError("压缩包包含软链接，禁止解压")
+                    member_path = os.path.join(target_dir, member.filename)
+                    _ensure_target(member_path)
+                zf.extractall(target_dir)
+            return
+
+        if tarfile.is_tarfile(archive_path):
+            with tarfile.open(archive_path, "r:*") as tf:
+                members = tf.getmembers()
+                for member in members:
+                    total_files += 1
+                    if total_files > self.max_archive_files:
+                        raise OverflowError("解压文件数超限")
+                    total_size += int(member.size or 0)
+                    if total_size > self.max_archive_size_bytes:
+                        raise OverflowError("解压后大小超限")
+                    if member.issym() or member.islnk():
+                        raise ValueError("压缩包包含链接文件，禁止解压")
+                    member_path = os.path.join(target_dir, member.name)
+                    _ensure_target(member_path)
+                tf.extractall(target_dir)
+            return
+
+        raise ValueError("不支持的压缩格式")
+
+    def run_scan_from_archive(
+        self,
+        *,
+        system_name: str,
+        system_id: Optional[str],
+        archive_path: str,
+        options: Optional[Dict[str, Any]],
+        created_by: str,
+        force: bool = False,
+    ) -> str:
+        if not os.path.exists(archive_path):
+            raise ValueError("repo_archive不存在")
+
+        archive_bytes = b""
+        try:
+            with open(archive_path, "rb") as archive_file:
+                archive_bytes = archive_file.read()
+        except Exception as exc:
+            raise ValueError("repo_archive读取失败") from exc
+
+        if not archive_bytes:
+            raise ValueError("repo_archive为空")
+
+        repo_hash = hashlib.sha256(archive_bytes).hexdigest()
+        normalized_options = self._normalize_options(options)
+        options_hash = self._calc_options_hash(normalized_options)
+
+        if not force:
+            existing = self._find_existing_job(
+                system_id=str(system_id or ""),
+                system_name=str(system_name or ""),
+                repo_hash=repo_hash,
+                options_hash=options_hash,
+            )
+            if existing:
+                return str(existing.get("job_id"))
+
+        job_id = f"scan_{uuid.uuid4().hex}"
+        extract_path = os.path.join(self.extract_dir, job_id)
+        try:
+            self._safe_extract_archive(archive_path, extract_path)
+        except Exception:
+            if os.path.isdir(extract_path):
+                shutil.rmtree(extract_path, ignore_errors=True)
+            raise
+
+        return self.run_scan(
+            system_name=system_name,
+            system_id=system_id,
+            repo_path=extract_path,
+            options=normalized_options,
+            created_by=created_by,
+            force=force,
+            repo_source_override="archive",
+            repo_hash_override=repo_hash,
+            repo_input_override=os.path.basename(archive_path),
+            skip_repo_path_validation=True,
+        )
 
     def _get_embedding_service(self):
         if self.embedding_service is None:

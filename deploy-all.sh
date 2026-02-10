@@ -22,6 +22,15 @@ fi
 echo "✓ Docker环境检查通过"
 echo ""
 
+compose_up_with_build() {
+    if docker-compose up -d --build; then
+        return 0
+    fi
+
+    echo "警告: BuildKit 构建失败，回退到经典构建模式（DOCKER_BUILDKIT=0）..."
+    DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose up -d --build
+}
+
 # 选择部署模式
 echo "请选择部署模式："
 echo "1) 基础部署（禁用知识库，资源占用少）"
@@ -36,14 +45,14 @@ if [ "$mode" = "1" ]; then
     echo "启动基础部署（禁用知识库）..."
     export KNOWLEDGE_ENABLED=false
     export KNOWLEDGE_VECTOR_STORE=local
-    docker-compose up -d --build
+    compose_up_with_build
 elif [ "$mode" = "2" ]; then
     echo ""
     echo "启动默认部署（启用知识库-本地向量库）..."
     echo "提示：如需知识库导入/检索，请在 .env 中配置 DASHSCOPE_API_KEY。"
     export KNOWLEDGE_ENABLED=true
     export KNOWLEDGE_VECTOR_STORE=local
-    docker-compose up -d --build
+    compose_up_with_build
 else
     echo "错误: 无效的选项"
     exit 1

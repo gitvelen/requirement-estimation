@@ -12,9 +12,9 @@ import {
   Space,
   Row,
   Col,
+  Collapse,
   Statistic,
   Typography,
-  Divider,
 } from 'antd';
 import { ArrowLeftOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import axios from 'axios';
@@ -340,7 +340,7 @@ const ReportPage = () => {
 
   return (
     <div className="report-page" style={{ padding: '24px' }}>
-      <Space style={{ marginBottom: 16 }}>
+      <Space style={{ marginBottom: 16 }} wrap>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks')}>
           返回任务列表
         </Button>
@@ -357,141 +357,150 @@ const ReportPage = () => {
         </Button>
       </Space>
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={8}>
-          <Card title="任务信息">
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <div>
-                <Text type="secondary">任务名称</Text>
-                <div>{task.name || '-'}</div>
-              </div>
-              <div>
-                <Text type="secondary">发起人</Text>
-                <div>{task.creatorName || '-'}</div>
-              </div>
-              <div>
-                <Text type="secondary">创建时间</Text>
-                <div>{task.createdAt || '-'}</div>
-              </div>
-              <div>
-                <Text type="secondary">状态</Text>
-                <div>{renderStatus(task.status)}</div>
-              </div>
-              <div>
-                <Text type="secondary">当前轮次</Text>
-                <div>第 {task.currentRound || 1} 轮</div>
-              </div>
-              <div>
-                <Text type="secondary">涉及系统</Text>
-                <div>{(task.systems || []).join('、') || '-'}</div>
-              </div>
-              {task.description ? (
-                <div>
-                  <Text type="secondary">任务说明</Text>
-                  <div>{task.description}</div>
-                </div>
-              ) : null}
-            </Space>
-            <Divider />
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Text type="secondary">需求文档</Text>
+      <Card title="摘要" style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]} align="middle">
+          <Col xs={24} md={8}>
+            <Space direction="vertical" size={4}>
+              <Text type="secondary">任务名称</Text>
+              <Text strong>{task.name || '-'}</Text>
               <Space>
-                <Text>{task.documentName || '未上传'}</Text>
-                <Button size="small" onClick={handleDownloadDocument} disabled={!task.documentName}>
-                  下载
-                </Button>
+                {renderStatus(task.status)}
+                <Tag color="processing">第 {task.currentRound || 1} 轮</Tag>
               </Space>
             </Space>
-          </Card>
-        </Col>
+          </Col>
+          <Col xs={12} md={4}>
+            <Statistic title="已提交" value={task.evaluationProgress?.submitted || 0} />
+          </Col>
+          <Col xs={12} md={4}>
+            <Statistic title="总专家数" value={task.evaluationProgress?.total || 0} />
+          </Col>
+          <Col xs={12} md={4}>
+            <Statistic title="涉及系统" value={(task.systems || []).length} />
+          </Col>
+          <Col xs={12} md={4}>
+            <Statistic title="报告版本" value={(task.reportVersions || []).length} />
+          </Col>
+        </Row>
+      </Card>
 
-        <Col xs={24} lg={16}>
-          <Card
-            title="评估进度"
-            extra={task.status === 'awaiting_assignment' && isAdmin ? (
-              <Button type="primary" onClick={() => setAssignVisible(true)}>
-                分配专家
-              </Button>
-            ) : null}
-          >
-            <Row gutter={16}>
-              <Col xs={12} md={6}>
-                <Statistic title="已提交" value={task.evaluationProgress?.submitted || 0} />
-              </Col>
-              <Col xs={12} md={6}>
-                <Statistic title="总专家数" value={task.evaluationProgress?.total || 0} />
-              </Col>
-              <Col xs={12} md={6}>
-                <Statistic title="当前轮次" value={task.currentRound || 1} />
-              </Col>
-              <Col xs={12} md={6}>
-                <Text type="secondary">状态</Text>
-                <div style={{ marginTop: 4 }}>{renderStatus(task.status)}</div>
-              </Col>
-            </Row>
+      <Card title="主体" style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={8}>
+            <Card type="inner" title="任务详情">
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <div>
+                  <Text type="secondary">发起人</Text>
+                  <div>{task.creatorName || '-'}</div>
+                </div>
+                <div>
+                  <Text type="secondary">创建时间</Text>
+                  <div>{task.createdAt || '-'}</div>
+                </div>
+                <div>
+                  <Text type="secondary">涉及系统</Text>
+                  <div>{(task.systems || []).join('、') || '-'}</div>
+                </div>
+                <div>
+                  <Text type="secondary">需求文档</Text>
+                  <Space wrap>
+                    <Text>{task.documentName || '未上传'}</Text>
+                    <Button size="small" onClick={handleDownloadDocument} disabled={!task.documentName}>
+                      下载
+                    </Button>
+                  </Space>
+                </div>
+                <div>
+                  <Text type="secondary">任务说明</Text>
+                  <div>{task.description || '-'}</div>
+                </div>
+              </Space>
+            </Card>
+          </Col>
 
-            <Table
-              rowKey="assignment_id"
-              columns={assignmentColumns}
-              dataSource={assignments}
-              pagination={false}
-              style={{ marginTop: 16 }}
-              scroll={{ x: 900 }}
-            />
-          </Card>
+          <Col xs={24} lg={16}>
+            <Card
+              type="inner"
+              title="专家评估进度"
+              extra={task.status === 'awaiting_assignment' && isAdmin ? (
+                <Button type="primary" onClick={() => setAssignVisible(true)}>
+                  分配专家
+                </Button>
+              ) : null}
+            >
+              <Table
+                rowKey="assignment_id"
+                columns={assignmentColumns}
+                dataSource={assignments}
+                pagination={false}
+                scroll={{ x: 900 }}
+              />
+            </Card>
+          </Col>
+        </Row>
+      </Card>
 
-          <Card title="偏离度统计" style={{ marginTop: 16 }}>
-            {deviationSummary.available ? (
-              <Row gutter={16}>
-                <Col xs={12} md={6}>
-                  <Statistic title="统计轮次" value={`第${deviationSummary.round}轮`} />
-                </Col>
-                <Col xs={12} md={6}>
-                  <Statistic title="平均偏离度" value={`${deviationSummary.avg}%`} />
-                </Col>
-                <Col xs={12} md={6}>
-                  <Statistic title="高偏离数" value={deviationSummary.highCount} />
-                </Col>
-                <Col xs={12} md={6}>
-                  <Statistic title="功能点数" value={deviationSummary.total} />
-                </Col>
-                <Col xs={24} style={{ marginTop: 12 }}>
-                  <Tag color={deviationSummary.isOfficial ? 'success' : 'warning'}>
-                    {deviationSummary.isOfficial ? '正式' : '预览'}
-                  </Tag>
-                </Col>
-              </Row>
-            ) : (
-              <Text type="secondary">报告生成后展示偏离度统计</Text>
-            )}
-          </Card>
+      <Card title="分析" style={{ marginBottom: 16 }}>
+        <Collapse
+          defaultActiveKey={[]}
+          items={[
+            {
+              key: 'deviation-panel',
+              label: '偏离度统计与高偏离功能点',
+              children: (
+                <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                  {deviationSummary.available ? (
+                    <Row gutter={16}>
+                      <Col xs={12} md={6}>
+                        <Statistic title="统计轮次" value={`第${deviationSummary.round}轮`} />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Statistic title="平均偏离度" value={`${deviationSummary.avg}%`} />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Statistic title="高偏离数" value={deviationSummary.highCount} />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Statistic title="功能点数" value={deviationSummary.total} />
+                      </Col>
+                      <Col xs={24} style={{ marginTop: 12 }}>
+                        <Tag color={deviationSummary.isOfficial ? 'success' : 'warning'}>
+                          {deviationSummary.isOfficial ? '正式' : '预览'}
+                        </Tag>
+                      </Col>
+                    </Row>
+                  ) : (
+                    <Text type="secondary">报告生成后展示偏离度统计</Text>
+                  )}
 
-          <Card title="高偏离功能点" style={{ marginTop: 16 }}>
-            {highDeviation.items && highDeviation.items.length ? (
-              <>
-                <Space style={{ marginBottom: 12 }}>
-                  <Text type="secondary">统计轮次：</Text>
-                  <Text>第 {highDeviation.round} 轮</Text>
-                  <Tag color={highDeviation.isOfficial ? 'success' : 'warning'}>
-                    {highDeviation.isOfficial ? '正式' : '预览'}
-                  </Tag>
+                  {highDeviation.items && highDeviation.items.length ? (
+                    <>
+                      <Space>
+                        <Text type="secondary">统计轮次：</Text>
+                        <Text>第 {highDeviation.round} 轮</Text>
+                        <Tag color={highDeviation.isOfficial ? 'success' : 'warning'}>
+                          {highDeviation.isOfficial ? '正式' : '预览'}
+                        </Tag>
+                      </Space>
+                      <Table
+                        rowKey="id"
+                        columns={highDeviationColumns}
+                        dataSource={highDeviation.items}
+                        pagination={false}
+                        size="small"
+                        scroll={{ x: 800 }}
+                        loading={highDeviationLoading}
+                      />
+                    </>
+                  ) : (
+                    <Text type="secondary">暂无高偏离功能点</Text>
+                  )}
                 </Space>
-                <Table
-                  rowKey="id"
-                  columns={highDeviationColumns}
-                  dataSource={highDeviation.items}
-                  pagination={false}
-                  size="small"
-                  scroll={{ x: 800 }}
-                  loading={highDeviationLoading}
-                />
-              </>
-            ) : (
-              <Text type="secondary">暂无高偏离功能点</Text>
-            )}
-          </Card>
-        </Col>
-      </Row>
+              ),
+            },
+          ]}
+        />
+      </Card>
 
       <Card title="报告版本列表" style={{ marginTop: 16 }}>
         <Table

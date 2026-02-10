@@ -5,9 +5,9 @@ import usePermission from '../hooks/usePermission';
 
 const RequireRole = ({ roles, children }) => {
   const navigate = useNavigate();
-  const { hasAnyRole } = usePermission();
+  const { activeRole } = usePermission();
 
-  if (roles && roles.length && !hasAnyRole(roles)) {
+  if (roles && roles.length && !roles.includes(activeRole)) {
     return (
       <Result
         status="403"

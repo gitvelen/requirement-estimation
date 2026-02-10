@@ -1,0 +1,44 @@
+# 内网环境后端 Dockerfile
+# 基础镜像：内网定制的 Python 镜像（已包含 uv、opencv 等依赖）
+FROM uv-mineru-opencv:0.1.0
+
+# 定义构建参数
+ARG UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+
+# 创建用户
+RUN groupadd -r appuser || true
+RUN useradd -r -g appuser appuser || true
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制项目配置文件
+COPY --chown=appuser:appuser pyproject.toml uv.lock ./
+
+# 使用 uv sync 安装依赖（不用 --frozen，让 uv 重新解析）
+RUN uv sync --no-dev --index-url ${UV_INDEX_URL}
+
+# 复制项目文件
+COPY --chown=appuser:appuser . .
+
+# 创建必要的目录
+RUN mkdir -p logs data uploads backend/config
+RUN chown -R appuser:appuser /app
+
+# 设置 PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# 验证关键依赖
+RUN python -c "import fastapi, uvicorn; print('Dependencies OK')"
+
+# 复制 entrypoint.sh
+COPY --chown=appuser:appuser entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh
+
+USER root
+
+EXPOSE 443
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "443"]

@@ -191,37 +191,41 @@ const SubsystemConfigPage = ({ embedded = false }) => {
   return (
     <div style={{ padding: embedded ? 0 : '24px' }}>
       <Card>
-        <div style={{ marginBottom: 16 }}>
-          <Title level={3}>子系统与主系统映射配置</Title>
-          <Text type="secondary">
-            配置子系统与其所属主系统的映射关系，避免将子系统误识别为主系统
-          </Text>
-        </div>
+        {!embedded && (
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <Title level={3}>子系统与主系统映射配置</Title>
+              <Text type="secondary">
+                配置子系统与其所属主系统的映射关系，避免将子系统误识别为主系统
+              </Text>
+            </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={handleAdd}
-            >
-              新增映射
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={fetchMappings}
-              loading={loading}
-            >
-              刷新
-            </Button>
-            <Button
-              icon={<SaveOutlined />}
-              onClick={handleReload}
-            >
-              重新加载（热更新）
-            </Button>
-          </Space>
-        </div>
+            <div style={{ marginBottom: 16 }}>
+              <Space>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  onClick={handleAdd}
+                >
+                  新增映射
+                </Button>
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={fetchMappings}
+                  loading={loading}
+                >
+                  刷新
+                </Button>
+                <Button
+                  icon={<SaveOutlined />}
+                  onClick={handleReload}
+                >
+                  重新加载（热更新）
+                </Button>
+              </Space>
+            </div>
+          </>
+        )}
 
         <Table
           columns={columns}

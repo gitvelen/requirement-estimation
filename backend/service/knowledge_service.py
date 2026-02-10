@@ -629,8 +629,11 @@ class KnowledgeService:
                 continue
 
             metadata = knowledge.get("metadata") or {}
+            business_goals = metadata.get("business_goals", "")
+            if not str(business_goals or "").strip():
+                business_goals = metadata.get("business_goal", "")
             part = f"""【知识{idx}】{metadata.get('system_name', '')} ({metadata.get('system_short_name', '')})
-   - 业务目标: {metadata.get('business_goal', '')}
+   - 业务目标: {business_goals}
    - 核心功能: {metadata.get('core_functions', '')}
    - 系统边界(做什么): {metadata.get('in_scope', '')}
    - 系统不做什么: {metadata.get('out_of_scope', '')}
@@ -654,6 +657,7 @@ class KnowledgeService:
     def _build_system_profile_text(self, system: Dict[str, Any]) -> str:
         """构建系统知识的检索文本"""
         system = system or {}
+        business_goals = system.get("business_goals", "") or system.get("business_goal", "") or ""
         return (
             f"系统名称:{system.get('system_name', '') or ''} | "
             f"系统简称:{system.get('system_short_name', '') or ''} | "
@@ -661,7 +665,7 @@ class KnowledgeService:
             f"系统不做什么:{system.get('out_of_scope', '') or ''} | "
             f"主要集成点/上下游:{system.get('integration_points', '') or ''} | "
             f"关键约束:{system.get('key_constraints', '') or ''} | "
-            f"业务目标:{system.get('business_goal', '') or ''} | "
+            f"业务目标:{business_goals} | "
             f"核心功能:{system.get('core_functions', '') or ''} | "
             f"技术栈:{system.get('tech_stack', '') or ''} | "
             f"架构特点:{system.get('architecture', '') or ''} | "

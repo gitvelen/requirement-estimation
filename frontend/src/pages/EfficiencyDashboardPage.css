@@ -1,0 +1,27 @@
+.dashboard-layout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.dashboard-side-card {
+  width: 220px;
+  position: sticky;
+  top: 80px;
+}
+
+.dashboard-main {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-layout {
+    flex-direction: column;
+  }
+
+  .dashboard-side-card {
+    width: 100%;
+    position: static;
+  }
+}

@@ -1,6 +1,6 @@
-import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { ConfigProvider, Result, Button } from 'antd';
+import React, { useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { ConfigProvider, Result, Button, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import UploadPage from './pages/UploadPage';
 import TaskListPage from './pages/TaskListPage';
@@ -12,9 +12,11 @@ import SystemListConfigPage from './pages/SystemListConfigPage';
 import KnowledgePage from './pages/KnowledgePage';
 import UserManagementPage from './pages/UserManagementPage';
 import NotificationPage from './pages/NotificationPage';
-import AIEffectReportPage from './pages/AIEffectReportPage';
 import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
+import EfficiencyDashboardPage from './pages/EfficiencyDashboardPage';
+import SystemProfileImportPage from './pages/SystemProfileImportPage';
+import SystemProfileBoardPage from './pages/SystemProfileBoardPage';
 import MainLayout from './components/MainLayout';
 import RequireAuth from './components/RequireAuth';
 import RequireRole from './components/RequireRole';
@@ -22,18 +24,28 @@ import usePermission from './hooks/usePermission';
 import './App.css';
 
 const HomeRedirect = () => {
-  const { isAdmin, isManager, isExpert } = usePermission();
-  if (isAdmin) {
+  const { activeRole, hasAnyRole } = usePermission();
+
+  if (activeRole === 'admin') {
+    return <Navigate to="/dashboard" replace />;
+  }
+  if (activeRole === 'manager') {
     return <Navigate to="/tasks" replace />;
   }
-  if (isManager && isExpert) {
+  if (activeRole === 'expert') {
     return <Navigate to="/tasks" replace />;
   }
-  if (isManager) {
-    return <Navigate to="/tasks/my-tasks" replace />;
+  if (activeRole === 'viewer') {
+    return <Navigate to="/dashboard" replace />;
   }
-  if (isExpert) {
-    return <Navigate to="/tasks/my-evaluations" replace />;
+  if (hasAnyRole(['admin'])) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  if (hasAnyRole(['manager', 'expert'])) {
+    return <Navigate to="/tasks" replace />;
+  }
+  if (hasAnyRole(['viewer'])) {
+    return <Navigate to="/dashboard" replace />;
   }
   return <Navigate to="/profile" replace />;
 };
@@ -51,6 +63,23 @@ const NotFound = () => (
   />
 );
 
+const LegacyAIEffectRedirect = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    message.info('“效果统计”已迁移至“效能看板”，本入口将自动跳转。');
+    navigate(`/dashboard${location.search || ''}`, { replace: true });
+  }, [location.search, navigate]);
+
+  return null;
+};
+
+const SystemProfilesRedirect = () => {
+  const location = useLocation();
+  return <Navigate to={`/system-profiles/board${location.search || ''}`} replace />;
+};
+
 function App() {
   return (
     <ConfigProvider locale={zhCN}>
@@ -65,7 +94,22 @@ function App() {
             )}
           >
             <Route path="/" element={<HomeRedirect />} />
-            <Route path="/tasks" element={<TaskListPage />} />
+            <Route
+              path="/dashboard"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <EfficiencyDashboardPage />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/tasks"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <TaskListPage />
+                </RequireRole>
+              )}
+            />
             <Route
               path="/tasks/my-tasks"
               element={(
@@ -93,7 +137,7 @@ function App() {
             <Route
               path="/report/:taskId"
               element={(
-                <RequireRole roles={['admin', 'manager']}>
+                <RequireRole roles={['admin', 'manager', 'expert']}>
                   <ReportPage />
                 </RequireRole>
               )}
@@ -111,6 +155,30 @@ function App() {
               element={(
                 <RequireRole roles={['expert']}>
                   <EvaluationPage />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/system-profiles"
+              element={(
+                <RequireRole roles={['manager']}>
+                  <SystemProfilesRedirect />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/system-profiles/import"
+              element={(
+                <RequireRole roles={['manager']}>
+                  <SystemProfileImportPage />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/system-profiles/board"
+              element={(
+                <RequireRole roles={['manager']}>
+                  <SystemProfileBoardPage />
                 </RequireRole>
               )}
             />
@@ -135,7 +203,7 @@ function App() {
               path="/reports/ai-effect"
               element={(
                 <RequireRole roles={['admin', 'manager', 'expert']}>
-                  <AIEffectReportPage />
+                  <LegacyAIEffectRedirect />
                 </RequireRole>
               )}
             />
@@ -165,9 +233,7 @@ function App() {
             />
             <Route
               path="/config/experts"
-              element={(
-                <Navigate to="/users" replace />
-              )}
+              element={<Navigate to="/users" replace />}
             />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="*" element={<NotFound />} />

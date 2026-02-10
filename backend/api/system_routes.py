@@ -7,10 +7,12 @@ import logging
 import csv
 import json
 import uuid
+import re
 from typing import Any, List, Dict, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from backend.api.auth import require_admin_api_key
+from backend.service import user_service
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,289 @@ SYSTEM_HEADER_KEYS = {
     "系统状态", "状态", "status",
     "扩展字段", "extra", "extra_json",
 }
+
+OWNER_EXTRA_FIELD_ALIASES: Dict[str, List[str]] = {
+    "owner_id": [
+        "owner_id",
+        "ownerId",
+        "系统负责人ID",
+        "负责人ID",
+        "系统主责ID",
+        "主责ID",
+    ],
+    "owner_username": [
+        "owner_username",
+        "ownerUsername",
+        "系统负责人账号",
+        "负责人账号",
+        "系统负责人用户名",
+        "负责人用户名",
+    ],
+    "owner_name": [
+        "owner_name",
+        "ownerName",
+        "系统负责人姓名",
+        "负责人姓名",
+        "系统负责人名称",
+        "负责人名称",
+    ],
+    "backup_owner_ids": [
+        "backup_owner_ids",
+        "backupOwnerIds",
+        "backupOwnerIDs",
+        "B角ID",
+        "B角IDs",
+        "代理负责人ID",
+        "代理负责人IDs",
+        "B角用户ID",
+        "代理负责人用户ID",
+        "备份负责人ID",
+        "备份负责人IDs",
+    ],
+    "backup_owner_usernames": [
+        "backup_owner_usernames",
+        "backupOwnerUsernames",
+        "B角账号",
+        "B角用户名",
+        "代理负责人账号",
+        "代理负责人用户名",
+        "备份负责人账号",
+        "备份负责人用户名",
+    ],
+}
+
+_OWNER_EXTRA_ALIAS_INDEX: Dict[str, str] = {}
+for canonical_key, aliases in OWNER_EXTRA_FIELD_ALIASES.items():
+    for alias in aliases:
+        normalized_alias = re.sub(r"[\s_\-]", "", str(alias or "")).lower()
+        if normalized_alias:
+            _OWNER_EXTRA_ALIAS_INDEX[normalized_alias] = canonical_key
+
+
+def resolve_owner_extra_key(raw_key: Optional[str]) -> Optional[str]:
+    normalized_key = re.sub(r"[\s_\-]", "", str(raw_key or "")).lower()
+    if not normalized_key:
+        return None
+    return _OWNER_EXTRA_ALIAS_INDEX.get(normalized_key)
+
+
+def normalize_system_owner_extra_fields(extra: Any) -> Tuple[Dict[str, Any], bool]:
+    if not isinstance(extra, dict):
+        return {}, False
+
+    normalized_extra: Dict[str, Any] = dict(extra)
+    changed = False
+
+    def _normalize_str_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            parts = value
+        else:
+            parts = [item.strip() for item in str(value).replace("，", ",").split(",")]
+        result: List[str] = []
+        for item in parts:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if text not in result:
+                result.append(text)
+        return result
+
+    for key, value in list(extra.items()):
+        canonical_key = resolve_owner_extra_key(key)
+        if not canonical_key:
+            continue
+
+        if canonical_key in {"backup_owner_ids", "backup_owner_usernames"}:
+            list_value = _normalize_str_list(value)
+            existing = normalized_extra.get(canonical_key)
+            existing_list = _normalize_str_list(existing)
+            if existing_list != list_value:
+                normalized_extra[canonical_key] = list_value
+                changed = True
+
+            if key != canonical_key and key in normalized_extra:
+                del normalized_extra[key]
+                changed = True
+            continue
+
+        text_value = "" if value is None else str(value).strip()
+        existing_value = "" if normalized_extra.get(canonical_key) is None else str(normalized_extra.get(canonical_key)).strip()
+
+        if not existing_value and (text_value or canonical_key not in normalized_extra):
+            normalized_extra[canonical_key] = text_value
+            if key != canonical_key:
+                changed = True
+
+        if key != canonical_key and key in normalized_extra:
+            del normalized_extra[key]
+            changed = True
+
+    return normalized_extra, changed
+
+
+def _find_system(system_id: Optional[str] = None, system_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    sid = str(system_id or "").strip()
+    sname = str(system_name or "").strip()
+    systems = _read_systems()
+
+    if sid:
+        for system in systems:
+            if str(system.get("id") or "").strip() == sid:
+                return system
+
+    if sname:
+        for system in systems:
+            if str(system.get("name") or "").strip() == sname:
+                return system
+
+    return None
+
+
+def resolve_system_owner(system_id: Optional[str] = None, system_name: Optional[str] = None) -> Dict[str, Any]:
+    system = _find_system(system_id=system_id, system_name=system_name)
+    if not system:
+        return {
+            "system_found": False,
+            "is_configured": False,
+            "mapping_status": "system_not_found",
+            "system_id": str(system_id or "").strip(),
+            "system_name": str(system_name or "").strip(),
+            "owner_id": "",
+            "owner_username": "",
+            "owner_name": "",
+            "resolved_owner_id": "",
+            "resolved_by": "",
+            "backup_owner_ids": [],
+            "backup_owner_usernames": [],
+            "resolved_backup_owner_ids": [],
+        }
+
+    extra, _ = normalize_system_owner_extra_fields(system.get("extra") or {})
+
+    owner_id = str(extra.get("owner_id") or "").strip()
+    owner_username = str(extra.get("owner_username") or "").strip()
+    owner_name = str(extra.get("owner_name") or "").strip()
+    backup_owner_ids = extra.get("backup_owner_ids")
+    backup_owner_usernames = extra.get("backup_owner_usernames")
+
+    def _as_str_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            parts = value
+        else:
+            parts = [item.strip() for item in str(value).replace("，", ",").split(",")]
+        result: List[str] = []
+        for item in parts:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if text not in result:
+                result.append(text)
+        return result
+
+    normalized_backup_ids = _as_str_list(backup_owner_ids)
+    normalized_backup_usernames = _as_str_list(backup_owner_usernames)
+    resolved_owner_id = owner_id
+    resolved_by = "owner_id" if owner_id else ""
+    mapping_status = "ok"
+
+    resolved_backup_owner_ids: List[str] = []
+    for item in normalized_backup_ids:
+        if item not in resolved_backup_owner_ids:
+            resolved_backup_owner_ids.append(item)
+
+    if not owner_id and owner_username:
+        users = user_service.list_users()
+        owner_user = user_service.find_user_by_username(users, owner_username)
+        if owner_user:
+            resolved_owner_id = str(owner_user.get("id") or "").strip()
+            resolved_by = "owner_username"
+            if not owner_name:
+                owner_name = str(owner_user.get("display_name") or owner_user.get("username") or "").strip()
+        else:
+            mapping_status = "owner_username_unresolved"
+    else:
+        users = None
+
+    if normalized_backup_usernames:
+        if users is None:
+            users = user_service.list_users()
+        for username in normalized_backup_usernames:
+            backup_user = user_service.find_user_by_username(users, username)
+            if backup_user:
+                backup_id = str(backup_user.get("id") or "").strip()
+                if backup_id and backup_id not in resolved_backup_owner_ids:
+                    resolved_backup_owner_ids.append(backup_id)
+
+    if not owner_id and not owner_username:
+        mapping_status = "owner_not_configured"
+
+    if not resolved_owner_id and mapping_status == "ok":
+        mapping_status = "owner_not_configured"
+
+    return {
+        "system_found": True,
+        "is_configured": bool(resolved_owner_id),
+        "mapping_status": mapping_status,
+        "system_id": str(system.get("id") or "").strip(),
+        "system_name": str(system.get("name") or "").strip(),
+        "owner_id": owner_id,
+        "owner_username": owner_username,
+        "owner_name": owner_name,
+        "resolved_owner_id": resolved_owner_id,
+        "resolved_by": resolved_by,
+        "backup_owner_ids": normalized_backup_ids,
+        "backup_owner_usernames": normalized_backup_usernames,
+        "resolved_backup_owner_ids": resolved_backup_owner_ids,
+    }
+
+
+def resolve_system_ownership(
+    current_user: Optional[Dict[str, Any]],
+    *,
+    system_id: Optional[str] = None,
+    system_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve ownership/backup ownership for resource-level permission checks.
+
+    Returns payload:
+      - allowed_draft_write: bool (owner or backup)
+      - allowed_publish: bool (owner only)
+      - is_owner: bool
+      - is_backup: bool
+      - owner_info: resolve_system_owner(...)
+    """
+    owner_info = resolve_system_owner(system_id=system_id, system_name=system_name)
+    current_user_id = str((current_user or {}).get("id") or "").strip()
+    resolved_owner_id = str(owner_info.get("resolved_owner_id") or "").strip()
+    resolved_backup_owner_ids = owner_info.get("resolved_backup_owner_ids") or []
+    is_owner = bool(current_user_id and resolved_owner_id and current_user_id == resolved_owner_id)
+    is_backup = bool(current_user_id and current_user_id in {str(item).strip() for item in resolved_backup_owner_ids if str(item).strip()})
+    allowed_draft_write = bool(is_owner or is_backup)
+    allowed_publish = bool(is_owner)
+    return {
+        "allowed_draft_write": allowed_draft_write,
+        "allowed_publish": allowed_publish,
+        "is_owner": is_owner,
+        "is_backup": is_backup,
+        "owner_info": owner_info,
+    }
+
+
+def is_system_owner(current_user: Optional[Dict[str, Any]], system_id: Optional[str] = None, system_name: Optional[str] = None) -> Tuple[bool, Dict[str, Any]]:
+    owner_info = resolve_system_owner(system_id=system_id, system_name=system_name)
+    current_user_id = str((current_user or {}).get("id") or "").strip()
+    is_owner = bool(
+        current_user_id
+        and owner_info.get("system_found")
+        and owner_info.get("is_configured")
+        and str(owner_info.get("resolved_owner_id") or "").strip() == current_user_id
+    )
+    return is_owner, owner_info
 
 
 def _generate_system_id() -> str:
@@ -156,6 +441,10 @@ def _read_systems() -> List[Dict[str, str]]:
                                 extra = {"_value": parsed}
                         except Exception:
                             logger.warning("解析系统 extra 字段失败，已忽略", exc_info=True)
+
+                    extra, extra_changed = normalize_system_owner_extra_fields(extra)
+                    if extra_changed:
+                        needs_write = True
 
                     if not (system_id or name or abbr or status or extra_raw):
                         continue
