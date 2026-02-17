@@ -9,6 +9,18 @@
 ## 输出
 - `docs/<版本号>/requirements.md` — 需求规格说明
 
+## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
+
+> AI 进入本阶段后、开始产出前，**必须先读取**以下文件。CC-7 hook 会在 AI 首次写入产出物时检查是否已读取。
+
+| 必读文件 | 用途 | 强制级别 |
+|---------|------|---------|
+| `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
+| `docs/<版本号>/proposal.md` | 上一阶段产出（输入） | 🔴 CC-7 强制 |
+| `.aicoding/phases/02-requirements.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
+| `.aicoding/templates/requirements_template.md` | 产出物模板 | 🔴 CC-7 强制 |
+| `docs/系统功能说明书.md`（如存在） | 存量系统功能基线 | 🟡 推荐（CC-7 不强制） |
+
 ## 阶段开始时检查
 - [ ] 确认 proposal.md 已完成并通过评审
 - [ ] 确认当前变更目录存在
@@ -70,10 +82,15 @@ rg -n "关键词1|关键词2" docs/<版本号>/requirements.md
 ### 人工确认
 - [ ] 人工阅读 `review_requirements.md`
 - [ ] 人工确认问题可接受
+- [ ] `review_requirements.md` 包含“禁止项/不做项确认清单”章节（来源覆盖：对话中出现的不要/不做/禁止/不允许/不显示/不出现/不需要 + proposal.md Non-goals）
+- [ ] 清单中每条禁止项已明确归类为二选一：A) 已固化为 `REQ-Cxxx`（requirements.md 中存在对应条目 + `GWT-ID`）或 B) 明确写入 Non-goals（含边界与原因）
+- [ ] 清单中无 `TBD/待确认/unknown/...` 占位项
+- [ ] 清单内包含机器可读块 `CONSTRAINTS-CHECKLIST-BEGIN/END`（门禁会校验 A/B 分类、来源引用、以及 REQ-C 映射完整性）
+- [ ] `review_requirements.md` 末尾包含机器可读确认块，且 `CONSTRAINTS_CONFIRMED: yes`
 - [ ] 人工确认进入 Design 阶段
-- [ ] 更新 `status.md`：当前阶段 = Design
+- [ ] 更新 `status.md`：`_phase: Design`（并同步表格展示行"当前阶段"）
 
 ## 完成后
 1. 确认质量门禁通过
 2. 询问用户："需求已完成，是否进入 Design 阶段？"
-3. 用户确认后，更新 `docs/<版本号>/status.md` 中的"当前阶段"为 Design（如未创建则先创建）
+3. 用户确认后，更新 `docs/<版本号>/status.md` 中的 `_phase` 为 Design（并同步表格展示行"当前阶段"；如未创建则先创建）

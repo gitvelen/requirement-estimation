@@ -2,6 +2,10 @@
 # aicoding-hooks-managed
 # Git commit-msg dispatcher: Git-Hook 1 (格式校验) + Git-Hook 2 (CR-ID 校验)
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/common.sh
+source "${SCRIPT_DIR}/../lib/common.sh"
+
 # --- Git-Hook 1: commit-msg 阶段前缀校验 ---
 MSG=$(head -1 "$1")
 if echo "$MSG" | grep -qE '^\[(CR-[0-9]{8}-[0-9]{3})\] '; then :
@@ -17,14 +21,49 @@ else
   exit 1
 fi
 
+# 判断 staged 文件是否命中 CR 影响范围
+cr_scope_matches_file() {
+  local staged_file="$1"
+  local scope="$2"
+  [ -n "$scope" ] || return 1
+  scope=$(printf '%s' "$scope" | sed 's#^\./##;s#/$##')
+  staged_file=$(printf '%s' "$staged_file" | sed 's#^\./##')
+
+  # 支持 glob（如 src/**/*.ts）
+  if printf '%s' "$scope" | grep -qE '[*?\[]'; then
+    case "$staged_file" in
+      $scope) return 0 ;;
+    esac
+  fi
+
+  # 目录前缀
+  if printf '%s' "$scope" | grep -q '/'; then
+    case "$staged_file" in
+      "$scope"|"$scope"/*) return 0 ;;
+    esac
+  fi
+
+  # 文件名兜底
+  [ "$staged_file" = "$scope" ] && return 0
+  [ "$(basename "$staged_file")" = "$scope" ] && return 0
+  return 1
+}
+
 # --- Git-Hook 2: commit-msg CR-ID 校验（条件触发） ---
+# 仅当暂存文件涉及 docs/vX.Y/ 时才校验 CR-ID，避免误杀无关提交
 STAGED=$(git diff --cached --name-only)
 VERSION_DIR=$(echo "$STAGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+if [ -z "$VERSION_DIR" ]; then
+  STATUS_CANDIDATE=$(find docs -path '*/v*/status.md' -type f 2>/dev/null | LC_ALL=C sort | head -1 || true)
+  if [ -n "$STATUS_CANDIDATE" ]; then
+    VERSION_DIR=$(echo "$STATUS_CANDIDATE" | sed 's#status\.md$##')
+  fi
+fi
 if [ -n "$VERSION_DIR" ]; then
   STATUS_FILE="${VERSION_DIR}status.md"
 else
-  STATUS_FILE=$(find docs/ -name "status.md" -path "*/v*/status.md" \
-    -exec ls -t {} + 2>/dev/null | head -1)
+  # 不涉及版本目录的提交，跳过 CR-ID 校验（避免 fallback 到错误版本）
+  STATUS_FILE=""
 fi
 if [ -n "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ]; then
   STATUS_CONTENT=$(git show ":$STATUS_FILE" 2>/dev/null || cat "$STATUS_FILE")
@@ -32,21 +71,71 @@ if [ -n "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ]; then
     {
       gsub(/^[ \t]+|[ \t]+$/, "", $2);
       gsub(/^[ \t]+|[ \t]+$/, "", $3);
-      if ($2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3 == "Accepted" || $3 == "In Progress"))
+      gsub(/[ \t]/, "", $3);
+      if ($2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3 == "Accepted" || $3 == "InProgress"))
         print $2
     }
   ')
   if [ -n "$ACTIVE_CRS" ]; then
     FULL_MSG=$(cat "$1")
-    FOUND=false
-    for CR in $ACTIVE_CRS; do
-      if echo "$FULL_MSG" | grep -q "$CR"; then FOUND=true; break; fi
-    done
-    if [ "$FOUND" = false ]; then
-      echo "❌ 存在 Active CR，commit message 必须包含 CR-ID"
-      echo "   Active CRs:"
-      echo "$ACTIVE_CRS" | sed 's/^/     /'
-      exit 1
+
+    # 优先按 CR 影响范围映射本次暂存文件 → 必含 CR-ID
+    REQUIRED_CRS=""
+    tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-commit-msg)
+    while IFS= read -r CR; do
+      [ -z "$CR" ] && continue
+      CR_FILE="${VERSION_DIR}cr/${CR}.md"
+      CR_CONTENT=$(git show ":$CR_FILE" 2>/dev/null || cat "$CR_FILE" 2>/dev/null || true)
+      [ -n "$CR_CONTENT" ] || continue
+
+      tmp_cr="${tmp_dir}/${CR}.md"
+      printf '%s\n' "$CR_CONTENT" > "$tmp_cr"
+      CR_SCOPES=$(aicoding_extract_cr_impact_paths "$tmp_cr")
+      [ -n "$CR_SCOPES" ] || continue
+
+      matched=false
+      while IFS= read -r sf; do
+        [ -z "$sf" ] && continue
+        while IFS= read -r scope; do
+          [ -z "$scope" ] && continue
+          if cr_scope_matches_file "$sf" "$scope"; then
+            matched=true
+            break
+          fi
+        done <<< "$CR_SCOPES"
+        [ "$matched" = true ] && break
+      done <<< "$STAGED"
+
+      if [ "$matched" = true ]; then
+        REQUIRED_CRS="${REQUIRED_CRS}\n${CR}"
+      fi
+    done <<< "$ACTIVE_CRS"
+    rm -rf "$tmp_dir"
+
+    REQUIRED_CRS=$(printf '%b' "$REQUIRED_CRS" | sed '/^$/d' | LC_ALL=C sort -u || true)
+    if [ -n "$REQUIRED_CRS" ]; then
+      MISSING_CRS=""
+      while IFS= read -r CR; do
+        [ -z "$CR" ] && continue
+        echo "$FULL_MSG" | grep -q "$CR" || MISSING_CRS="${MISSING_CRS}\n  - ${CR}"
+      done <<< "$REQUIRED_CRS"
+      if [ -n "$MISSING_CRS" ]; then
+        echo "❌ commit message 缺少受影响 CR-ID（按暂存文件与 CR 影响范围映射）："
+        echo -e "$MISSING_CRS"
+        exit 1
+      fi
+    else
+      # 回退策略：无法映射时至少包含一个 Active CR
+      FOUND=false
+      for CR in $ACTIVE_CRS; do
+        if echo "$FULL_MSG" | grep -q "$CR"; then FOUND=true; break; fi
+      done
+      if [ "$FOUND" = false ]; then
+        echo "❌ 存在 Active CR，commit message 必须包含 CR-ID"
+        echo "   Active CRs:"
+        echo "$ACTIVE_CRS" | sed 's/^/     /'
+        exit 1
+      fi
     fi
   fi
 fi

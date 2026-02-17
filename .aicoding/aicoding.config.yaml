@@ -1,0 +1,47 @@
+# aicoding framework configuration (single-project overrides)
+
+# P3: 门禁阈值配置化
+# spotcheck_ratio_percent: 抽检比例(0-100)。建议从 5-10 起步，按人力与误拦率调整。
+spotcheck_ratio_percent: 10
+# spotcheck_min: 每次抽检最少项数。建议 1-2，避免小改动完全不检。
+spotcheck_min: 1
+# spotcheck_max: 每次抽检最多项数。建议 3-5，防止大改动抽检压垮人力。
+spotcheck_max: 5
+# deferred_limit_percent: 允许延期处理的比例上限。建议 5-15，越高债务积累风险越大。
+deferred_limit_percent: 10
+
+# Minor 误标启发式阈值（warning）
+# minor_max_diff_files: 仍可视为 Minor 的最大改动文件数。建议用日常小改动 80 分位校准。
+minor_max_diff_files: 10
+# minor_max_new_gwts: 仍可视为 Minor 的新增 GWT 数上限。建议从 3-5 起步再校准。
+minor_max_new_gwts: 5
+
+# Hotfix 轨道（M1）
+# enable_hotfix: 是否启用热修通道。开启需配合严格范围控制。
+enable_hotfix: true
+# hotfix_max_diff_files: 热修允许的最大改动文件数。建议 1-3，避免热修变“大改”。
+hotfix_max_diff_files: 3
+
+# 结果门禁（M2，仅在阶段推进 commit 中执行）
+# result_gate_test_command: 阶段推进时强制执行的测试命令。建议填 CI 同款命令。
+result_gate_test_command: "cd frontend && CI=true npx react-scripts test --watchAll=false"
+# result_gate_build_command: 阶段推进时强制执行的构建命令。建议填 CI 同款命令。
+result_gate_build_command: "cd frontend && npx react-scripts build"
+# result_gate_typecheck_command: 阶段推进时强制执行的类型检查命令。建议填 CI 同款命令。
+result_gate_typecheck_command: ""
+
+# 入口门禁模式（M2）
+# entry_gate_mode: 入口门禁模式（如 warn/strict）。建议先 warn 观测，再逐步收紧。
+entry_gate_mode: warn
+
+# 项目级阶段覆盖（未配置默认 false）
+# phase_skip_proposal: 是否跳过提案阶段。建议默认 false，仅在成熟流程下启用。
+phase_skip_proposal: false
+
+# GWT-ID 格式（用于未来扩展）
+# gwt_id_regex: GWT-ID 正则。必须与团队真实 ID 规则一致，否则会误判。
+gwt_id_regex: ^GWT-REQ-C?[0-9]+-[0-9]+$
+
+# P4: 可选框架引用（latest 或 commit-hash）
+# framework_ref: 框架版本引用。建议固定到 commit，避免 latest 带来规则漂移。
+framework_ref: latest

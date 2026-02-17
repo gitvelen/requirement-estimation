@@ -1,421 +1,58 @@
 #!/bin/bash
 # aicoding-hooks-managed
-# Git post-commit dispatcher: Warning 6-18
+# Git post-commit dispatcher: 加载公共库后依次执行 warnings/ 下的模块
 # 注意：不启用 set -e，避免 grep 无匹配（退出码 1）中断后续 Warning
 
-# === 公共基础设施 ===
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "${SCRIPT_DIR}/../lib/common.sh"
+aicoding_load_config
+aicoding_gate_log_init
+
+# === 公共基础设施（供 warning 模块使用的全局变量） ===
 CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
 VERSION_DIR=$(echo "$CHANGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+# 不涉及版本目录的提交，不做 fallback（避免关联到错误版本）
 if [ -z "$VERSION_DIR" ]; then
-  VERSION_DIR=$(find docs/ -name "status.md" -path "*/v*/status.md" \
-    -exec ls -t {} + 2>/dev/null | head -1 | sed 's/status\.md$//')
+  exit 0
 fi
 STATUS_FILE="${VERSION_DIR}status.md"
-warn() { echo "⚠️  [post-commit] $1"; }
-
-# === 高风险路径模式（集中配置，按项目实际调整） ===
-# 格式：case 模式|标签，用 ; 分隔多组
-# W18 及其他需要高风险判断的 Warning 统一引用此变量
-HIGH_RISK_PATTERNS="db/migrations/*|db/schema*|*/migration*:schema/migration;auth/*|*/permission*|*/rbac*:auth/permission;api/*|*/swagger*|*/openapi*|*.proto:API contract;infra/*|k8s/*|terraform/*:infrastructure"
-
-yaml_front_value() {
-  local key="$1"
-  awk -v k="$key" '
-    NR==1 && $0!="---" {exit}
-    NR==1 {in_front=1; next}
-    in_front && $0=="---" {exit}
-    in_front && $0 ~ "^" k ":" {print $2; exit}
-  ' "$STATUS_FILE"
+AICODING_STATUS_FILE="$STATUS_FILE"
+WARN_CAPTURE_FILE=$(mktemp 2>/dev/null || mktemp -t aicoding-post-commit-warn)
+WARNING_LOG_FILE=$(aicoding_gate_warning_log_path)
+export WARN_CAPTURE_FILE WARNING_LOG_FILE
+warn() {
+  local msg="$1"
+  echo "⚠️  [post-commit] ${msg}"
+  printf '%s [post-commit] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown-time')" "${msg}" >> "$WARNING_LOG_FILE" 2>/dev/null || true
+  printf '%s\n' "${msg}" >> "$WARN_CAPTURE_FILE" 2>/dev/null || true
 }
 
-get_phase() {
-  local p
-  p=$(yaml_front_value "_phase")
-  if [ -n "$p" ]; then
-    echo "$p"
-    return 0
-  fi
-  awk -F'|' '/\| 当前阶段/ {gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}' "$STATUS_FILE"
-}
-
-# === Warning 6: 文档阶段出现代码文件变更 ===
-if [ -f "$STATUS_FILE" ]; then
-  PHASE=$(get_phase)
-  case "$PHASE" in
-    Proposal|Requirements|Design|Planning)
-      CODE_FILES=$(echo "$CHANGED" | grep -vE '\.(md|txt|yaml|yml|json)$' || true)
-      CODE_FILES=$(echo "$CODE_FILES" | head -5)
-      if [ -n "$CODE_FILES" ]; then
-        warn "当前阶段为 $PHASE，但检测到代码文件变更："
-        echo "$CODE_FILES" | sed 's/^/     /'
-        warn "请确认是否应先完成文档阶段"
-      fi ;;
-  esac
-fi
-
-# === Warning 7: CR 必填字段完整性 ===
-CR_FILES=$(echo "$CHANGED" | grep -E 'docs/.*/cr/CR-.*\.md$' || true)
-for cr in $CR_FILES; do
-  [ ! -f "$cr" ] && continue
-  if grep -q '## 1\. 变更意图' "$cr"; then
-    awk '/## 1\. 变更意图/{f=1;next} /^##/{f=0}
-      f && NF>0 && !/<[^>]+>/ && !/^[ \t]*-?[ \t]*\.\.\.[ \t]*$/' "$cr" \
-      | grep -q . || warn "$cr: §1 变更意图为空（或仅含模板占位符）"
-  fi
-  if grep -q '## 2\. 变更点' "$cr"; then
-    awk '/## 2\. 变更点/{f=1;next} /^##/{f=0}
-      f && NF>0 && !/^[ \t]*-?[ \t]*\.\.\.[ \t]*$/' "$cr" \
-      | grep -q . || warn "$cr: §2 变更点为空（或仅含模板占位符）"
-  fi
-  if grep -q '## 3\. 影响面' "$cr"; then
-    awk '/## 3\. 影响面/{f=1;next} /^## [0-9]/{f=0}
-      f && NF>0 && !/^[ \t]*-?[ \t]*\.\.\.[ \t]*$/ && !/\[ \]是.*\[ \]否/ && !/^[ \t]*\|[ \t|:-]*$/' "$cr" \
-      | grep -q . || warn "$cr: §3 影响面为空（或仅含模板占位符）"
-  fi
-  if grep -q '## 6\. 验收与验证' "$cr"; then
-    awk '/## 6\. 验收与验证/{f=1;next} /^## [0-9]/{f=0}
-      f && /Given / && !/<[^>]+>/' "$cr" \
-      | grep -q . || warn "$cr: §6 缺少 GWT 验收标准（或仅含模板占位符）"
-  fi
-done
-# === Warning 8: 阶段产出文件存在性 ===
-if [ -f "$STATUS_FILE" ]; then
-  W8_PHASE=$(get_phase)
-  IS_MINOR=$(grep -c '\[Minor\]' "$STATUS_FILE" || true)
-  check_exists() {
-    [ ! -f "${VERSION_DIR}$1" ] && warn "当前阶段 $W8_PHASE，但 $1 不存在"
-  }
-  case "$W8_PHASE" in
-    Requirements)
-      [ "$IS_MINOR" -eq 0 ] && check_exists "proposal.md" ;;
-    Design)
-      check_exists "requirements.md" ;;
-    Planning)
-      check_exists "design.md" ;;
-    Implementation)
-      check_exists "plan.md" ;;
-    Testing)
-      ;; # test_report.md 本阶段产出，允许后补
-    Deployment)
-      check_exists "test_report.md" ;;
-  esac
-fi
-
-# === Warning 9: REQ 引用存在性 ===
-DOC_FILES=$(echo "$CHANGED" | grep -E '(plan|design)\.md$' || true)
-if [ -n "$DOC_FILES" ]; then
-  REQ_FILE="${VERSION_DIR}requirements.md"
-  if [ ! -f "$REQ_FILE" ]; then
-    warn "requirements.md 不存在，无法校验 REQ 引用"
-  else
-    REQ_PATTERN='REQ-[0-9]{3}'
-    DEFINED=$(grep -oE "$REQ_PATTERN" "$REQ_FILE" | sort -u)
-    for doc in $DOC_FILES; do
-      [ ! -f "$doc" ] && continue
-      REFS=$(grep -oE "$REQ_PATTERN" "$doc" | sort -u)
-      for ref in $REFS; do
-        echo "$DEFINED" | grep -qx "$ref" || warn "$doc 引用了 $ref，但 requirements.md 中不存在"
-      done
-    done
-  fi
-fi
-
-# === Warning 10: 基线版本可达性 ===
-if [ -f "$STATUS_FILE" ]; then
-  BASELINE=$(grep '^_baseline:' "$STATUS_FILE" | awk '{print $2}')
-  if [ -n "$BASELINE" ]; then
-    git rev-parse --verify "${BASELINE}^{commit}" 2>/dev/null || \
-      warn "基线版本 $BASELINE 不可达（git rev-parse 失败）"
-  fi
-fi
-
-# === Warning 11: 文档变更日志同步 ===
-for doc_name in requirements.md design.md plan.md; do
-  echo "$CHANGED" | grep -q "$doc_name" || continue
-  doc_path="${VERSION_DIR}${doc_name}"
-  [ ! -f "$doc_path" ] && continue
-  if ! grep -qE '(变更记录|版本|修订|Changelog)' "$doc_path"; then
-    warn "$doc_name 被修改但未找到变更记录章节"
-  fi
-done
-# === Warning 12: CR 影响面与 diff 一致性 ===
-if [ -f "$STATUS_FILE" ]; then
-  W12_ACTIVE_CRS=$(awk -F'|' '{gsub(/[ \t]/,"",$2); gsub(/[ \t]/,"",$3)}
-    $2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3=="Accepted"||$3=="InProgress")
-    {print $2}' "$STATUS_FILE")
-  if [ -n "$W12_ACTIVE_CRS" ]; then
-    CODE_CHANGED=$(echo "$CHANGED" | grep -vE '\.(md|txt|yaml|yml|json)$' || true)
-    if [ -n "$CODE_CHANGED" ]; then
-      ALL_DECLARED=""
-      for cr_id in $W12_ACTIVE_CRS; do
-        CR_FILE=$(find "${VERSION_DIR}cr/" -name "${cr_id}*.md" 2>/dev/null | head -1)
-        if [ -z "$CR_FILE" ]; then
-          warn "Active CR $cr_id 的 CR 文件不存在"; continue
-        fi
-        DECLARED=$(awk '/### 3\.3/{found=1;next} /^#/{found=0} found && /\|/' "$CR_FILE" \
-          | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2);
-            if($2!="" && $2!~/^-+$/ && $2!~/影响模块/ && $2!~/影响文件/) print $2}')
-        if [ -z "$DECLARED" ]; then
-          warn "$cr_id: §3.3 代码影响为空，但本次有代码变更"
-        else
-          ALL_DECLARED="${ALL_DECLARED}
-${DECLARED}"
-        fi
-      done
-      if [ -n "$ALL_DECLARED" ]; then
-        for changed_file in $CODE_CHANGED; do
-          COVERED=false
-          while IFS= read -r decl; do
-            [ -z "$decl" ] && continue
-            echo "$changed_file" | grep -Fq "$decl" && { COVERED=true; break; }
-          done <<< "$ALL_DECLARED"
-          [ "$COVERED" = false ] && \
-            warn "$changed_file 不在任何 Active CR 的 §3.3 声明范围内"
-        done
-      fi
-    fi
-  fi
-fi
-
-# === Warning 13: 部署阶段 CR 子集验证 ===
-if [ -f "$STATUS_FILE" ]; then
-  W13_PHASE=$(get_phase)
-  if [ "$W13_PHASE" = "Deployment" ]; then
-    W13_BASELINE=$(grep '^_baseline:' "$STATUS_FILE" | awk '{print $2}')
-    if [ -n "$W13_BASELINE" ]; then
-      W13_ACTIVE_CRS=$(awk -F'|' '{gsub(/[ \t]/,"",$2); gsub(/[ \t]/,"",$3)}
-        $2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3=="Accepted"||$3=="InProgress")
-        {print $2}' "$STATUS_FILE")
-      if [ -n "$W13_ACTIVE_CRS" ]; then
-        COMMITS=$(git log "${W13_BASELINE}..HEAD" --format=%B 2>/dev/null)
-        for cr_id in $W13_ACTIVE_CRS; do
-          echo "$COMMITS" | grep -q "$cr_id" || \
-            warn "Active CR $cr_id 未出现在 ${W13_BASELINE}..HEAD 的 commit message 中"
-        done
-      fi
-    fi
-  fi
-fi
-
-# === Warning 14: 设计文档决策记录非空 ===
-echo "$CHANGED" | grep -q 'design\.md$' && {
-  DESIGN="${VERSION_DIR}design.md"
-  if [ -f "$DESIGN" ]; then
-    HAS_RECORD=$(awk -F'|' '
-      /^### 技术决策/{found=1; next}
-      found && /^#/{found=0}
-      found && /\|/ && !/---/ && !/编号.*决策项/ && !/决策项.*用户选择/ {
-        gsub(/^[ \t]+|[ \t]+$/, "", $4);
-        if ($4 != "" && $4 !~ /^[ \t]*$/) { print; exit }
-      }
-    ' "$DESIGN")
-    [ -z "$HAS_RECORD" ] && warn "design.md 的技术决策表中'用户选择'列全部为空"
-  fi
-}
-
-# === Warning 15: 测试报告覆盖 CR 验收标准 ===
-echo "$CHANGED" | grep -q 'test_report\.md$' && {
-  if [ -f "$STATUS_FILE" ]; then
-    W15_ACTIVE_CRS=$(awk -F'|' '{gsub(/[ \t]/,"",$2); gsub(/[ \t]/,"",$3)}
-      $2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3=="Accepted"||$3=="InProgress")
-      {print $2}' "$STATUS_FILE")
-    if [ -n "$W15_ACTIVE_CRS" ]; then
-      TEST_REPORT="${VERSION_DIR}test_report.md"
-      if [ ! -f "$TEST_REPORT" ]; then
-        warn "test_report.md 不存在"
-      else
-        for cr_id in $W15_ACTIVE_CRS; do
-          CR_FILE=$(find "${VERSION_DIR}cr/" -name "${cr_id}*.md" 2>/dev/null | head -1)
-          [ -z "$CR_FILE" ] && continue
-          GWT_COUNT=$(grep -cE '^- Given ' "$CR_FILE" 2>/dev/null || echo 0)
-          [ "$GWT_COUNT" -eq 0 ] && continue
-          grep -q "$cr_id" "$TEST_REPORT" || \
-            warn "$cr_id 有 $GWT_COUNT 条 GWT 验收标准，但 test_report.md 中未引用该 CR"
-        done
-      fi
-    fi
-  fi
-}
-
-# === Warning 16: test_report.md 证据与结论完整性（准备交付时触发）===
-if [ -f "$STATUS_FILE" ]; then
-  W16_PHASE=$(yaml_front_value "_phase")
-  W16_RUN_STATUS=$(yaml_front_value "_run_status")
-  W16_CHANGE_STATUS=$(yaml_front_value "_change_status")
-
-  # 仅在“准备交付”信号出现时触发，避免日常小步提交产生 warning fatigue
-  case "$W16_PHASE" in
-    Testing|Deployment)
-      if [ "$W16_RUN_STATUS" = "wait_confirm" ] || [ "$W16_CHANGE_STATUS" = "done" ]; then
-        TEST_REPORT="${VERSION_DIR}test_report.md"
-        if [ -f "$TEST_REPORT" ]; then
-          W16_FAIL=false
-
-          # 检查 1：证据存在性（命令块/证据链接/CR验证证据表，至少满足其一）
-          HAS_CMD_BLOCK=$(awk '
-            /```(bash|sh)[ \t]*$/{in_block=1; next}
-            in_block && /```/{in_block=0; next}
-            in_block{
-              line=$0
-              gsub(/^[ \t-]+/, "", line)
-              gsub(/[ \t]+$/, "", line)
-              if(line!="" && line!="..." && line !~ /^<[^>]+>$/) {print 1; exit}
-            }
-          ' "$TEST_REPORT")
-
-          HAS_EVID_LINE=$(grep -nE '^(\*\*证据\*\*：|证据：|证据链接：|- 完整报告链接：).+' "$TEST_REPORT" 2>/dev/null \
-            | grep -vF '命令输出/日志/截图链接（如适用）' \
-            | grep -vE '\.\.\.|<[^>]+>' | head -1 || true)
-
-          HAS_CR_EVID=$(awk -F'|' '
-            $0 ~ /^\|[ \t]*CR-[0-9]{8}-[0-9]{3}[ \t]*\|/ {
-              gsub(/^[ \t]+|[ \t]+$/, "", $5);
-              gsub(/^[ \t]+|[ \t]+$/, "", $6);
-              if ($6 == "通过" && $5 != "" && $5 != "..." && $5 !~ /^<[^>]+>$/) {print 1; exit}
-            }
-          ' "$TEST_REPORT")
-
-          if [ -z "$HAS_CMD_BLOCK" ] && [ -z "$HAS_EVID_LINE" ] && [ -z "$HAS_CR_EVID" ]; then
-            warn "W16: test_report.md 中未找到有效证据（请补充命令块/证据链接/CR验证证据表，至少满足其一）"
-            W16_FAIL=true
-          fi
-
-          # 检查 2：整体结论可判定
-          CONCLUSION=$(grep -E '^-[[:space:]]*整体结论[：:]' "$TEST_REPORT" \
-            | sed 's/^-[[:space:]]*整体结论[：:][[:space:]]*//;s/[[:space:]]*$//' \
-            | head -1 || true)
-          if [ -z "$CONCLUSION" ]; then
-            warn 'W16: test_report.md 的"整体结论"为空，交付前必须填写'
-            W16_FAIL=true
-          elif ! echo "$CONCLUSION" | grep -qE '^(通过|不通过)$'; then
-            warn "W16: test_report.md 的\"整体结论\"必须为\"通过\"或\"不通过\"（当前值: ${CONCLUSION}）"
-            W16_FAIL=true
-          elif [ "$CONCLUSION" = "不通过" ]; then
-            warn 'W16: test_report.md 的整体结论为"不通过"，禁止进入确认/交付'
-            W16_FAIL=true
-          fi
-
-          # 关键节点提示：推进到 Deployment 或 Done
-          if echo "$CHANGED" | grep -q 'status\.md$'; then
-            STAGED_STATUS=$(git show ":${VERSION_DIR}status.md" 2>/dev/null)
-            if [ -n "$STAGED_STATUS" ]; then
-              NEW_PHASE=$(echo "$STAGED_STATUS" | grep '^_phase:' | awk '{print $2}')
-              NEW_CHANGE=$(echo "$STAGED_STATUS" | grep '^_change_status:' | awk '{print $2}')
-              if { [ "$NEW_PHASE" = "Deployment" ] || [ "$NEW_CHANGE" = "done" ]; } && [ "$W16_FAIL" = true ]; then
-                warn "W16: 关键节点（Deployment/Done）仍存在缺口，建议立即补齐证据与结论"
-              fi
-            fi
-          fi
-        else
-          warn "W16: ${TEST_REPORT} 不存在，交付前必须补齐"
-        fi
-      fi ;;
-  esac
-fi
-
-# === Warning 17: plan.md 任务缺少验证命令（准备交付时触发）===
-if [ -f "$STATUS_FILE" ]; then
-  W17_RUN_STATUS=$(yaml_front_value "_run_status")
-  W17_CHANGE_STATUS=$(yaml_front_value "_change_status")
-  if [ "$W17_RUN_STATUS" = "wait_confirm" ] || [ "$W17_CHANGE_STATUS" = "done" ]; then
-    PLAN="${VERSION_DIR}plan.md"
-    if [ -f "$PLAN" ]; then
-      TASK_COUNT=$(grep -cE '^### (T[0-9]|任务)' "$PLAN" || echo 0)
-      if [ "$TASK_COUNT" -gt 0 ]; then
-        MISSING=$(awk '
-          function flush(){
-            if(task_title!="" && has_cmd==0) {
-              missing++
-              print "  - " task_title
-            }
-          }
-          /^### (T[0-9]+|任务)/{
-            flush()
-            task_title=$0
-            has_cmd=0
-            in_verify=0
-            next
-          }
-          /验证方式/ {in_verify=1}
-          in_verify && /^- *命令：/{
-            if(match($0, /`[^`]+`/)) {
-              cmd=substr($0, RSTART+1, RLENGTH-2)
-              gsub(/^[ \t]+|[ \t]+$/, "", cmd)
-              if(cmd!="" && cmd!="..." && cmd !~ /^<[^>]+>$/) has_cmd=1
-            }
-          }
-          END{
-            flush()
-          }
-        ' "$PLAN")
-
-        if [ -n "$MISSING" ]; then
-          warn 'W17: plan.md 存在缺少验证命令的任务（请在"验证方式"中补充可复现命令）：'
-          echo "$MISSING" | head -20
-
-          if echo "$CHANGED" | grep -q 'status\.md$'; then
-            STAGED_STATUS=$(git show ":${VERSION_DIR}status.md" 2>/dev/null)
-            if [ -n "$STAGED_STATUS" ]; then
-              NEW_PHASE=$(echo "$STAGED_STATUS" | grep '^_phase:' | awk '{print $2}')
-              NEW_CHANGE=$(echo "$STAGED_STATUS" | grep '^_change_status:' | awk '{print $2}')
-              if [ "$NEW_PHASE" = "Deployment" ] || [ "$NEW_CHANGE" = "done" ]; then
-                warn 'W17: 关键节点（Deployment/Done）仍存在缺口，建议立即补齐验证命令'
-              fi
-            fi
-          fi
-        fi
-      fi
-    fi
-  fi
-fi
-
-# === Warning 18: 高风险变更 CR 声明检查 ===
-CHANGED_FILES=$(echo "$CHANGED" | grep -vE '\.(md|txt)$' || true)
-if [ -n "$CHANGED_FILES" ] && [ -f "$STATUS_FILE" ]; then
-  HIGH_RISK=""
-
-  IFS=';' read -ra PATTERN_GROUPS <<< "$HIGH_RISK_PATTERNS"
-  for f in $CHANGED_FILES; do
-    for group in "${PATTERN_GROUPS[@]}"; do
-      patterns="${group%%:*}"
-      label="${group##*:}"
-      IFS='|' read -ra pats <<< "$patterns"
-      for pat in "${pats[@]}"; do
-        case "$f" in
-          $pat) HIGH_RISK="${HIGH_RISK}\n  $f ($label)"; break 2 ;;
-        esac
-      done
-    done
+# === 依次执行 warnings/ 下的模块 ===
+# 使用子 shell 执行，避免模块中的 exit 终止整个 dispatcher
+WARNINGS_DIR="${SCRIPT_DIR}/warnings"
+if [ -d "$WARNINGS_DIR" ]; then
+  for w in "$WARNINGS_DIR"/w*.sh; do
+    [ -f "$w" ] || continue
+    ( source "$w" )
   done
+fi
 
-  if [ -n "$HIGH_RISK" ]; then
-    ACTIVE_CRS=$(awk -F'|' '{gsub(/[ \t]/,"",$2); gsub(/[ \t]/,"",$3)}
-      $2 ~ /^CR-[0-9]{8}-[0-9]{3}$/ && ($3=="Accepted"||$3=="InProgress")
-      {print $2}' "$STATUS_FILE")
-
-    if [ -z "$ACTIVE_CRS" ]; then
-      warn "W18: 检测到高风险路径变更，但无 Active CR："
-      echo -e "$HIGH_RISK" | head -5
-      warn "W18: 建议创建 CR 并在 §3.4 勾选对应高风险项"
-    else
-      HAS_ANY_FLAG=false
-      for cr_id in $ACTIVE_CRS; do
-        CR_FILE=$(find "${VERSION_DIR}cr/" -name "${cr_id}*.md" 2>/dev/null | head -1)
-        [ -z "$CR_FILE" ] && continue
-        awk '
-          /^### 3\.4/{in_section=1; next}
-          in_section && /^### /{exit}
-          in_section && /^## /{exit}
-          in_section && /^- \[[xX✓]\]/{print 1; exit}
-        ' "$CR_FILE" | grep -q 1 && { HAS_ANY_FLAG=true; break; }
-      done
-
-      if [ "$HAS_ANY_FLAG" = false ]; then
-        warn "W18: 检测到高风险路径变更，但 Active CR 的 §3.4 未勾选任何高风险项："
-        echo -e "$HIGH_RISK" | head -5
-      fi
-    fi
+REVIEW_ROUND=$(aicoding_yaml_value "_review_round" "$STATUS_FILE")
+if [ -n "$REVIEW_ROUND" ] && echo "$REVIEW_ROUND" | grep -qE '^[0-9]+$'; then
+  if [ "$REVIEW_ROUND" -gt 3 ]; then
+    warn "W23: 当前 _review_round=${REVIEW_ROUND}（同阶段连续审查 > 3），建议暂停并请求人工确认"
   fi
 fi
+
+if ! aicoding_precommit_evidence_matches_current_head; then
+  warn "W24: 未匹配到当前提交对应的 pre-commit 通过证据（疑似 --no-verify 或门禁绕过），请补充审计说明。"
+fi
+
+WARN_COUNT=$(wc -l < "$WARN_CAPTURE_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+REQC_WARN_COUNT=$(grep -cE 'REQ-C|REQC|禁止项' "$WARN_CAPTURE_FILE" 2>/dev/null || true)
+if [ "${WARN_COUNT:-0}" -gt 0 ]; then
+  echo "⚠️  [post-commit] 本次提交触发 ${WARN_COUNT} 个警告，其中 ${REQC_WARN_COUNT:-0} 个与 REQ-C/禁止项相关。"
+fi
+rm -f "$WARN_CAPTURE_FILE" 2>/dev/null || true
 
 exit 0

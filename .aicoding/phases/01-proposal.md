@@ -10,6 +10,17 @@
 ## 输出
 - `docs/<版本号>/proposal.md` — 产品提案文档
 
+## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
+
+> AI 进入本阶段后、开始产出前，**必须先读取**以下文件。CC-7 hook 会在 AI 首次写入产出物时检查是否已读取。
+
+| 必读文件 | 用途 | 强制级别 |
+|---------|------|---------|
+| `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
+| `.aicoding/phases/01-proposal.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
+| `.aicoding/templates/proposal_template.md` | 产出物模板 | 🔴 CC-7 强制 |
+| `docs/系统功能说明书.md`（如存在） | 存量系统上下文 | 🟡 推荐（CC-7 不强制） |
+
 ## 阶段开始时检查
 - [ ] 确认变更目录已创建
 - [ ] 确认与用户沟通了初步想法
@@ -54,9 +65,9 @@
 - [ ] 人工阅读 `review_proposal.md`
 - [ ] 人工确认问题可接受
 - [ ] 人工确认进入 Requirements 阶段
-- [ ] 更新 `status.md`：当前阶段 = Requirements
+- [ ] 更新 `status.md`：`_phase: Requirements`（并同步表格展示行"当前阶段"）
 
 ## 完成后
 1. 确认质量门禁通过
 2. 询问用户："提案已完成，是否进入 Requirements 阶段？"
-3. 用户确认后，更新 `docs/<版本号>/status.md` 中的"当前阶段"为 Requirements（如未创建则先创建）
+3. 用户确认后，更新 `docs/<版本号>/status.md` 中的 `_phase` 为 Requirements（并同步表格展示行"当前阶段"；如未创建则先创建）

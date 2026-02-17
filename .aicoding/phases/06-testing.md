@@ -1,168 +1,29 @@
-# 阶段6：测试 (Testing)
+# 阶段6：测试（Testing）
+
+> 阶段入口/出口清单为脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required` / `aicoding_phase_exit_required`。
 
 ## 目标
-确保需求文档中定义的所有需求与场景通过验收
+- 验证需求闭环，确保发布前结果正确性可证明。
 
-## 输入
-- 代码
+## 本阶段输入
+- 代码实现
 - `docs/<版本号>/requirements.md`
 - `docs/<版本号>/plan.md`
+- `docs/<版本号>/status.md`
+- `templates/test_report_template.md`
 
-## 输出
-- `docs/<版本号>/test_report.md` — 测试报告
+## 本阶段输出
+- `docs/<版本号>/test_report.md`
+- `docs/<版本号>/review_testing.md`（major）或 `docs/<版本号>/review_minor.md`（minor）
 
-## 阶段开始时检查
-- [ ] 确认代码已完成
-- [ ] 确认当前变更目录存在
-- [ ] 确认 requirements.md 和 plan.md 已准备好
-- [ ] 确认已识别本次变更可能影响的历史功能（回归范围）
-- [ ] **CR感知检查（🔴 MUST，CR场景）**：
-  - [ ] 读取 status.md 的 Active CR 列表
-  - [ ] 读取每个 Active CR 的"变更点"和"影响面"
-  - [ ] 将 CR 信息作为本阶段工作的输入
+## 本阶段特有规则
+1. 覆盖矩阵必须覆盖 requirements 中全部 `GWT-ID`。
+2. major 必须有审查摘要块和人类抽检锚点；minor 至少提供最小测试证据。
+3. 有 Active CR 时，需显式说明回归范围和 CR 影响验证结果。
+4. 阶段推进 commit 触发结果门禁：`result_gate_test/build/typecheck`。
+5. 发现失败先修复再重测，禁止“带失败推进”。
 
-## 测试原则
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. 场景覆盖                                                 │
-│     - 所有正常场景                                           │
-│     - 所有异常场景                                           │
-│     - 所有边界场景                                           │
-│                                                              │
-│  2. 需求追溯                                                 │
-│     - 每条需求都有对应测试                                   │
-│     - 测试结果可追溯                                         │
-│                                                              │
-│  3. 充分测试                                                 │
-│     - 不遗漏任何场景                                         │
-│     - 不放过任何疑点                                         │
-│     - 发现问题立即修复                                       │
-│                                                              │
-│  4. 发现问题时的追溯修改规则                                 │
-│     - 代码缺陷 → 直接修复                                    │
-│     - 设计缺陷 → 修改 design.md，阶段不变                    │
-│     - 需求理解偏差 → 必须先与用户确认，再修改 requirements.md│
-│     - 重大方向性错误 → 与用户确认后回退阶段                  │
-│     - 新增需求/改方向（测试已通过后提出）→ 优先写 CR（见 `phases/00-change-management.md`） │
-│                                                              │
-│  5. 如果修改了 test_report.md，应形成修改记录，写明修改要点和修改章节 │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 测试分层策略（🔴 MUST）
-> AI 应根据项目实际情况选择合适的测试工具和框架，以下为分层目标。
-
-| 测试层级 | 目标 | 覆盖范围 | 执行时机 |
-|---------|------|---------|---------|
-| **单元测试** | 验证最小可测试单元的正确性 | 核心业务逻辑、算法、数据转换、边界条件 | 每次代码变更后 |
-| **集成测试** | 验证模块间交互的正确性 | API 端点、数据库读写、外部服务调用、消息队列 | 功能开发完成后 |
-| **E2E 测试** | 验证关键用户路径端到端可用 | Top 3-5 核心业务场景（从用户操作到最终结果） | 全部功能完成后 |
-
-### 测试覆盖要求
-- **单元测试**：核心业务逻辑必须覆盖（正常路径 + 至少 2 个异常/边界路径）
-- **集成测试**：所有 API 端点至少 1 个正常 + 1 个异常用例；数据库操作覆盖 CRUD + 约束违反
-- **E2E 测试**：requirements.md 中每个 SCN 场景至少 1 个端到端验证
-- **回归测试**：全量执行已有测试套件，确保新变更不破坏已有功能
-
-## 读取模板
-编写测试报告时读取 `.aicoding/templates/test_report_template.md`。
-
-## 质量门禁
-- [ ] 所有需求有对应测试
-- [ ] 所有场景测试通过
-- [ ] 发现的问题全部修复
-- [ ] AI 自验收通过（P0/P1 open=0）
-
-> **验收语义说明**：Testing 属于 AI 自动期，验收由 AI 自我审查完成。如连续 3 轮不收敛，自动触发人工介入（见 `ai_workflow.md`）。
-
-## 完成条件（🔴 MUST，AI 自动判定）
-
-### AI 自动审查收敛
-- [ ] 执行自我审查（按 `.aicoding/templates/review_template.md` Testing 清单）
-- [ ] P0(open)=0, P1(open)=0（允许存在 P1 accept/defer）
-- [ ] 单轮满足即收敛
-
-### diff-only检查（🔴 MUST，有Active CR时）
-- [ ] 如存在Active CR，执行diff-only审查增强（见 `.aicoding/templates/review_template.md` 附录 AC-05）
-- [ ] 验证CR影响面与实际测试变更一致
-- [ ] 如发现P1差异，必须修复后才能收敛（🔴 MUST）
-
-> **执行入口（🔴 MUST）**：diff-only 检查步骤详见 `.aicoding/templates/review_template.md` 附录 AC-05，包含完整的 AI 执行命令、差异报告格式和级联影响分析。
-
-### 全量回归检查（AC-04）
-> 注：以下为示例命令，请按项目实际测试框架调整
-```bash
-# Python 项目示例
-.venv/bin/pytest -q
-
-# 其他项目示例（按需选用）：
-# npm test          # Node.js/JavaScript
-# mvn test         # Java
-# go test ./...    # Go
-# cargo test       # Rust
-```
-
-### 收敛后自动推进
-```text
-✅ Testing AI 自动审查已收敛
-▶️ 自动进入下一阶段：Deployment
-```
-
-### AI 自动执行
-- [ ] 更新 `status.md`：当前阶段 = Deployment
-- [ ] 开始 Deployment 工作
-
-## 完成后
-1. AI 自动推进到 Deployment 阶段
-2. 用户可在 `status.md` 查看当前进度
-
----
-
-## 回归范围自动推导（P2，可选增强）
-
-> **触发条件**：有 Active CR 时启用
-> **目标**：基于 CR Impact 和代码 diff，自动推导回归测试范围
-
-### AI自动分析
-
-1. **读取CR的Impact字段**
-   - 阶段文档影响：requirements/design/plan
-   - 主文档影响：系统功能说明书/接口文档等
-   - 代码影响：影响模块/文件
-
-2. **分析代码diff，获取实际变更模块**
-   ```bash
-   # 获取变更文件列表
-   git diff ${BASELINE}..${CURRENT} --name-only
-   ```
-
-3. **调用图分析（项目配置，可选）**：
-   ```bash
-   # Go 项目示例（需要项目配置）
-   golangci-lint run --build-tags=analysis
-
-   # 或使用项目特定的分析工具
-   ```
-
-4. **推导影响范围**：
-   - **直接影响**：CR列出的模块 + 代码diff涉及的模块
-   - **间接影响**：调用变更模块的其他模块
-   - **边界影响**：共享数据结构的模块
-
-### 回归范围报告
-
-```markdown
-### 回归范围分析
-| 影响层级 | 模块/文件 | 测试策略 |
-|---------|----------|---------|
-| 直接影响 | src/api/login.go | 全量测试 |
-| 间接影响 | src/auth/service.go | 回归测试 |
-| 边界影响 | src/user/profile.go | 边界测试 |
-| 无影响 | src/payment/* | 无需测试 |
-
-### 推荐测试用例
-- TEST-001：登录正常流程
-- TEST-002：登录失败场景
-- TEST-015：Auth服务调用（间接影响）
-```
-
+## 阶段完成条件
+1. 自审收敛（P0/P1 open=0）。
+2. 覆盖差集为空（GWT 全覆盖）。
+3. `status.md` 更新到 Deployment 前，出口门禁与结果门禁全部通过。

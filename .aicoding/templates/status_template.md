@@ -4,16 +4,30 @@
 ---
 _baseline: v1.0
 _current: HEAD
+_workflow_mode: manual
+_run_status: running
+_change_status: in_progress
+_change_level: major
+_review_round: 0
+_phase: Proposal
 ---
 ```
 
 > **YAML front matter 说明（🔴 MUST）**：
 > - `_baseline`: 基线版本（tag/commit），用于代码 diff 和 CR 追溯
 > - `_current`: 当前代码版本（commit/branch），用于代码 diff
-> - 必须使用标准 YAML front matter 格式（`---` 包裹），放在文件最开头
+> - `_workflow_mode`: 工作流模式，枚举值：`manual` / `semi-auto` / `auto`
+> - `_run_status`: 运行状态，枚举值：`running` / `paused` / `wait_confirm` / `completed`
+> - `_change_status`: 变更状态，枚举值：`in_progress` / `done`
+> - `_change_level`: 变更分级，枚举值：`major` / `minor` / `hotfix`
+> - `_review_round`: 同阶段审查轮次（非负整数；>5 时需切换 `wait_confirm` 请求人工确认）
+> - `_phase`: 当前阶段，枚举值：`Proposal` / `Requirements` / `Design` / `Planning` / `Implementation` / `Testing` / `Deployment`
+> - 必须使用标准 YAML front matter 格式（`---` 包裹），放在文件**第 1 行**
 > - **值不加引号**：写 `_baseline: v1.0` 而非 `_baseline: "v1.0"`，确保 `awk '{print $2}'` 可直接提取
 > - 解析方式：命令行可用 `grep "^_baseline:" status.md | awk '{print $2}'` 提取
-> - 如缺失 `_baseline` 或 `_current`，门禁必须失败并提示补充
+> - 如缺失 `_baseline`、`_current`、`_workflow_mode`、`_run_status`、`_change_status` 或 `_phase`，门禁必须失败并提示补充
+> - `_change_level` 兼容期缺失会告警并按 `major` 处理；后续可升级为硬门禁
+> - Markdown 表格中的关键行（如“当前阶段”“变更状态”）保留为人类可读视图，且需与 YAML front matter 保持一致
 
 | 项 | 值 |
 |---|---|
@@ -40,7 +54,7 @@ _current: HEAD
 - 设计：`design.md`
 - 计划：`plan.md`
 - 变更单（CR）：`cr/CR-*.md`（如启用）
-- 审查（可选）：`review.md`（最新） / `review_<stage>.md`（分阶段，如 `review_proposal.md`）
+- 审查：`review_<stage>.md`（按阶段命名，如 `review_proposal.md`、`review_requirements.md`）
 - 测试报告：`test_report.md`
 - 部署：`deployment.md`
 - Issue/PR/看板/监控：...
@@ -109,20 +123,23 @@ _current: HEAD
 
 ## 工作流状态
 
-| 工作流模式 | 运行状态 |
-|---|---|
-| manual / semi-auto / auto | running / paused / wait_confirm / completed |
+> **已迁移至 YAML front matter**：`_workflow_mode`、`_run_status`、`_change_status`、`_phase` 字段现在存储在文件开头的 YAML front matter 中，
+> 便于 hooks 脚本用 `grep "^_phase:" status.md | awk '{print $2}'` 直接提取单值。
 
-**说明**：
-- **工作流模式**：manual（人工介入期，Phase 00-02）/ semi-auto（Deployment 阶段）/ auto（AI 自动期，Phase 03-06）
-- **运行状态**：running（正常运行）/ paused（暂停）/ wait_confirm（等待确认）/ completed（已完成）
+**枚举说明**：
+- **工作流模式**（`_workflow_mode`）：`manual`（人工介入期，Phase 00-02）/ `semi-auto`（Deployment 阶段）/ `auto`（AI 自动期，Phase 03-06）
+- **运行状态**（`_run_status`）：`running`（正常运行）/ `paused`（暂停）/ `wait_confirm`（等待确认）/ `completed`（已完成）
+- **变更状态**（`_change_status`）：`in_progress`（进行中）/ `done`（已完成）
+- **变更分级**（`_change_level`）：`major`（完整门禁）/ `minor`（最小产物门禁）
+- **审查轮次**（`_review_round`）：当前阶段连续审查轮次（超过 3 建议人工确认，超过 5 且非 wait_confirm 将被硬拦截）
+- **当前阶段**（`_phase`）：`Proposal` / `Requirements` / `Design` / `Planning` / `Implementation` / `Testing` / `Deployment`
 
 ---
 
 ## 阶段转换记录
-| 从阶段 | 到阶段 | 日期 | 原因 | 触发人 |
-|---|---|---|---|---|
-| - | Proposal | YYYY-MM-DD | 初始化 | User |
+| 从阶段 | 到阶段 | 日期 | 原因 | 触发人 | 关键决策 |
+|---|---|---|---|---|---|
+| - | Proposal | YYYY-MM-DD | 初始化 | User | - |
 
 ## CR状态更新记录（部署后填写）
 
@@ -140,10 +157,10 @@ _current: HEAD
 | YYYY-MM-DD HH:MM | P0无法自动修复 | paused | 人工确认 |
 
 ## 技术债务登记（Deferred Items）
-> 说明：记录本版本中被标记为 accept/defer 的 P1 问题，便于 AI 在后续版本分析和处理。
+> 说明：记录本版本中被标记为 accept/defer 的 **RVW(P1)** 问题，便于 AI 在后续版本分析和处理。  
+> 注意：这不是 `DEFERRED_TO_STAGING`（后者是 REQ 模式逐条 GWT 判定中的一种结论，见 `review_implementation.md` / `review_testing.md` 摘要块字段 `GWT_DEFERRED`）。
 > 建议：下一版本 Proposal 阶段强制检查此表，评估是否纳入处理。
 
 | 来源阶段 | RVW-ID / 问题描述 | 严重度 | defer 理由 | 缓解措施 | 目标处理版本 | 状态 |
 |---------|-------------------|--------|-----------|---------|-------------|------|
 | Design | RVW-xxx：... | P1 | ... | 监控/告警/... | 下一版本 | Open/Resolved |
-

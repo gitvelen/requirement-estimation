@@ -24,6 +24,15 @@
 - [ ] 安全与合规：鉴权/输入校验/敏感信息不落盘
 - [ ] 文档同步：必要时更新 requirements/design/操作说明
 
+## 禁止项引用索引（来源：requirements.md REQ-C 章节）
+
+> 仅列 ID + 一句话摘要，不复制 GWT 全文。内容以 requirements.md 为准。  
+> 所有任务实现时必须确保不违反以下禁止项。
+
+| REQ-C ID | 一句话摘要 |
+|----------|-----------|
+| REQ-C001 | [从 requirements.md 摘录] |
+
 ## 任务概览
 ### 状态标记规范
 - `待办` - 未开始
@@ -39,16 +48,30 @@
 VERSION="<版本号>"  # 替换为实际版本号
 
 # 提取 plan.md 中的所有 REQ 引用
-rg -o "REQ-[0-9]+" docs/${VERSION}/plan.md | LC_ALL=C sort -u > /tmp/plan_refs_${VERSION}.txt
+rg -o "REQ-C?[0-9]+" docs/${VERSION}/plan.md | LC_ALL=C sort -u > /tmp/plan_refs_${VERSION}.txt
 
 # 提取 requirements.md 中定义的所有 REQ（只从定义行提取）
 # 格式：#### REQ-001：[需求名称] → 提取 REQ-001
-rg "^#### REQ-[0-9]+：" docs/${VERSION}/requirements.md | sed 's/^#### //;s/:.*//' | LC_ALL=C sort -u > /tmp/req_defs_${VERSION}.txt
+rg "^#### REQ-C?[0-9]+[：:]" docs/${VERSION}/requirements.md | sed 's/^#### //;s/[：:].*//' | LC_ALL=C sort -u > /tmp/req_defs_${VERSION}.txt
 
 # 计算差集（期望为空）
 LC_ALL=C comm -23 /tmp/plan_refs_${VERSION}.txt /tmp/req_defs_${VERSION}.txt
 ```
 **检查项**：所有 REQ-ID 都存在于 requirements.md 中（期望差集为空）。
+
+### 反向覆盖检查（🔴 MUST，反向 R6）
+
+> 确保 requirements.md 中每条 REQ（含 REQ-C）都被至少一个任务覆盖（避免一开始就漏需求）。
+
+**验证命令**：
+```bash
+VERSION="<版本号>"  # 替换为实际版本号
+
+# 反向差集：requirements 定义了但 plan 未覆盖的 REQ
+LC_ALL=C comm -23 /tmp/req_defs_${VERSION}.txt /tmp/plan_refs_${VERSION}.txt
+```
+
+**检查项**：差集为空（每条 REQ 都被至少一个任务引用）。差集非空时必须补充任务或确认为 Non-goals。
 
 ## 任务详情
 ### T001: [任务名称]
@@ -72,16 +95,23 @@ LC_ALL=C comm -23 /tmp/plan_refs_${VERSION}.txt /tmp/req_defs_${VERSION}.txt
 **验收标准**：
 - [ ] ...
 
-**验证方式（必须可复现）**：
-- 命令：`...`
-- 用例：TEST-xxx（如有）
+**验证方式**（🔴 MUST，必须可复现）：
+- 命令：`<具体命令，如 npm test、pytest tests/xxx、curl ...>`（代码/脚本任务）
+- 或：`验证方式：人工确认` / `验证方式：N/A（文档类任务）`（非代码任务）
+- 预期结果：<命令的预期输出或判定标准>
+- 补充验证（可选）：<手动检查项/人工检查点>
 
 **回滚/开关策略（如涉及线上行为变化）**：
 - 回滚条件：
 - 回滚步骤：
 - 开关/灰度：
 
-**依赖**：  
+**失败处置**（可选，高风险任务必填）：
+- 失败类型：<预期可能的失败场景>
+- 处置：<重试/降级/人类决策>
+- 回退方案：<如果本任务失败，如何回退到安全状态>
+
+**依赖**：
 
 ---
 

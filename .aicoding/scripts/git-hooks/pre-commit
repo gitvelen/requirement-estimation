@@ -1,8 +1,519 @@
 #!/bin/bash
 # aicoding-hooks-managed
-# Git pre-commit dispatcher: Git-Hook 3 (.env拦截) + Git-Hook 4 (YAML校验) + Git-Hook 6（交付关口条件拦截）+ Git-Hook 5 (git config防篡改)
+# Git pre-commit dispatcher: Git-Hook 3 (.env拦截) + Git-Hook 4 (YAML校验) + Git-Hook 7（阶段出口门禁）+ Git-Hook 6（交付关口条件拦截）+ Git-Hook 5 (git config防篡改)
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/review_gate_common.sh
+source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
+# shellcheck source=../lib/common.sh
+source "${SCRIPT_DIR}/../lib/common.sh"
 
 STAGED=$(git diff --cached --name-only)
+aicoding_load_config
+aicoding_gate_log_init
+
+yaml_value_from_block() {
+  local block="$1" key="$2"
+  printf '%s\n' "$block" | grep "^${key}:" | sed "s/^${key}:[[:space:]]*//" | tr -d '[:space:]' | tail -1
+}
+
+normalize_token() {
+  echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]_-'
+}
+
+status_table_value() {
+  local content="$1" key="$2"
+  printf '%s\n' "$content" | awk -F'|' -v target="$key" '
+    function trim(s){ gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^\|/ {
+      k=trim($2); v=trim($3)
+      if (k == target) { print v; exit }
+    }
+  '
+}
+
+is_placeholder_value() {
+  local value="${1:-}"
+  [ -z "$value" ] && return 0
+  echo "$value" | grep -qE '<[^>]+>|\.{3}|YYYY|tag[[:space:]]*/[[:space:]]*commit|/|\|' && return 0
+  return 1
+}
+
+validate_status_table_consistency() {
+  local file="$1" content="$2" yaml_phase="$3" yaml_change_status="$4" yaml_workflow_mode="$5" yaml_run_status="$6" yaml_change_level="$7"
+  local table_phase table_change_status table_workflow_mode table_run_status table_change_level table_change_level_alt
+  local yaml_norm table_norm
+
+  table_phase=$(status_table_value "$content" "当前阶段")
+  if [ -n "$table_phase" ] && ! is_placeholder_value "$table_phase"; then
+    yaml_norm=$(normalize_token "$yaml_phase")
+    table_norm=$(normalize_token "$table_phase")
+    [ "$yaml_norm" = "$table_norm" ] || {
+      echo "❌ $file: YAML _phase=$yaml_phase 与表格“当前阶段=$table_phase”不一致"
+      return 1
+    }
+  fi
+
+  table_change_status=$(status_table_value "$content" "变更状态")
+  if [ -n "$table_change_status" ] && ! is_placeholder_value "$table_change_status"; then
+    yaml_norm=$(normalize_token "$yaml_change_status")
+    table_norm=$(normalize_token "$table_change_status")
+    [ "$yaml_norm" = "$table_norm" ] || {
+      echo "❌ $file: YAML _change_status=$yaml_change_status 与表格“变更状态=$table_change_status”不一致"
+      return 1
+    }
+  fi
+
+  table_workflow_mode=$(status_table_value "$content" "工作流模式")
+  if [ -n "$table_workflow_mode" ] && ! is_placeholder_value "$table_workflow_mode"; then
+    yaml_norm=$(normalize_token "$yaml_workflow_mode")
+    table_norm=$(normalize_token "$table_workflow_mode")
+    [ "$yaml_norm" = "$table_norm" ] || {
+      echo "❌ $file: YAML _workflow_mode=$yaml_workflow_mode 与表格“工作流模式=$table_workflow_mode”不一致"
+      return 1
+    }
+  fi
+
+  table_run_status=$(status_table_value "$content" "运行状态")
+  if [ -n "$table_run_status" ] && ! is_placeholder_value "$table_run_status"; then
+    yaml_norm=$(normalize_token "$yaml_run_status")
+    table_norm=$(normalize_token "$table_run_status")
+    [ "$yaml_norm" = "$table_norm" ] || {
+      echo "❌ $file: YAML _run_status=$yaml_run_status 与表格“运行状态=$table_run_status”不一致"
+      return 1
+    }
+  fi
+
+  table_change_level=$(status_table_value "$content" "变更分级")
+  table_change_level_alt=$(status_table_value "$content" "变更等级")
+  [ -z "$table_change_level" ] && table_change_level="$table_change_level_alt"
+  if [ -n "$table_change_level" ] && ! is_placeholder_value "$table_change_level"; then
+    yaml_norm=$(normalize_token "$yaml_change_level")
+    table_norm=$(normalize_token "$table_change_level")
+    [ "$yaml_norm" = "$table_norm" ] || {
+      echo "❌ $file: YAML _change_level=$yaml_change_level 与表格“变更分级=$table_change_level”不一致"
+      return 1
+    }
+  fi
+
+  return 0
+}
+
+hotfix_diff_count_check() {
+  local status_file="$1"
+  local staged_count
+  staged_count=$(printf '%s\n' "$STAGED" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$staged_count" -gt "${AICODING_HOTFIX_MAX_DIFF_FILES}" ]; then
+    echo "❌ ${status_file}: hotfix staged 文件数为 ${staged_count}，超过 hotfix_max_diff_files=${AICODING_HOTFIX_MAX_DIFF_FILES}"
+    return 1
+  fi
+  return 0
+}
+
+hotfix_reqc_boundary_check() {
+  local status_file="$1"
+  local changed_file
+  while IFS= read -r changed_file; do
+    [ -z "$changed_file" ] && continue
+    if git diff --cached -- "$changed_file" | grep -qE '^[+-].*REQ-C[0-9]+'; then
+      echo "❌ ${status_file}: hotfix 触碰 REQ-C 边界（文件：${changed_file}）"
+      return 1
+    fi
+  done <<< "$STAGED"
+  return 0
+}
+
+run_result_gate_command() {
+  local gate_name="$1" command="$2"
+  if [ -z "$command" ]; then
+    local msg="result_gate_${gate_name}_command 未配置，已跳过"
+    echo "⚠️  [gate:result-gate] ${msg}" >&2
+    aicoding_gate_log_warning "$msg"
+    return 0
+  fi
+  bash -lc "$command"
+}
+
+run_result_gates_for_transition() {
+  local old_phase="$1" new_phase="$2" status_file="$3"
+  case "${old_phase}->${new_phase}" in
+    "Implementation->Testing"|"Testing->Deployment") ;;
+    *) return 0 ;;
+  esac
+
+  run_result_gate_command "test" "$AICODING_RESULT_GATE_TEST_COMMAND" || {
+    echo "❌ ${status_file}: result gate test command 执行失败"
+    return 1
+  }
+  run_result_gate_command "build" "$AICODING_RESULT_GATE_BUILD_COMMAND" || {
+    echo "❌ ${status_file}: result gate build command 执行失败"
+    return 1
+  }
+  run_result_gate_command "typecheck" "$AICODING_RESULT_GATE_TYPECHECK_COMMAND" || {
+    echo "❌ ${status_file}: result gate typecheck command 执行失败"
+    return 1
+  }
+  return 0
+}
+
+validate_minor_review() {
+  local review_minor_path="$1"
+  local content summary result req_hash rows
+  content=$(aicoding_staged_content "$review_minor_path")
+  [ -n "$content" ] || { echo "❌ ${review_minor_path} 不存在或为空（minor 交付依赖）"; return 1; }
+
+  summary=$(printf '%s\n' "$content" | sed -n '/REVIEW-SUMMARY-BEGIN/,/REVIEW-SUMMARY-END/p')
+  [ -n "$summary" ] || { echo "❌ ${review_minor_path} 缺少 REVIEW-SUMMARY-BEGIN/END 机器可读块"; return 1; }
+
+  result=$(printf '%s\n' "$summary" | sed -n 's/^REVIEW_RESULT:[[:space:]]*//p' | tail -1)
+  [ "$result" = "pass" ] || { echo "❌ ${review_minor_path} REVIEW_RESULT=${result:-<empty>}（期望 pass）"; return 1; }
+
+  req_hash=$(printf '%s\n' "$summary" | sed -n 's/^REQ_BASELINE_HASH:[[:space:]]*//p' | tail -1)
+  [ -n "$req_hash" ] || { echo "❌ ${review_minor_path} 缺少 REQ_BASELINE_HASH"; return 1; }
+
+  rows=$(printf '%s\n' "$content" | grep -E '^\|[[:space:]]*GWT-REQ-' || true)
+  [ -n "$rows" ] || { echo "❌ ${review_minor_path} 缺少 GWT 验证表行（至少 1 条）"; return 1; }
+  return 0
+}
+
+validate_minor_test_evidence() {
+  local version_dir="$1"
+  local status_content="$2"
+  if aicoding_staged_exists "${version_dir}test_report.md"; then
+    return 0
+  fi
+  printf '%s\n' "$status_content" | grep -q 'TEST-RESULT-BEGIN' && return 0
+  echo "❌ minor 变更缺少测试证据（需满足其一：${version_dir}test_report.md 存在，或 status.md 含 TEST-RESULT-BEGIN）"
+  return 1
+}
+
+validate_human_spotcheck() {
+  local review_path="$1" requirements_path="$2" status_current_ref="$3" change_level="$4"
+  local review_content spot_file summary tmp_dir tmp_review tmp_req tmp_spot rc req_content spot_content
+
+  [ "$change_level" = "major" ] || return 0
+
+  review_content=$(aicoding_staged_content "$review_path")
+  req_content=$(aicoding_staged_content "$requirements_path")
+  [ -n "$review_content" ] || { echo "❌ ${review_path} 不存在或为空（spotcheck 校验依赖）"; return 1; }
+  [ -n "$req_content" ] || { echo "❌ ${requirements_path} 不存在或为空（spotcheck 校验依赖）"; return 1; }
+
+  summary=$(printf '%s\n' "$review_content" | sed -n '/REVIEW-SUMMARY-BEGIN/,/REVIEW-SUMMARY-END/p')
+  spot_file=$(printf '%s\n' "$summary" | sed -n 's/^SPOTCHECK_FILE:[[:space:]]*//p' | tail -1)
+  [ -n "$spot_file" ] || { echo "❌ ${review_path} 摘要块缺少 SPOTCHECK_FILE（major 交付必须提供）"; return 1; }
+
+  spot_content=$(aicoding_staged_content "$spot_file")
+  [ -n "$spot_content" ] || { echo "❌ 缺少 ${spot_file}（major 交付必须提供 human spotcheck）"; return 1; }
+
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-spotcheck) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_review="${tmp_dir}/review.md"
+  tmp_req="${tmp_dir}/requirements.md"
+  tmp_spot="${tmp_dir}/spotcheck.md"
+  printf '%s\n' "$review_content" > "$tmp_review"
+  printf '%s\n' "$req_content" > "$tmp_req"
+  printf '%s\n' "$spot_content" > "$tmp_spot"
+  review_gate_validate_human_spotcheck "$review_path" "$tmp_review" "$requirements_path" "$tmp_req" "$spot_file" "$tmp_spot" "$status_current_ref" "$change_level"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
+}
+
+validate_cr_impact_matrix() {
+  local cr_path="$1"
+  local content errors
+  content=$(aicoding_staged_content "$cr_path")
+  [ -n "$content" ] || { echo "❌ ${cr_path} 不存在或为空"; return 1; }
+
+  errors=$(
+    printf '%s\n' "$content" | awk -F'|' '
+      function trim(s){ gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+      function is_placeholder(s){ return (s=="" || s=="..." || s ~ /^<[^>]+>$/ || s=="N/A") }
+      /^### 3\.1[[:space:]]+阶段文档影响/ {section="phase"; in_section=1; next}
+      /^## 3\.1[[:space:]]+阶段文档影响/ {section="phase"; in_section=1; next}
+      /^### 3\.2[[:space:]]+主文档影响/ {section="master"; in_section=1; next}
+      /^## 3\.2[[:space:]]+主文档影响/ {section="master"; in_section=1; next}
+      in_section && /^### / {in_section=0}
+      in_section && /^## / {in_section=0}
+      in_section && /^\|/ {
+        c1=trim($2); c2=trim($3); c3=trim($4); c4=trim($5)
+        if(c1=="" || c1 ~ /^-+$/ || c1 ~ /影响文档|主文档/) next
+        yes=(c2 ~ /\[[xX✓]\][[:space:]]*是/)
+        no=(c2 ~ /\[[xX✓]\][[:space:]]*否/)
+        if((yes+no) != 1) {
+          print "  - " c1 ": [✓]是/[✓]否 必须且只能勾选一个"
+          next
+        }
+        if(yes && (is_placeholder(c3) || is_placeholder(c4))) {
+          print "  - " c1 ": 勾选“是”时必须填写影响说明和关联ID"
+        }
+      }
+    '
+  )
+  if [ -n "$errors" ]; then
+    echo "❌ ${cr_path} 影响分析表不合规："
+    echo "$errors"
+    return 1
+  fi
+  return 0
+}
+
+# --- 暂存区内容桥接：将 common.sh 的通用函数适配到 review_gate 接口 ---
+validate_constraints_confirmation() {
+  local review_req_path="$1"
+  local requirements_path="$2"
+  local proposal_path="$3"
+  local content req_content block confirmed confirmed_by confirmed_at
+  content=$(aicoding_staged_content "$review_req_path")
+  if [ -z "$content" ]; then
+    echo "❌ ${review_req_path} 不存在或为空（Requirements→Design 门禁依赖）"
+    return 1
+  fi
+  echo "$content" | grep -q '禁止项/不做项确认清单' || {
+    echo "❌ ${review_req_path} 缺少“禁止项/不做项确认清单”章节"
+    return 1
+  }
+  echo "$content" | grep -qE 'TBD|待确认|unknown|\\.\\.\\.' && {
+    echo "❌ ${review_req_path} 仍包含 TBD/待确认/unknown/... 占位项"
+    return 1
+  }
+
+  req_content=$(aicoding_staged_content "$requirements_path")
+  [ -n "$req_content" ] || {
+    echo "❌ ${requirements_path} 不存在或为空（禁止项清单验真依赖）"
+    return 1
+  }
+
+  # requirements.md 自身结构性一致性（🔴 MUST）：唯一性 + 外键归属
+  local tmp_dir tmp_req rc
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_req="${tmp_dir}/requirements.md"
+  printf '%s\n' "$req_content" > "$tmp_req"
+  review_gate_validate_requirements_integrity "$requirements_path" "$tmp_req"
+  rc=$?
+  rm -rf "$tmp_dir"
+  [ "$rc" -eq 0 ] || return "$rc"
+
+  # 机器可读清单：来源覆盖 + A/B 归类 + 归属可验真
+  # 格式：CONSTRAINTS-CHECKLIST block + markdown table columns: ITEM | CLASS | TARGET | SOURCE
+  local checklist_block checklist_rows items dup_items has_proposal_ref row_errors
+  checklist_block=$(printf '%s\n' "$content" | sed -n '/CONSTRAINTS-CHECKLIST-BEGIN/,/CONSTRAINTS-CHECKLIST-END/p')
+  [ -n "$checklist_block" ] || {
+    echo "❌ ${review_req_path} 缺少机器可读清单块（CONSTRAINTS-CHECKLIST-BEGIN/END）"
+    return 1
+  }
+
+  checklist_rows=$(printf '%s\n' "$checklist_block" | awk -F'|' '
+    function trim(s){ gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    $0 ~ /^\|/ {
+      item=trim($2); cls=trim($3); target=trim($4); source=trim($5)
+      if(item=="" || item=="ITEM" || item ~ /^-+$/) next
+      if(cls==""  || cls=="CLASS" || cls ~ /^-+$/) next
+      print item "\t" cls "\t" target "\t" source
+    }
+  ')
+  [ -n "$checklist_rows" ] || {
+    echo "❌ ${review_req_path} 机器可读清单块为空（请至少填 1 条；无禁止项时可填 TARGET=NONE 并引用 proposal.md Non-goals）"
+    return 1
+  }
+
+  items=$(printf '%s\n' "$checklist_rows" | awk -F'\t' '{print $1}')
+  dup_items=$(printf '%s\n' "$items" | LC_ALL=C sort | uniq -d || true)
+  if [ -n "$dup_items" ]; then
+    echo "❌ ${review_req_path} 机器可读清单存在重复 ITEM："
+    echo "$dup_items" | head -20 | sed 's/^/  - /'
+    return 1
+  fi
+
+  has_proposal_ref=false
+  printf '%s\n' "$checklist_rows" | awk -F'\t' '$4 ~ /proposal\.md/ {print; exit}' | grep -q . && has_proposal_ref=true
+  if aicoding_staged_exists "$proposal_path"; then
+    local proposal_content proposal_pdont checklist_pdont missing_pdont
+    proposal_content=$(aicoding_staged_content "$proposal_path")
+    proposal_pdont=$(printf '%s\n' "$proposal_content" | grep -oE 'P-DONT-[0-9]+' | LC_ALL=C sort -u || true)
+    checklist_pdont=$(printf '%s\n' "$checklist_rows" | awk -F'\t' '{print $4}' | grep -oE 'P-DONT-[0-9]+' | LC_ALL=C sort -u || true)
+    if [ -n "$proposal_pdont" ]; then
+      missing_pdont=$(LC_ALL=C comm -23 <(printf '%s\n' "$proposal_pdont") <(printf '%s\n' "$checklist_pdont") || true)
+      if [ -n "$missing_pdont" ]; then
+        echo "❌ ${review_req_path} 未覆盖 proposal.md 中全部 P-DONT 锚点（需在 SOURCE 列引用）："
+        echo "$missing_pdont" | head -20 | sed 's/^/  - /'
+        return 1
+      fi
+    else
+      [ "$has_proposal_ref" = true ] || {
+        echo "❌ ${review_req_path} 机器可读清单缺少对 proposal.md 的来源引用（要求覆盖 proposal.md Non-goals）"
+        return 1
+      }
+    fi
+  fi
+
+  row_errors=""
+  while IFS=$'\t' read -r item cls target source; do
+    [ -n "$item" ] || { row_errors="${row_errors}\n  - <empty item>"; continue; }
+    echo "$item" | grep -qE '^\\.\\.\\.$|^<[^>]+>$|^TBD$|^待确认$' && { row_errors="${row_errors}\n  - ${item}: ITEM 非法占位"; continue; }
+
+    case "$cls" in
+      A)
+        echo "$target" | grep -qE '^REQ-C[0-9]+$' || { row_errors="${row_errors}\n  - ${item}: CLASS=A 但 TARGET 非 REQ-Cxxx（当前：${target:-<empty>}）"; continue; }
+        echo "$source" | grep -qE 'proposal\.md|requirements\.md' || { row_errors="${row_errors}\n  - ${item}: CLASS=A 但 SOURCE 缺少文档引用（需包含 proposal.md 或 requirements.md）"; continue; }
+        ;;
+      B)
+        echo "$target" | grep -qE '^(Non-goals|NON_GOAL|NONE)$' || { row_errors="${row_errors}\n  - ${item}: CLASS=B 但 TARGET 非 Non-goals/NON_GOAL/NONE（当前：${target:-<empty>}）"; continue; }
+        echo "$source" | grep -qE 'proposal\.md' || { row_errors="${row_errors}\n  - ${item}: CLASS=B 但 SOURCE 未引用 proposal.md（Non-goals 必须可追溯）"; continue; }
+        ;;
+      *)
+        row_errors="${row_errors}\n  - ${item}: CLASS 必须为 A 或 B（当前：${cls:-<empty>}）"
+        continue
+        ;;
+    esac
+
+    echo "$source" | grep -qE 'TBD|待确认|unknown|\\.\\.\\.|<[^>]+>' && {
+      row_errors="${row_errors}\n  - ${item}: SOURCE 包含占位项"
+      continue
+    }
+  done <<< "$checklist_rows"
+
+  if [ -n "$row_errors" ]; then
+    echo "❌ ${review_req_path} 机器可读清单格式不合法："
+    echo -e "$row_errors"
+    return 1
+  fi
+
+  # A 类：必须完整映射 requirements.md 的全部 REQ-C（且每条 REQ-C 必须有 GWT）
+  local reqc_defined reqc_missing_gwt reqc_from_checklist dup_reqc missing_reqc extra_reqc
+  reqc_defined=$(printf '%s\n' "$req_content" | grep -oE '^####[[:space:]]REQ-C[0-9]+' | sed 's/^####[[:space:]]*//' | LC_ALL=C sort -u || true)
+  if [ -n "$reqc_defined" ]; then
+    reqc_missing_gwt=""
+    while IFS= read -r reqc; do
+      [ -z "$reqc" ] && continue
+      printf '%s\n' "$req_content" | grep -qE "GWT-${reqc}-[0-9]+" || reqc_missing_gwt="${reqc_missing_gwt}\n  - ${reqc}"
+    done <<< "$reqc_defined"
+    if [ -n "$reqc_missing_gwt" ]; then
+      echo "❌ ${requirements_path} 存在未提供任何 GWT 的 REQ-C（禁止项必须可验收）："
+      echo -e "$reqc_missing_gwt"
+      return 1
+    fi
+
+    reqc_from_checklist=$(printf '%s\n' "$checklist_rows" | awk -F'\t' '$2=="A"{print $3}' | LC_ALL=C sort || true)
+    dup_reqc=$(printf '%s\n' "$reqc_from_checklist" | uniq -d || true)
+    if [ -n "$dup_reqc" ]; then
+      echo "❌ ${review_req_path} 机器可读清单中同一 REQ-C 被重复归类为 A："
+      echo "$dup_reqc" | head -20 | sed 's/^/  - /'
+      return 1
+    fi
+
+    reqc_from_checklist=$(printf '%s\n' "$reqc_from_checklist" | LC_ALL=C sort -u)
+    missing_reqc=$(LC_ALL=C comm -23 <(printf '%s\n' "$reqc_defined") <(printf '%s\n' "$reqc_from_checklist") || true)
+    extra_reqc=$(LC_ALL=C comm -23 <(printf '%s\n' "$reqc_from_checklist") <(printf '%s\n' "$reqc_defined") || true)
+    if [ -n "$missing_reqc" ]; then
+      echo "❌ ${review_req_path} 禁止项清单未覆盖全部 REQ-C（每条禁止项必须归类为 A 并映射到 REQ-C）："
+      echo "$missing_reqc" | head -20 | sed 's/^/  - /'
+      return 1
+    fi
+    if [ -n "$extra_reqc" ]; then
+      echo "❌ ${review_req_path} 禁止项清单包含 requirements.md 未定义的 REQ-C："
+      echo "$extra_reqc" | head -20 | sed 's/^/  - /'
+      return 1
+    fi
+  fi
+
+  block=$(echo "$content" | sed -n '/CONSTRAINTS-CONFIRMATION-BEGIN/,/CONSTRAINTS-CONFIRMATION-END/p')
+  confirmed=$(echo "$block" | grep '^CONSTRAINTS_CONFIRMED:' | awk '{print $2}' | tail -1)
+  [ "$confirmed" = "yes" ] || {
+    echo "❌ ${review_req_path} 未确认禁止项清单（CONSTRAINTS_CONFIRMED != yes）"
+    return 1
+  }
+  confirmed_by=$(echo "$block" | sed -n 's/^CONFIRMED_BY:[[:space:]]*//p' | tail -1)
+  confirmed_at=$(echo "$block" | sed -n 's/^CONFIRMED_AT:[[:space:]]*//p' | tail -1)
+  [ -n "$confirmed_by" ] && ! echo "$confirmed_by" | grep -qE '^<[^>]+>$|^\\.\\.\\.$|^TBD$|^待确认$' || {
+    echo "❌ ${review_req_path} 禁止项确认块缺少有效 CONFIRMED_BY"
+    return 1
+  }
+  echo "$confirmed_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || {
+    echo "❌ ${review_req_path} 禁止项确认块缺少有效 CONFIRMED_AT（期望 YYYY-MM-DD）"
+    return 1
+  }
+  return 0
+}
+
+# 暂存区内容 → 临时文件 → review_gate 校验的通用桥接
+_staged_validate() {
+  local validator="$1" label_a="$2" path_a="$3" label_b="$4" path_b="$5"
+  shift 5
+  local content_a content_b tmp_dir tmp_a tmp_b rc
+  content_a=$(aicoding_staged_content "$path_a")
+  content_b=$(aicoding_staged_content "$path_b")
+  [ -n "$content_a" ] || { echo "❌ 缺少 $path_a"; return 1; }
+  [ -n "$content_b" ] || { echo "❌ 缺少 $path_b"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_a="${tmp_dir}/a.md"; tmp_b="${tmp_dir}/b.md"
+  printf '%s\n' "$content_a" > "$tmp_a"
+  printf '%s\n' "$content_b" > "$tmp_b"
+  "$validator" "$path_a" "$tmp_a" "$path_b" "$tmp_b" "$@"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
+validate_design_trace_coverage() {
+  _staged_validate review_gate_validate_design_trace_coverage "$1" "$1" "$2" "$2"
+}
+
+validate_plan_reverse_coverage() {
+  _staged_validate review_gate_validate_plan_reverse_coverage "$1" "$1" "$2" "$2"
+}
+
+validate_test_report_gwt_coverage() {
+  _staged_validate review_gate_validate_test_report_gwt_coverage "$1" "$1" "$2" "$2"
+}
+
+validate_requirements_integrity() {
+  local requirements_path="$1"
+  local req_content tmp_dir tmp_req rc
+  req_content=$(aicoding_staged_content "$requirements_path")
+  [ -n "$req_content" ] || { echo "❌ $requirements_path 不存在或为空"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_req="${tmp_dir}/requirements.md"
+  printf '%s\n' "$req_content" > "$tmp_req"
+  review_gate_validate_requirements_integrity "$requirements_path" "$tmp_req"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
+validate_review_summary_and_coverage() {
+  local review_path="$1" requirements_path="$2" status_current_ref="$3"
+  local review_content req_content tmp_dir tmp_review tmp_req rc
+  review_content=$(aicoding_staged_content "$review_path")
+  req_content=$(aicoding_staged_content "$requirements_path")
+  [ -n "$review_content" ] || { echo "❌ $review_path 不存在或为空"; return 1; }
+  [ -n "$req_content" ] || { echo "❌ $requirements_path 不存在或为空"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_review="${tmp_dir}/review.md"; tmp_req="${tmp_dir}/requirements.md"
+  printf '%s\n' "$review_content" > "$tmp_review"
+  printf '%s\n' "$req_content" > "$tmp_req"
+  review_gate_validate_review_summary_and_coverage "$review_path" "$tmp_review" "$requirements_path" "$tmp_req" "$status_current_ref" "$review_path"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
+# --- requirements.md 结构硬校验（唯一性/外键归属）---
+REQ_FILES=$(echo "$STAGED" | grep 'requirements\.md$' || true)
+if [ -n "$REQ_FILES" ]; then
+  while IFS= read -r rf; do
+    [ -z "$rf" ] && continue
+    aicoding_run_gate critical "requirements-integrity" validate_requirements_integrity "$rf" || exit 1
+  done <<< "$REQ_FILES"
+fi
+
+# --- CR 影响分析硬门禁（Phase 00）---
+CR_FILES=$(echo "$STAGED" | grep -E 'docs/v[0-9]+\.[0-9]+/cr/CR-[0-9]{8}-[0-9]{3}\.md$' || true)
+if [ -n "$CR_FILES" ]; then
+  while IFS= read -r crf; do
+    [ -z "$crf" ] && continue
+    aicoding_run_gate critical "cr-impact-matrix" validate_cr_impact_matrix "$crf" || exit 1
+  done <<< "$CR_FILES"
+fi
 
 # --- Git-Hook 3: .env / 密钥文件泄露拦截 ---
 BLOCKED=""
@@ -29,7 +540,8 @@ fi
 # --- Git-Hook 4: status.md YAML front matter 完整性 ---
 STATUS_FILES=$(echo "$STAGED" | grep 'status\.md$' || true)
 if [ -n "$STATUS_FILES" ]; then
-  for f in $STATUS_FILES; do
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
     CONTENT=$(git show ":$f" 2>/dev/null) || continue
     FIRST_LINE=$(echo "$CONTENT" | head -1)
     if [ "$FIRST_LINE" != "---" ]; then
@@ -51,136 +563,221 @@ if [ -n "$STATUS_FILES" ]; then
         echo "❌ $f 的 YAML front matter 中缺少 ${field} 字段"
         exit 1
       fi
-      VALUE=$(echo "$FRONT_MATTER" | grep "^${field}:" | awk '{print $2}')
+      VALUE=$(echo "$FRONT_MATTER" | grep "^${field}:" | sed "s/^${field}:[[:space:]]*//" | tr -d '[:space:]')
       if [ -z "$VALUE" ]; then
         echo "❌ $f 的 ${field} 值为空"
         exit 1
       fi
     done
 
-    WORKFLOW_MODE=$(echo "$FRONT_MATTER" | grep '^_workflow_mode:' | awk '{print $2}')
-    RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | awk '{print $2}')
-    CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | awk '{print $2}')
-    PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | awk '{print $2}')
+    WORKFLOW_MODE=$(yaml_value_from_block "$FRONT_MATTER" "_workflow_mode")
+    RUN_STATUS=$(yaml_value_from_block "$FRONT_MATTER" "_run_status")
+    CHANGE_STATUS=$(yaml_value_from_block "$FRONT_MATTER" "_change_status")
+    CURRENT_PHASE=$(yaml_value_from_block "$FRONT_MATTER" "_phase")
+    CHANGE_LEVEL=$(yaml_value_from_block "$FRONT_MATTER" "_change_level")
+    REVIEW_ROUND=$(yaml_value_from_block "$FRONT_MATTER" "_review_round")
+    [ -z "$REVIEW_ROUND" ] && REVIEW_ROUND=0
 
-    case "$WORKFLOW_MODE" in
-      manual|semi-auto|auto) ;;
-      *) echo "❌ $f: _workflow_mode 值非法（期望 manual/semi-auto/auto）"; exit 1 ;;
-    esac
-
-    case "$RUN_STATUS" in
-      running|paused|wait_confirm|completed) ;;
-      *) echo "❌ $f: _run_status 值非法（期望 running/paused/wait_confirm/completed）"; exit 1 ;;
-    esac
-
-    case "$CHANGE_STATUS" in
-      in_progress|done) ;;
-      *) echo "❌ $f: _change_status 值非法（期望 in_progress/done）"; exit 1 ;;
-    esac
-
-    case "$PHASE" in
-      Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment) ;;
-      *) echo "❌ $f: _phase 值非法（期望 Proposal/Requirements/Design/Planning/Implementation/Testing/Deployment）"; exit 1 ;;
-    esac
-  done
-fi
-
-# --- Git-Hook 6: 交付关口证据与计划（条件硬拦截） ---
-# 仅当 status.md 被修改且推进到 Deployment 或 _change_status=done 时触发。
-# 不强跑测试/scan，只检查“证据+结论/验证命令”的确定性缺口。
-if [ -n "$STATUS_FILES" ]; then
-  for f in $STATUS_FILES; do
-    CONTENT=$(git show ":$f" 2>/dev/null) || continue
-    FRONT_MATTER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{exit} {print}')
-    [ -z "$FRONT_MATTER" ] && continue
-
-    VERSION_DIR="${f%status.md}"
-    [ -z "$VERSION_DIR" ] && continue
-
-    PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | awk '{print $2}')
-    RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | awk '{print $2}')
-    CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | awk '{print $2}')
-
-    # 关键节点：推进到 Deployment 或 Done
-    HARD=false
-    [ "$PHASE" = "Deployment" ] && HARD=true
-    [ "$CHANGE_STATUS" = "done" ] && HARD=true
-    [ "$HARD" = false ] && continue
-
-    # 仅在“准备交付”信号出现时触发
-    case "$PHASE" in
-      Testing|Deployment) ;;
-      *) continue ;;
-    esac
-    if [ "$RUN_STATUS" != "wait_confirm" ] && [ "$CHANGE_STATUS" != "done" ]; then
-      continue
+    aicoding_enum_contains "$WORKFLOW_MODE" $AICODING_ENUM_WORKFLOW_MODE || {
+      echo "❌ $f: _workflow_mode 值非法（期望 manual/semi-auto/auto，当前：${WORKFLOW_MODE:-<empty>}）"
+      exit 1
+    }
+    aicoding_enum_contains "$RUN_STATUS" $AICODING_ENUM_RUN_STATUS || {
+      echo "❌ $f: _run_status 值非法（期望 running/paused/wait_confirm/completed，当前：${RUN_STATUS:-<empty>}）"
+      exit 1
+    }
+    aicoding_enum_contains "$CHANGE_STATUS" $AICODING_ENUM_CHANGE_STATUS || {
+      echo "❌ $f: _change_status 值非法（期望 in_progress/done，当前：${CHANGE_STATUS:-<empty>}）"
+      exit 1
+    }
+    aicoding_enum_contains "$CURRENT_PHASE" $AICODING_ENUM_PHASE || {
+      echo "❌ $f: _phase 值非法（当前：${CURRENT_PHASE:-<empty>}）"
+      exit 1
+    }
+    if [ -z "$CHANGE_LEVEL" ]; then
+      CHANGE_LEVEL="major"
+      aicoding_gate_log_warning "${f}: _change_level 缺失，按兼容期默认 major 处理"
+      echo "⚠️  [gate:status-enum] ${f}: _change_level 缺失，兼容期按 major 处理" >&2
+    else
+      aicoding_enum_contains "$CHANGE_LEVEL" $AICODING_ENUM_CHANGE_LEVEL || {
+        echo "❌ $f: _change_level 值非法（当前：${CHANGE_LEVEL}）"
+        exit 1
+      }
     fi
 
-    # W16（硬拦截）：test_report.md 证据与结论可判定
-    TEST_REPORT="${VERSION_DIR}test_report.md"
-    TEST_REPORT_CONTENT=$(git show ":$TEST_REPORT" 2>/dev/null || true)
-    if [ -z "$TEST_REPORT_CONTENT" ]; then
-      echo "❌ [W16 硬拦截] 关键节点提交被阻止：${TEST_REPORT} 不存在或为空"
+    validate_status_table_consistency "$f" "$CONTENT" "$CURRENT_PHASE" "$CHANGE_STATUS" "$WORKFLOW_MODE" "$RUN_STATUS" "$CHANGE_LEVEL" || exit 1
+
+    if [ "$CHANGE_LEVEL" = "hotfix" ]; then
+      aicoding_bool_is_true "$AICODING_ENABLE_HOTFIX" || {
+        echo "❌ $f: _change_level=hotfix 但配置 enable_hotfix=false"
+        exit 1
+      }
+      hotfix_diff_count_check "$f" || exit 1
+      hotfix_reqc_boundary_check "$f" || exit 1
+    fi
+
+    echo "$REVIEW_ROUND" | grep -qE '^[0-9]+$' || {
+      echo "❌ $f: _review_round 必须为非负整数（当前：${REVIEW_ROUND}）"
+      exit 1
+    }
+    if [ "$REVIEW_ROUND" -gt 5 ] && [ "$RUN_STATUS" != "wait_confirm" ]; then
+      echo "❌ $f: 同一阶段审查轮次超过 5（_review_round=${REVIEW_ROUND}），请先切换 _run_status: wait_confirm 并请求人工确认"
       exit 1
     fi
 
-    W16_FAIL=false
+    # --- Git-Hook 7: 阶段出口门禁 ---
+    VERSION_DIR=$(echo "$f" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
+    [ -z "$VERSION_DIR" ] && continue
+    [ -z "$CURRENT_PHASE" ] && continue
 
-    HAS_CMD_BLOCK=$(echo "$TEST_REPORT_CONTENT" | awk '
-      /```(bash|sh)[ \t]*$/{in_block=1; next}
-      in_block && /```/{in_block=0; next}
-      in_block{
-        line=$0
-        gsub(/^[ \t-]+/, "", line)
-        gsub(/[ \t]+$/, "", line)
-        if(line!="" && line!="..." && line !~ /^<[^>]+>$/) {print 1; exit}
-      }
+    # 检查是否有阶段推进（对比暂存区 vs HEAD）
+    OLD_PHASE=$(git show "HEAD:$f" 2>/dev/null | awk '
+      NR==1 && $0!="---" {exit}
+      NR==1 {in_front=1; next}
+      in_front && $0=="---" {exit}
+      in_front && /^_phase:/ {sub(/^_phase:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}
     ')
+    if [ -z "$OLD_PHASE" ]; then
+      # 新建 status.md：只允许从 ChangeManagement 开始，禁止跳到高阶段
+      NEW_RANK=$(aicoding_phase_rank "$CURRENT_PHASE")
+      if [ "$NEW_RANK" -gt 0 ]; then
+        echo "❌ 新建 status.md 的 _phase 必须从 ChangeManagement 开始（当前：$CURRENT_PHASE）"
+        exit 1
+      fi
+      continue
+    fi
+    [ "$OLD_PHASE" = "$CURRENT_PHASE" ] && continue
 
-    HAS_EVID_LINE=$(echo "$TEST_REPORT_CONTENT" | grep -nE '^(\*\*证据\*\*：|证据：|证据链接：|- 完整报告链接：).+' 2>/dev/null \
-      | grep -vF '命令输出/日志/截图链接（如适用）' \
-      | grep -vE '\.\.\.|<[^>]+>' | head -1 || true)
+    OLD_RANK=$(aicoding_phase_rank "$OLD_PHASE")
+    NEW_RANK=$(aicoding_phase_rank "$CURRENT_PHASE")
+    if [ "$NEW_RANK" -lt "$OLD_RANK" ]; then
+      DROP=$((OLD_RANK - NEW_RANK))
+      if [ "$DROP" -gt 2 ]; then
+        echo "❌ 检测到大幅阶段降级（${OLD_PHASE} → ${CURRENT_PHASE}，跨度 ${DROP}），已阻断。请人工确认后再调整。"
+        exit 1
+      fi
+      aicoding_gate_log_warning "阶段降级：${f} ${OLD_PHASE} -> ${CURRENT_PHASE}"
+      echo "⚠️  [gate:phase-transition] 检测到阶段降级：${OLD_PHASE} → ${CURRENT_PHASE}（已记录）" >&2
+      continue
+    fi
+    [ "$NEW_RANK" -eq "$OLD_RANK" ] && continue
 
-    HAS_CR_EVID=$(echo "$TEST_REPORT_CONTENT" | awk -F'|' '
-      $0 ~ /^\\|[ \t]*CR-[0-9]{8}-[0-9]{3}[ \t]*\\|/ {
-        gsub(/^[ \t]+|[ \t]+$/, "", $5);
-        gsub(/^[ \t]+|[ \t]+$/, "", $6);
-        if ($6 == "通过" && $5 != "" && $5 != "..." && $5 !~ /^<[^>]+>$/) {print 1; exit}
-      }
-    ')
+    STATUS_CURRENT_REF=$(echo "$FRONT_MATTER" | grep '^_current:' | sed 's/^_current:[[:space:]]*//' | tr -d '[:space:]')
 
-    if [ -z "$HAS_CMD_BLOCK" ] && [ -z "$HAS_EVID_LINE" ] && [ -z "$HAS_CR_EVID" ]; then
-      echo "❌ [W16 硬拦截] test_report.md 未找到有效证据：请补充命令块/证据链接/CR验证证据表（至少满足其一）"
-      W16_FAIL=true
+    run_result_gates_for_transition "$OLD_PHASE" "$CURRENT_PHASE" "$f" || exit 1
+
+    if [ "$CHANGE_LEVEL" = "hotfix" ]; then
+      continue
     fi
 
-    CONCLUSION=$(echo "$TEST_REPORT_CONTENT" | grep -E '^-[[:space:]]*整体结论[：:]' \
-      | sed 's/^-[[:space:]]*整体结论[：:][[:space:]]*//;s/[[:space:]]*$//' \
-      | head -1 || true)
-    if [ -z "$CONCLUSION" ]; then
-      echo "❌ [W16 硬拦截] test_report.md 的\"整体结论\"为空，关键节点提交前必须填写"
-      W16_FAIL=true
-    elif ! echo "$CONCLUSION" | grep -qE '^(通过|不通过)$'; then
-      echo "❌ [W16 硬拦截] test_report.md 的\"整体结论\"必须为\"通过\"或\"不通过\"（当前值: ${CONCLUSION}）"
-      W16_FAIL=true
-    elif [ "$CONCLUSION" = "不通过" ]; then
-      echo "❌ [W16 硬拦截] test_report.md 的整体结论为\"不通过\"，禁止进入确认/交付"
-      W16_FAIL=true
+    # 产出物存在性检查
+    GATE_MISSING=""
+    check_gate_file() {
+      aicoding_staged_exists "${VERSION_DIR}$1" || GATE_MISSING="${GATE_MISSING}\n  - $1"
+    }
+
+    while IFS= read -r required_doc; do
+      [ -z "$required_doc" ] && continue
+      check_gate_file "$required_doc"
+    done < <(aicoding_phase_exit_required "$OLD_PHASE" "$CHANGE_LEVEL")
+
+    case "$OLD_PHASE" in
+      Requirements)
+        aicoding_run_gate critical "phase-exit:requirements" validate_constraints_confirmation "${VERSION_DIR}review_requirements.md" "${VERSION_DIR}requirements.md" "${VERSION_DIR}proposal.md" || exit 1
+        ;;
+      Design)
+        aicoding_run_gate critical "phase-exit:design-trace" validate_design_trace_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}design.md" || exit 1
+        ;;
+      Planning)
+        aicoding_run_gate critical "phase-exit:planning-coverage" validate_plan_reverse_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}plan.md" || exit 1
+        ;;
+      Implementation)
+        if [ "$CHANGE_LEVEL" = "minor" ]; then
+          aicoding_run_gate critical "phase-exit:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
+          aicoding_run_gate critical "phase-exit:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
+        else
+          aicoding_run_gate critical "phase-exit:implementation-review" validate_review_summary_and_coverage "${VERSION_DIR}review_implementation.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
+        fi
+        ;;
+      Testing)
+        if [ "$CHANGE_LEVEL" = "minor" ]; then
+          aicoding_run_gate critical "phase-exit:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
+          aicoding_run_gate critical "phase-exit:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
+        else
+          aicoding_run_gate critical "phase-exit:testing-review" validate_review_summary_and_coverage "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
+          aicoding_run_gate critical "phase-exit:test-coverage" validate_test_report_gwt_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}test_report.md" || exit 1
+          aicoding_run_gate critical "phase-exit:human-spotcheck" validate_human_spotcheck "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" "$CHANGE_LEVEL" || exit 1
+        fi
+        ;;
+    esac
+
+    if [ -n "$GATE_MISSING" ]; then
+      echo "❌ 阶段出口门禁（${OLD_PHASE} → ${CURRENT_PHASE}）：以下必要产出物缺失："
+      echo -e "$GATE_MISSING"
+      exit 1
+    fi
+  done <<< "$STATUS_FILES"
+fi
+
+# --- Git-Hook 6: 交付关口条件拦截 ---
+# 当 _run_status=wait_confirm 或 _change_status=done 时，检查交付必要条件
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  CONTENT=$(git show ":$f" 2>/dev/null) || continue
+  FRONT_MATTER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{exit} {print}')
+  NEW_CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | sed 's/^_change_status:[[:space:]]*//' | tr -d '[:space:]')
+  NEW_RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | sed 's/^_run_status:[[:space:]]*//' | tr -d '[:space:]')
+  NEW_PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | sed 's/^_phase:[[:space:]]*//' | tr -d '[:space:]')
+  [ "$NEW_CHANGE_STATUS" = "done" ] || [ "$NEW_RUN_STATUS" = "wait_confirm" ] || continue
+  case "$NEW_PHASE" in
+    Testing|Deployment) ;;
+    *) continue ;;
+  esac
+
+  VERSION_DIR=$(echo "$f" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
+  [ -z "$VERSION_DIR" ] && continue
+
+  CHANGE_LEVEL=$(echo "$FRONT_MATTER" | grep '^_change_level:' | sed 's/^_change_level:[[:space:]]*//' | tr -d '[:space:]')
+  [ -z "$CHANGE_LEVEL" ] && CHANGE_LEVEL="major"
+  [ "$CHANGE_LEVEL" = "hotfix" ] && continue
+
+  STATUS_CURRENT_REF=$(echo "$FRONT_MATTER" | grep '^_current:' | sed 's/^_current:[[:space:]]*//' | tr -d '[:space:]')
+  if [ "$CHANGE_LEVEL" = "minor" ]; then
+    aicoding_run_gate critical "delivery:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
+    aicoding_run_gate critical "delivery:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
+    if aicoding_staged_exists "${VERSION_DIR}requirements.md"; then
+      if aicoding_staged_content "${VERSION_DIR}requirements.md" | grep -q 'GWT-REQ-C'; then
+        aicoding_gate_log_warning "${f}: _change_level=minor 但 requirements 存在 REQ-C，建议升级为 major 并执行 spotcheck"
+      fi
+    fi
+  else
+    DELIVERY_MISSING=""
+    for doc in review_testing.md test_report.md; do
+      aicoding_staged_exists "${VERSION_DIR}${doc}" || DELIVERY_MISSING="${DELIVERY_MISSING}\n  - ${doc}"
+    done
+    if [ -n "$DELIVERY_MISSING" ]; then
+      echo "❌ 交付关口（wait_confirm/done）：以下必要产出物缺失："
+      echo -e "$DELIVERY_MISSING"
+      exit 1
     fi
 
-    [ "$W16_FAIL" = true ] && exit 1
+    aicoding_run_gate critical "delivery:review-testing" validate_review_summary_and_coverage "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
+    aicoding_run_gate critical "delivery:test-report" validate_test_report_gwt_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}test_report.md" || exit 1
+    aicoding_run_gate critical "delivery:human-spotcheck" validate_human_spotcheck "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" "$CHANGE_LEVEL" || exit 1
+  fi
+done <<< "$STATUS_FILES"
 
-    # W17（硬拦截）：plan.md 每个任务必须提供可复现命令
-    PLAN="${VERSION_DIR}plan.md"
-    PLAN_CONTENT=$(git show ":$PLAN" 2>/dev/null || true)
+# --- W17 硬拦截: plan.md 任务验证命令检查 ---
+PLAN_FILES=$(echo "$STAGED" | grep 'plan\.md$' || true)
+if [ -n "$PLAN_FILES" ]; then
+  while IFS= read -r pf; do
+    [ -z "$pf" ] && continue
+    PLAN_CONTENT=$(aicoding_staged_content "$pf")
     [ -z "$PLAN_CONTENT" ] && continue
 
-    TASK_COUNT=$(echo "$PLAN_CONTENT" | grep -cE '^### (T[0-9]|任务)' || echo 0)
-    [ "$TASK_COUNT" -eq 0 ] && continue
-
     MISSING=$(echo "$PLAN_CONTENT" | awk '
-      function flush(){
-        if(task_title!="" && has_cmd==0) {
+      function flush() {
+        if(task_title!="" && !has_cmd) {
           missing++
           print "  - " task_title
         }
@@ -193,6 +790,7 @@ if [ -n "$STATUS_FILES" ]; then
         next
       }
       /验证方式/ {in_verify=1}
+      in_verify && /人工确认|N\/A|NA（文档类任务）|文档类任务/ {has_cmd=1}
       in_verify && /^- *命令：/{
         if(match($0, /`[^`]+`/)) {
           cmd=substr($0, RSTART+1, RLENGTH-2)
@@ -210,7 +808,7 @@ if [ -n "$STATUS_FILES" ]; then
       echo "$MISSING" | head -20
       exit 1
     fi
-  done
+  done <<< "$PLAN_FILES"
 fi
 
 # --- Git-Hook 5: git config 防篡改 ---
@@ -219,4 +817,5 @@ if echo "$STAGED" | grep -qE '(^|/)\.gitconfig$|(^|/)\.gitmodules$'; then
   exit 1
 fi
 
+aicoding_gate_log_pass "pre-commit"
 exit 0
