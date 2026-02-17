@@ -24,6 +24,19 @@ from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
+PROFILE_FIELD_KEYS = (
+    "system_scope",
+    "module_structure",
+    "integration_points",
+    "key_constraints",
+)
+
+PROFILE_TEXT_FIELD_KEYS = {
+    "system_scope",
+    "integration_points",
+    "key_constraints",
+}
+
 
 class SystemProfileService:
     def __init__(self, store_path: Optional[str] = None) -> None:
@@ -69,38 +82,105 @@ class SystemProfileService:
                 return item
         return None
 
+    def _normalize_module_structure(self, value: Any, *, strict: bool) -> List[Dict[str, Any]]:
+        if value is None:
+            return []
+
+        parsed_value = value
+        if isinstance(parsed_value, str):
+            text = parsed_value.strip()
+            if not text:
+                return []
+            try:
+                parsed_value = json.loads(text)
+            except Exception:
+                if strict:
+                    raise ValueError("invalid_module_structure")
+                return []
+
+        if not isinstance(parsed_value, list):
+            if strict:
+                raise ValueError("invalid_module_structure")
+            return []
+
+        normalized_modules: List[Dict[str, Any]] = []
+        now = datetime.now().isoformat()
+
+        for module_item in parsed_value:
+            if not isinstance(module_item, dict):
+                if strict:
+                    raise ValueError("invalid_module_structure")
+                continue
+
+            module_name = str(module_item.get("module_name") or "").strip()
+            raw_functions = module_item.get("functions")
+            if (not module_name) or (not isinstance(raw_functions, list)):
+                if strict:
+                    raise ValueError("invalid_module_structure")
+                continue
+
+            normalized_functions: List[Dict[str, str]] = []
+            seen_function_names = set()
+            for function_item in raw_functions:
+                if not isinstance(function_item, dict):
+                    if strict:
+                        raise ValueError("invalid_module_structure")
+                    continue
+
+                function_name = str(function_item.get("name") or "").strip()
+                if not function_name:
+                    if strict:
+                        raise ValueError("invalid_module_structure")
+                    continue
+
+                if function_name in seen_function_names:
+                    continue
+
+                function_desc = "" if function_item.get("desc") is None else str(function_item.get("desc")).strip()
+                normalized_functions.append({
+                    "name": function_name,
+                    "desc": function_desc,
+                })
+                seen_function_names.add(function_name)
+
+            last_updated = str(module_item.get("last_updated") or "").strip() or now
+            normalized_modules.append(
+                {
+                    "module_name": module_name,
+                    "functions": normalized_functions,
+                    "last_updated": last_updated,
+                }
+            )
+
+        return normalized_modules
+
     def _normalize_fields_for_storage(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize fields before persisting.
+        normalized: Dict[str, Any] = {}
+        raw_fields = fields if isinstance(fields, dict) else {}
 
-        - canonical key: business_goals
-        - legacy alias: business_goal
-        """
-        normalized = dict(fields or {})
+        for key in PROFILE_TEXT_FIELD_KEYS:
+            if key in raw_fields:
+                value = raw_fields.get(key)
+                normalized[key] = "" if value is None else str(value).strip()
 
-        if (not self._has_value(normalized.get("business_goals"))) and self._has_value(normalized.get("business_goal")):
-            normalized["business_goals"] = normalized.get("business_goal")
-
-        if "business_goal" in normalized:
-            normalized.pop("business_goal", None)
+        if "module_structure" in raw_fields:
+            normalized["module_structure"] = self._normalize_module_structure(raw_fields.get("module_structure"), strict=True)
 
         return normalized
 
     def _normalize_fields_for_output(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize fields for API output.
+        raw_fields = fields if isinstance(fields, dict) else {}
 
-        Always provide business_goals; optionally backfill business_goal for backward compatibility.
-        """
-        normalized = dict(fields or {})
-
-        if (not self._has_value(normalized.get("business_goals"))) and self._has_value(normalized.get("business_goal")):
-            normalized["business_goals"] = normalized.get("business_goal")
-
-        if self._has_value(normalized.get("business_goals")) and (not self._has_value(normalized.get("business_goal"))):
-            normalized["business_goal"] = normalized.get("business_goals")
-
-        return normalized
+        return {
+            "system_scope": "" if raw_fields.get("system_scope") is None else str(raw_fields.get("system_scope")).strip(),
+            "module_structure": self._normalize_module_structure(raw_fields.get("module_structure"), strict=False),
+            "integration_points": ""
+            if raw_fields.get("integration_points") is None
+            else str(raw_fields.get("integration_points")).strip(),
+            "key_constraints": ""
+            if raw_fields.get("key_constraints") is None
+            else str(raw_fields.get("key_constraints")).strip(),
+        }
 
     def _normalize_profile_for_output(self, profile: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(profile or {})
@@ -145,8 +225,8 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-        fields = self._normalize_fields_for_storage(fields)
+        incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        incoming_fields = self._normalize_fields_for_storage(incoming_fields)
         evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
         system_id = str(payload.get("system_id") or "").strip()
         incoming_sources = payload.get("field_sources") if isinstance(payload.get("field_sources"), dict) else {}
@@ -174,13 +254,18 @@ class SystemProfileService:
                 items.append(existing)
 
             existing["system_id"] = system_id or existing.get("system_id") or ""
-            existing["fields"] = fields
+            existing_fields = existing.get("fields") if isinstance(existing.get("fields"), dict) else {}
+            existing_fields = self._normalize_fields_for_storage(existing_fields)
+            for field_key in PROFILE_FIELD_KEYS:
+                if field_key in incoming_fields:
+                    existing_fields[field_key] = incoming_fields.get(field_key)
+            existing["fields"] = existing_fields
             existing["evidence_refs"] = evidence_refs
 
             # field_sources: manual by default for user-provided fields; allow overriding to ai on accept action
             field_sources = existing.get("field_sources") if isinstance(existing.get("field_sources"), dict) else {}
             field_sources = dict(field_sources)
-            for key in fields.keys():
+            for key in incoming_fields.keys():
                 field_sources[str(key)] = "manual"
             for key, value in incoming_sources.items():
                 k = str(key or "").strip()
@@ -599,11 +684,6 @@ class SystemProfileService:
 
             fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
             fields = self._normalize_fields_for_storage(fields)
-            required_keys = ["in_scope", "core_functions"]
-            missing_required = [key for key in required_keys if not self._has_value(fields.get(key))]
-            if missing_required:
-                missing_text = "、".join(missing_required)
-                raise ValueError(f"发布失败，缺少必填字段：{missing_text}")
 
             profile_snapshot = copy.deepcopy(profile)
             profile_snapshot["fields"] = fields
@@ -679,16 +759,25 @@ class SystemProfileService:
 
     def _build_profile_text(self, profile: Dict[str, Any]) -> str:
         fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
-        business_goals = fields.get("business_goals")
-        if not self._has_value(business_goals):
-            business_goals = fields.get("business_goal", "")
+        module_structure = self._normalize_module_structure(fields.get("module_structure"), strict=False)
+        module_segments: List[str] = []
+        for module_item in module_structure[:20]:
+            module_name = str(module_item.get("module_name") or "").strip()
+            functions = module_item.get("functions") if isinstance(module_item.get("functions"), list) else []
+            function_names = [
+                str(function_item.get("name") or "").strip()
+                for function_item in functions
+                if isinstance(function_item, dict) and str(function_item.get("name") or "").strip()
+            ]
+            if module_name and function_names:
+                module_segments.append(f"{module_name}({ '、'.join(function_names[:20]) })")
+            elif module_name:
+                module_segments.append(module_name)
+        module_structure_text = "；".join(module_segments)
         return (
             f"系统名称:{profile.get('system_name','')} | "
-            f"系统边界(做什么):{fields.get('in_scope','')} | "
-            f"系统不做什么:{fields.get('out_of_scope','')} | "
-            f"核心功能:{fields.get('core_functions','')} | "
-            f"业务目标:{business_goals or ''} | "
-            f"业务对象:{fields.get('business_objects','')} | "
+            f"系统定位与边界:{fields.get('system_scope','')} | "
+            f"模块结构:{module_structure_text} | "
             f"主要集成点:{fields.get('integration_points','')} | "
             f"关键约束:{fields.get('key_constraints','')}"
         )
@@ -700,7 +789,7 @@ class SystemProfileService:
     def get_minimal_profile_flags(self, system_name: str) -> Dict[str, Any]:
         profile = self.get_profile(system_name) or {}
         fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
-        minimal_keys = ["in_scope", "core_functions"]
+        minimal_keys = ["system_scope", "module_structure"]
         missing = [key for key in minimal_keys if not self._has_value(fields.get(key))]
         return {
             "has_profile": bool(profile),

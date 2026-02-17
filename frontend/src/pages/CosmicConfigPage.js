@@ -18,9 +18,7 @@ import {
 } from 'antd';
 import {
   SaveOutlined,
-  ReloadOutlined,
   UndoOutlined,
-  CheckCircleOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
@@ -125,30 +123,13 @@ const CosmicConfigPage = () => {
     }
   };
 
-  const handleReload = async () => {
-    if (readOnly) {
-      message.warning('只读模式：无权限重新加载配置');
-      return;
-    }
-
-    try {
-      await axios.post('/api/v1/cosmic/reload');
-      message.success('配置重新加载成功');
-    } catch (error) {
-      message.error('重新加载配置失败');
-    }
-  };
-
   return (
     <div style={{ padding: 24 }}>
-      <Card>
+      <Card loading={loading}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <Title level={3}>估算规则配置（COSMIC）</Title>
-              <Text type="secondary">
-                用业务语言先理解"拆分粒度与计数口径"，技术配置按分类平铺展示。
-              </Text>
             </div>
             <Space>
               <Button onClick={() => setHelpOpen(true)}>使用说明</Button>
@@ -191,27 +172,6 @@ const CosmicConfigPage = () => {
               description="仅管理员可修改COSMIC技术配置。"
             />
           )}
-
-          <Space wrap>
-            {isAdmin && (
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
-                保存配置
-              </Button>
-            )}
-            {isAdmin && (
-              <Button icon={<UndoOutlined />} onClick={handleReset}>
-                重置为默认
-              </Button>
-            )}
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={fetchConfig}>
-              刷新
-            </Button>
-            {isAdmin && (
-              <Button icon={<CheckCircleOutlined />} onClick={handleReload}>
-                重新加载（热更新）
-              </Button>
-            )}
-          </Space>
 
           <Form
             form={form}
@@ -348,6 +308,20 @@ const CosmicConfigPage = () => {
                       </TabPane>
             </Tabs>
           </Form>
+
+
+          {isAdmin && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Space>
+                <Button icon={<UndoOutlined />} onClick={handleReset}>
+                  重置为默认
+                </Button>
+                <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+                  保存配置
+                </Button>
+              </Space>
+            </div>
+          )}
 
           <Modal
             title="使用说明（COSMIC）"

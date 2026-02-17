@@ -12,6 +12,7 @@ from typing import Any, List, Dict, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from backend.api.auth import require_admin_api_key
+from backend.config.config import settings
 from backend.service import user_service
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class SystemListResponse(BaseModel):
 
 
 # CSV文件路径
-CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "system_list.csv")
+CSV_PATH = os.path.join(settings.REPORT_DIR, "system_list.csv")
 
 SYSTEM_HEADER_KEYS = {
     "ID", "id",
@@ -68,6 +69,8 @@ OWNER_EXTRA_FIELD_ALIASES: Dict[str, List[str]] = {
         "负责人姓名",
         "系统负责人名称",
         "负责人名称",
+        "系统负责人",
+        "负责人",
     ],
     "backup_owner_ids": [
         "backup_owner_ids",
@@ -165,6 +168,40 @@ def normalize_system_owner_extra_fields(extra: Any) -> Tuple[Dict[str, Any], boo
     return normalized_extra, changed
 
 
+def _split_owner_candidates(value: Any) -> List[str]:
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    normalized = re.sub(r"[，、;/；|]+", ",", text.replace("/", ","))
+    parts = [item.strip() for item in normalized.split(",")]
+    result: List[str] = []
+    for item in parts:
+        if not item:
+            continue
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _find_user_by_owner_identity(users: List[Dict[str, Any]], candidate: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    text = str(candidate or "").strip()
+    if not text:
+        return None, ""
+
+    by_username = user_service.find_user_by_username(users, text)
+    if by_username:
+        return by_username, "username"
+
+    for user in users:
+        display_name = str(user.get("display_name") or "").strip()
+        if display_name and display_name == text:
+            return user, "display_name"
+
+    return None, ""
+
+
 def _find_system(system_id: Optional[str] = None, system_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     sid = str(system_id or "").strip()
     sname = str(system_name or "").strip()
@@ -216,7 +253,7 @@ def resolve_system_owner(system_id: Optional[str] = None, system_name: Optional[
         if isinstance(value, list):
             parts = value
         else:
-            parts = [item.strip() for item in str(value).replace("，", ",").split(",")]
+            parts = _split_owner_candidates(value)
         result: List[str] = []
         for item in parts:
             text = str(item or "").strip()
@@ -226,8 +263,20 @@ def resolve_system_owner(system_id: Optional[str] = None, system_name: Optional[
                 result.append(text)
         return result
 
+    normalized_owner_usernames = _split_owner_candidates(owner_username)
+    normalized_owner_names = _split_owner_candidates(owner_name)
     normalized_backup_ids = _as_str_list(backup_owner_ids)
     normalized_backup_usernames = _as_str_list(backup_owner_usernames)
+
+    if normalized_owner_usernames:
+        owner_username = normalized_owner_usernames[0]
+        for candidate in normalized_owner_usernames[1:]:
+            if candidate not in normalized_backup_usernames:
+                normalized_backup_usernames.append(candidate)
+
+    if normalized_owner_names:
+        owner_name = normalized_owner_names[0]
+
     resolved_owner_id = owner_id
     resolved_by = "owner_id" if owner_id else ""
     mapping_status = "ok"
@@ -237,30 +286,56 @@ def resolve_system_owner(system_id: Optional[str] = None, system_name: Optional[
         if item not in resolved_backup_owner_ids:
             resolved_backup_owner_ids.append(item)
 
-    if not owner_id and owner_username:
-        users = user_service.list_users()
-        owner_user = user_service.find_user_by_username(users, owner_username)
-        if owner_user:
-            resolved_owner_id = str(owner_user.get("id") or "").strip()
-            resolved_by = "owner_username"
-            if not owner_name:
-                owner_name = str(owner_user.get("display_name") or owner_user.get("username") or "").strip()
-        else:
+    users = user_service.list_users() if not owner_id else None
+
+    if not owner_id and normalized_owner_usernames:
+        for candidate in normalized_owner_usernames:
+            owner_user, matched_by = _find_user_by_owner_identity(users or [], candidate)
+            if not owner_user:
+                continue
+            resolved_id = str(owner_user.get("id") or "").strip()
+            if not resolved_id:
+                continue
+            if not resolved_owner_id:
+                resolved_owner_id = resolved_id
+                resolved_by = "owner_username" if matched_by == "username" else "owner_display_name"
+                if not owner_name:
+                    owner_name = str(owner_user.get("display_name") or owner_user.get("username") or "").strip()
+            elif resolved_id not in resolved_backup_owner_ids:
+                resolved_backup_owner_ids.append(resolved_id)
+
+        if not resolved_owner_id:
             mapping_status = "owner_username_unresolved"
-    else:
-        users = None
+    elif not owner_id and normalized_owner_names:
+        for candidate in normalized_owner_names:
+            owner_user, matched_by = _find_user_by_owner_identity(users or [], candidate)
+            if not owner_user:
+                continue
+            resolved_id = str(owner_user.get("id") or "").strip()
+            if not resolved_id:
+                continue
+            if not resolved_owner_id:
+                resolved_owner_id = resolved_id
+                resolved_by = "owner_name" if matched_by == "display_name" else "owner_username"
+                if not owner_username:
+                    owner_username = candidate
+            elif resolved_id not in resolved_backup_owner_ids:
+                resolved_backup_owner_ids.append(resolved_id)
+
+        if not resolved_owner_id:
+            mapping_status = "owner_username_unresolved"
 
     if normalized_backup_usernames:
         if users is None:
             users = user_service.list_users()
         for username in normalized_backup_usernames:
-            backup_user = user_service.find_user_by_username(users, username)
+            backup_user, _ = _find_user_by_owner_identity(users, username)
             if backup_user:
                 backup_id = str(backup_user.get("id") or "").strip()
                 if backup_id and backup_id not in resolved_backup_owner_ids:
                     resolved_backup_owner_ids.append(backup_id)
 
-    if not owner_id and not owner_username:
+    if not owner_id and not owner_username and not owner_name:
         mapping_status = "owner_not_configured"
 
     if not resolved_owner_id and mapping_status == "ok":

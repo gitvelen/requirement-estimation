@@ -225,3 +225,22 @@
 - **验证方式（可复现）**：
 - **升级（规则/清单/自动化）**：
 - **证据/关联**：
+
+---
+
+### 2026-02-12｜实施阶段“计划验收命令缺失对应测试文件”导致收敛证据断链（实现/测试）
+- **标签**：实现、测试、追溯
+- **触发（事实）**：`docs/v2.1/plan.md` 的 T008 验证命令引用了 `tests/test_task_modification_compat.py`，但仓库中不存在该文件，导致验证命令不可执行。
+- **根因**：
+  1. Planning 阶段命令与测试资产未做“存在性自检”
+  2. Implementation 阶段先实现主功能，未第一时间补齐计划中约定的专用回归用例
+- **影响**：
+  - 阶段收敛时出现证据缺口，P1 问题必须返工补测
+- **改进行动（可执行）**：
+  1. 进入 Implementation 前，对 `plan.md` 中所有 `pytest` 路径执行一次存在性检查：`rg -o "tests/[^` ]+" docs/<版本号>/plan.md | while read f; do test -f "$f" || echo "MISSING:$f"; done`
+  2. 若缺失测试文件，优先补齐测试再进行功能收口
+- **验证方式（可复现）**：
+  - `.venv/bin/pytest -q tests/test_task_modification_compat.py`
+  - `.venv/bin/pytest -q`（全量通过）
+- **升级（规则/清单/自动化）**：是（建议纳入 Implementation 阶段门禁）
+- **证据/关联**：`docs/v2.1/review_implementation.md` RVW-001、`tests/test_task_modification_compat.py`

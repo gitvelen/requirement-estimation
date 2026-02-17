@@ -1,0 +1,222 @@
+#!/bin/bash
+# aicoding-hooks-managed
+# Git pre-commit dispatcher: Git-Hook 3 (.env拦截) + Git-Hook 4 (YAML校验) + Git-Hook 6（交付关口条件拦截）+ Git-Hook 5 (git config防篡改)
+
+STAGED=$(git diff --cached --name-only)
+
+# --- Git-Hook 3: .env / 密钥文件泄露拦截 ---
+BLOCKED=""
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  base=$(basename "$file")
+  case "$base" in
+    .env.example|.env.template|.env.sample)   continue ;;
+    .env|.env.local|.env.production|.env.*)    BLOCKED="$BLOCKED\n  $file" ;;
+    credentials.json|service-account.json)     BLOCKED="$BLOCKED\n  $file" ;;
+    *.pem|*.key)                               BLOCKED="$BLOCKED\n  $file" ;;
+    id_rsa|id_ed25519|id_ecdsa|id_dsa)         BLOCKED="$BLOCKED\n  $file" ;;
+  esac
+done <<< "$STAGED"
+
+if [ -n "$BLOCKED" ]; then
+  echo "❌ 检测到敏感文件即将被提交："
+  echo -e "$BLOCKED"
+  echo "   请将其加入 .gitignore 或从暂存区移除"
+  echo "   （白名单：.env.example / .env.template / .env.sample 不拦截）"
+  exit 1
+fi
+
+# --- Git-Hook 4: status.md YAML front matter 完整性 ---
+STATUS_FILES=$(echo "$STAGED" | grep 'status\.md$' || true)
+if [ -n "$STATUS_FILES" ]; then
+  for f in $STATUS_FILES; do
+    CONTENT=$(git show ":$f" 2>/dev/null) || continue
+    FIRST_LINE=$(echo "$CONTENT" | head -1)
+    if [ "$FIRST_LINE" != "---" ]; then
+      echo "❌ $f 第 1 行必须是 ---（YAML front matter 起始标记）"
+      exit 1
+    fi
+    HAS_END_MARKER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{print 1; exit}')
+    if [ -z "$HAS_END_MARKER" ]; then
+      echo "❌ $f 的 YAML front matter 未闭合（缺少第二个 ---）"
+      exit 1
+    fi
+    FRONT_MATTER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{exit} {print}')
+    if [ -z "$FRONT_MATTER" ]; then
+      echo "❌ $f 缺少 YAML front matter 内容（--- 块为空或未闭合）"
+      exit 1
+    fi
+    for field in _baseline _current _workflow_mode _run_status _change_status _phase; do
+      if ! echo "$FRONT_MATTER" | grep -q "^${field}:"; then
+        echo "❌ $f 的 YAML front matter 中缺少 ${field} 字段"
+        exit 1
+      fi
+      VALUE=$(echo "$FRONT_MATTER" | grep "^${field}:" | awk '{print $2}')
+      if [ -z "$VALUE" ]; then
+        echo "❌ $f 的 ${field} 值为空"
+        exit 1
+      fi
+    done
+
+    WORKFLOW_MODE=$(echo "$FRONT_MATTER" | grep '^_workflow_mode:' | awk '{print $2}')
+    RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | awk '{print $2}')
+    CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | awk '{print $2}')
+    PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | awk '{print $2}')
+
+    case "$WORKFLOW_MODE" in
+      manual|semi-auto|auto) ;;
+      *) echo "❌ $f: _workflow_mode 值非法（期望 manual/semi-auto/auto）"; exit 1 ;;
+    esac
+
+    case "$RUN_STATUS" in
+      running|paused|wait_confirm|completed) ;;
+      *) echo "❌ $f: _run_status 值非法（期望 running/paused/wait_confirm/completed）"; exit 1 ;;
+    esac
+
+    case "$CHANGE_STATUS" in
+      in_progress|done) ;;
+      *) echo "❌ $f: _change_status 值非法（期望 in_progress/done）"; exit 1 ;;
+    esac
+
+    case "$PHASE" in
+      Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment) ;;
+      *) echo "❌ $f: _phase 值非法（期望 Proposal/Requirements/Design/Planning/Implementation/Testing/Deployment）"; exit 1 ;;
+    esac
+  done
+fi
+
+# --- Git-Hook 6: 交付关口证据与计划（条件硬拦截） ---
+# 仅当 status.md 被修改且推进到 Deployment 或 _change_status=done 时触发。
+# 不强跑测试/scan，只检查“证据+结论/验证命令”的确定性缺口。
+if [ -n "$STATUS_FILES" ]; then
+  for f in $STATUS_FILES; do
+    CONTENT=$(git show ":$f" 2>/dev/null) || continue
+    FRONT_MATTER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{exit} {print}')
+    [ -z "$FRONT_MATTER" ] && continue
+
+    VERSION_DIR="${f%status.md}"
+    [ -z "$VERSION_DIR" ] && continue
+
+    PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | awk '{print $2}')
+    RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | awk '{print $2}')
+    CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | awk '{print $2}')
+
+    # 关键节点：推进到 Deployment 或 Done
+    HARD=false
+    [ "$PHASE" = "Deployment" ] && HARD=true
+    [ "$CHANGE_STATUS" = "done" ] && HARD=true
+    [ "$HARD" = false ] && continue
+
+    # 仅在“准备交付”信号出现时触发
+    case "$PHASE" in
+      Testing|Deployment) ;;
+      *) continue ;;
+    esac
+    if [ "$RUN_STATUS" != "wait_confirm" ] && [ "$CHANGE_STATUS" != "done" ]; then
+      continue
+    fi
+
+    # W16（硬拦截）：test_report.md 证据与结论可判定
+    TEST_REPORT="${VERSION_DIR}test_report.md"
+    TEST_REPORT_CONTENT=$(git show ":$TEST_REPORT" 2>/dev/null || true)
+    if [ -z "$TEST_REPORT_CONTENT" ]; then
+      echo "❌ [W16 硬拦截] 关键节点提交被阻止：${TEST_REPORT} 不存在或为空"
+      exit 1
+    fi
+
+    W16_FAIL=false
+
+    HAS_CMD_BLOCK=$(echo "$TEST_REPORT_CONTENT" | awk '
+      /```(bash|sh)[ \t]*$/{in_block=1; next}
+      in_block && /```/{in_block=0; next}
+      in_block{
+        line=$0
+        gsub(/^[ \t-]+/, "", line)
+        gsub(/[ \t]+$/, "", line)
+        if(line!="" && line!="..." && line !~ /^<[^>]+>$/) {print 1; exit}
+      }
+    ')
+
+    HAS_EVID_LINE=$(echo "$TEST_REPORT_CONTENT" | grep -nE '^(\*\*证据\*\*：|证据：|证据链接：|- 完整报告链接：).+' 2>/dev/null \
+      | grep -vF '命令输出/日志/截图链接（如适用）' \
+      | grep -vE '\.\.\.|<[^>]+>' | head -1 || true)
+
+    HAS_CR_EVID=$(echo "$TEST_REPORT_CONTENT" | awk -F'|' '
+      $0 ~ /^\\|[ \t]*CR-[0-9]{8}-[0-9]{3}[ \t]*\\|/ {
+        gsub(/^[ \t]+|[ \t]+$/, "", $5);
+        gsub(/^[ \t]+|[ \t]+$/, "", $6);
+        if ($6 == "通过" && $5 != "" && $5 != "..." && $5 !~ /^<[^>]+>$/) {print 1; exit}
+      }
+    ')
+
+    if [ -z "$HAS_CMD_BLOCK" ] && [ -z "$HAS_EVID_LINE" ] && [ -z "$HAS_CR_EVID" ]; then
+      echo "❌ [W16 硬拦截] test_report.md 未找到有效证据：请补充命令块/证据链接/CR验证证据表（至少满足其一）"
+      W16_FAIL=true
+    fi
+
+    CONCLUSION=$(echo "$TEST_REPORT_CONTENT" | grep -E '^-[[:space:]]*整体结论[：:]' \
+      | sed 's/^-[[:space:]]*整体结论[：:][[:space:]]*//;s/[[:space:]]*$//' \
+      | head -1 || true)
+    if [ -z "$CONCLUSION" ]; then
+      echo "❌ [W16 硬拦截] test_report.md 的\"整体结论\"为空，关键节点提交前必须填写"
+      W16_FAIL=true
+    elif ! echo "$CONCLUSION" | grep -qE '^(通过|不通过)$'; then
+      echo "❌ [W16 硬拦截] test_report.md 的\"整体结论\"必须为\"通过\"或\"不通过\"（当前值: ${CONCLUSION}）"
+      W16_FAIL=true
+    elif [ "$CONCLUSION" = "不通过" ]; then
+      echo "❌ [W16 硬拦截] test_report.md 的整体结论为\"不通过\"，禁止进入确认/交付"
+      W16_FAIL=true
+    fi
+
+    [ "$W16_FAIL" = true ] && exit 1
+
+    # W17（硬拦截）：plan.md 每个任务必须提供可复现命令
+    PLAN="${VERSION_DIR}plan.md"
+    PLAN_CONTENT=$(git show ":$PLAN" 2>/dev/null || true)
+    [ -z "$PLAN_CONTENT" ] && continue
+
+    TASK_COUNT=$(echo "$PLAN_CONTENT" | grep -cE '^### (T[0-9]|任务)' || echo 0)
+    [ "$TASK_COUNT" -eq 0 ] && continue
+
+    MISSING=$(echo "$PLAN_CONTENT" | awk '
+      function flush(){
+        if(task_title!="" && has_cmd==0) {
+          missing++
+          print "  - " task_title
+        }
+      }
+      /^### (T[0-9]+|任务)/{
+        flush()
+        task_title=$0
+        has_cmd=0
+        in_verify=0
+        next
+      }
+      /验证方式/ {in_verify=1}
+      in_verify && /^- *命令：/{
+        if(match($0, /`[^`]+`/)) {
+          cmd=substr($0, RSTART+1, RLENGTH-2)
+          gsub(/^[ \t]+|[ \t]+$/, "", cmd)
+          if(cmd!="" && cmd!="..." && cmd !~ /^<[^>]+>$/) has_cmd=1
+        }
+      }
+      END{
+        flush()
+      }
+    ')
+
+    if [ -n "$MISSING" ]; then
+      echo "❌ [W17 硬拦截] 关键节点提交被阻止：plan.md 存在缺少验证命令的任务（请在\"验证方式\"中补充可复现命令）"
+      echo "$MISSING" | head -20
+      exit 1
+    fi
+  done
+fi
+
+# --- Git-Hook 5: git config 防篡改 ---
+if echo "$STAGED" | grep -qE '(^|/)\.gitconfig$|(^|/)\.gitmodules$'; then
+  echo "❌ 检测到 git 配置文件变更，需人工确认"
+  exit 1
+fi
+
+exit 0

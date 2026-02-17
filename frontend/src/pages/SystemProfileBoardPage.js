@@ -21,21 +21,18 @@ import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
+import {
+  PROFILE_FIELD_LABELS_V21,
+  buildEmptyV21ProfileFormValues,
+  parseModuleStructureDraft,
+  parseV21ProfileFormValues,
+  stringifyModuleStructureDraft,
+} from '../utils/systemProfileV21';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
 
-const fieldLabels = {
-  in_scope: '系统边界（做什么）',
-  out_of_scope: '系统不做什么',
-  core_functions: '核心功能',
-  business_goals: '业务目标',
-  business_objects: '业务对象',
-  integration_points: '主要集成点',
-  key_constraints: '关键约束',
-};
-
-const emptyFormValues = Object.keys(fieldLabels).reduce((acc, key) => ({ ...acc, [key]: '' }), {});
+const emptyFormValues = buildEmptyV21ProfileFormValues();
 
 const parseErrorMessage = (error, fallback) => {
   const responseData = error?.response?.data;
@@ -55,7 +52,6 @@ const SystemProfileBoardPage = () => {
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [publishingProfile, setPublishingProfile] = useState(false);
-  const [retryingSuggestions, setRetryingSuggestions] = useState(false);
 
   const [profileMeta, setProfileMeta] = useState({
     status: 'draft',
@@ -63,10 +59,6 @@ const SystemProfileBoardPage = () => {
     updated_at: '',
     is_stale: false,
     system_id: '',
-    field_sources: {},
-    ai_suggestions: {},
-    ai_suggestions_updated_at: '',
-    ai_suggestions_job: null,
   });
 
   const [completenessInfo, setCompletenessInfo] = useState(null);
@@ -157,17 +149,17 @@ const SystemProfileBoardPage = () => {
 
       if (payload) {
         const fields = typeof payload.fields === 'object' && payload.fields ? payload.fields : {};
-        form.setFieldsValue({ ...emptyFormValues, ...fields });
+        form.setFieldsValue({
+          ...emptyFormValues,
+          ...fields,
+          module_structure: stringifyModuleStructureDraft(fields.module_structure),
+        });
         setProfileMeta({
           status: payload.status || 'draft',
           pending_fields: payload.pending_fields || [],
           updated_at: payload.updated_at || payload.created_at || '',
           is_stale: Boolean(payload.is_stale),
           system_id: String(payload.system_id || selectedSystem?.id || ''),
-          field_sources: payload.field_sources || {},
-          ai_suggestions: payload.ai_suggestions || {},
-          ai_suggestions_updated_at: payload.ai_suggestions_updated_at || '',
-          ai_suggestions_job: payload.ai_suggestions_job || null,
         });
       } else {
         form.setFieldsValue(emptyFormValues);
@@ -177,10 +169,6 @@ const SystemProfileBoardPage = () => {
           updated_at: '',
           is_stale: false,
           system_id: String(selectedSystem?.id || ''),
-          field_sources: {},
-          ai_suggestions: {},
-          ai_suggestions_updated_at: '',
-          ai_suggestions_job: null,
         });
       }
 
@@ -235,20 +223,20 @@ const SystemProfileBoardPage = () => {
       return;
     }
 
+    const values = form.getFieldsValue(true);
+    const parsed = parseV21ProfileFormValues(values);
+    if (!parsed.ok) {
+      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
+      return;
+    }
+
     try {
-      const values = form.getFieldsValue(true);
       setSavingProfile(true);
-      const currentValues = form.getFieldsValue(true);
-      const mergedFieldSources = { ...(profileMeta.field_sources || {}) };
-      Object.keys(currentValues || {}).forEach((fieldKey) => {
-        mergedFieldSources[fieldKey] = 'manual';
-      });
 
       await axios.put(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}`, {
         system_id: profileMeta.system_id || selectedSystem?.id || '',
-        fields: values,
+        fields: parsed.value,
         evidence_refs: [],
-        field_sources: mergedFieldSources,
       });
       message.success('系统画像草稿已保存');
       await loadProfileDetail(selectedSystemName);
@@ -265,9 +253,18 @@ const SystemProfileBoardPage = () => {
       return;
     }
 
-    try {
-      await form.validateFields(['in_scope', 'core_functions']);
-    } catch (_error) {
+    const values = form.getFieldsValue(true);
+    const parsed = parseV21ProfileFormValues(values);
+    if (!parsed.ok) {
+      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
+      return;
+    }
+    if (!parsed.value.system_scope) {
+      message.warning('请先填写系统定位与边界');
+      return;
+    }
+    if (!Array.isArray(parsed.value.module_structure) || parsed.value.module_structure.length === 0) {
+      message.warning('请先填写功能模块结构（至少包含一个模块）');
       return;
     }
 
@@ -283,84 +280,18 @@ const SystemProfileBoardPage = () => {
     }
   };
 
-  const handleRetrySuggestions = async () => {
-    if (!selectedSystem?.id) {
-      message.warning('请选择有效系统');
+  const handleFormatModuleStructure = () => {
+    const currentText = form.getFieldValue('module_structure');
+    const parsed = parseModuleStructureDraft(currentText);
+    if (!parsed.ok) {
+      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
       return;
     }
-
-    setRetryingSuggestions(true);
     try {
-      const response = await axios.post(
-        `/api/v1/system-profiles/${encodeURIComponent(selectedSystem.id)}/ai-suggestions/retry`
-      );
-      const result = response.data || {};
-      message.success(result.message || 'AI建议生成任务已受理');
-      await loadProfileDetail(selectedSystemName);
-    } catch (error) {
-      message.error(parseErrorMessage(error, '触发AI建议重试失败'));
-    } finally {
-      setRetryingSuggestions(false);
-    }
-  };
-
-  const handleApplySuggestion = async (fieldKey) => {
-    if (!fieldKey) {
-      return;
-    }
-    const suggestions = profileMeta.ai_suggestions || {};
-    const suggestedValue = suggestions[fieldKey];
-    if (typeof suggestedValue !== 'string') {
-      return;
-    }
-
-    const currentValues = form.getFieldsValue(true);
-    const nextValues = {
-      ...currentValues,
-      [fieldKey]: suggestedValue,
-    };
-    const mergedFieldSources = { ...(profileMeta.field_sources || {}), [fieldKey]: 'ai' };
-
-    setSavingProfile(true);
-    try {
-      await axios.put(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}`, {
-        system_id: profileMeta.system_id || selectedSystem?.id || '',
-        fields: nextValues,
-        evidence_refs: [],
-        field_sources: mergedFieldSources,
-      });
-      form.setFieldValue(fieldKey, suggestedValue);
-      message.success('已采纳AI建议');
-      await loadProfileDetail(selectedSystemName);
-    } catch (error) {
-      message.error(parseErrorMessage(error, '采纳AI建议失败'));
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const handleIgnoreSuggestion = async (fieldKey) => {
-    if (!fieldKey) {
-      return;
-    }
-
-    const currentValues = form.getFieldsValue(true);
-    const mergedFieldSources = { ...(profileMeta.field_sources || {}), [fieldKey]: 'manual' };
-
-    setSavingProfile(true);
-    try {
-      await axios.put(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}`, {
-        system_id: profileMeta.system_id || selectedSystem?.id || '',
-        fields: currentValues,
-        evidence_refs: [],
-        field_sources: mergedFieldSources,
-      });
-      message.success('已忽略该AI建议');
-      await loadProfileDetail(selectedSystemName);
-    } catch (error) {
-      message.error(parseErrorMessage(error, '忽略AI建议失败'));
-    } finally {
-      setSavingProfile(false);
+      form.setFieldValue('module_structure', stringifyModuleStructureDraft(parsed.value));
+      message.success('JSON 已格式化');
+    } catch (_error) {
+      message.error('格式化失败');
     }
   };
 
@@ -377,7 +308,6 @@ const SystemProfileBoardPage = () => {
     <div>
       <PageHeader
         title="系统画像 / 信息看板"
-        subtitle="配置管理 → 系统画像 → 信息看板（可编辑7字段、完整度分析、保存草稿/发布）"
       />
 
       {responsibleSystems.length === 0 ? (
@@ -405,9 +335,8 @@ const SystemProfileBoardPage = () => {
 
               <Descriptions
                 size="small"
-                column={3}
+                column={2}
                 items={[
-                  { key: 'id', label: '系统ID', children: selectedSystem?.id || profileMeta.system_id || '-' },
                   { key: 'status', label: '系统状态', children: selectedSystem?.status || '-' },
                   { key: 'score', label: '完整度', children: `${totalScore} / 100` },
                 ]}
@@ -437,34 +366,6 @@ const SystemProfileBoardPage = () => {
                   description="仅系统主责或B角 PM 可执行保存草稿；发布仅主责可执行。"
                 />
               )}
-
-              {canWrite && (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="AI建议"
-                  description={(
-                    <Space direction="vertical" size={4}>
-                      <Text type="secondary">
-                        建议更新时间：{formatDateTime(profileMeta.ai_suggestions_updated_at) || '暂无'}
-                      </Text>
-                      <Text type="secondary">
-                        任务状态：{profileMeta.ai_suggestions_job?.status || '未触发'}
-                      </Text>
-                      <Space>
-                        <Button
-                          size="small"
-                          icon={<ReloadOutlined />}
-                          loading={retryingSuggestions}
-                          onClick={handleRetrySuggestions}
-                        >
-                          重试生成AI建议
-                        </Button>
-                      </Space>
-                    </Space>
-                  )}
-                />
-              )}
             </Space>
           </Card>
 
@@ -479,50 +380,39 @@ const SystemProfileBoardPage = () => {
           >
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               <Form form={form} layout="vertical" initialValues={emptyFormValues} disabled={!canWrite}>
-                {Object.entries(fieldLabels).map(([key, label]) => (
+                {Object.entries(PROFILE_FIELD_LABELS_V21).map(([key, label]) => (
                   <div key={key}>
                     <Form.Item
                       name={key}
                       label={label}
-                      rules={[
-                        key === 'in_scope' || key === 'core_functions'
-                          ? { required: true, message: `请填写${label}` }
-                          : {},
-                      ]}
+                      rules={key === 'module_structure'
+                        ? [
+                          {
+                            validator: (_rule, value) => {
+                              const parsed = parseModuleStructureDraft(value);
+                              if (parsed.ok) {
+                                return Promise.resolve();
+                              }
+                              return Promise.reject(new Error('请输入合法 JSON 数组'));
+                            },
+                          },
+                        ]
+                        : undefined}
                     >
-                      <TextArea rows={2} placeholder={`请输入${label}`} />
+                      <TextArea
+                        rows={key === 'module_structure' ? 10 : 3}
+                        placeholder={key === 'module_structure'
+                          ? '请输入 JSON 数组，例如：[{"module_name":"用户管理","functions":[{"name":"用户注册","desc":"新用户注册流程"}]}]'
+                          : `请输入${label}`}
+                      />
                     </Form.Item>
-                    {(() => {
-                      const suggestions = profileMeta.ai_suggestions || {};
-                      const suggestionText = String(suggestions[key] || '').trim();
-                      if (!suggestionText) {
-                        return null;
-                      }
-                      const currentSource = String((profileMeta.field_sources || {})[key] || 'manual');
-                      return (
-                        <Alert
-                          type="info"
-                          showIcon
-                          style={{ marginBottom: 12 }}
-                          message={`AI建议（当前来源：${currentSource}）`}
-                          description={(
-                            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                              <Text>{suggestionText}</Text>
-                              {canWrite && (
-                                <Space>
-                                  <Button size="small" type="primary" onClick={() => handleApplySuggestion(key)}>
-                                    采纳
-                                  </Button>
-                                  <Button size="small" onClick={() => handleIgnoreSuggestion(key)}>
-                                    忽略
-                                  </Button>
-                                </Space>
-                              )}
-                            </Space>
-                          )}
-                        />
-                      );
-                    })()}
+                    {key === 'module_structure' && canWrite && (
+                      <Space style={{ marginBottom: 12 }}>
+                        <Button size="small" onClick={handleFormatModuleStructure}>
+                          一键格式化
+                        </Button>
+                      </Space>
+                    )}
                   </div>
                 ))}
               </Form>

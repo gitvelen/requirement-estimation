@@ -4,11 +4,11 @@ import {
   Button,
   Card,
   Empty,
-  Menu,
   Select,
   Space,
   Spin,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd';
@@ -30,32 +30,12 @@ const PAGE_OPTIONS = [
   { key: 'flow', label: '流程健康' },
 ];
 
-const PERSPECTIVE_OPTIONS = [
-  { label: '管理层（executive）', value: 'executive' },
-  { label: '负责人（owner）', value: 'owner' },
-  { label: '专家（expert）', value: 'expert' },
-];
-
 const TIME_RANGE_OPTIONS = [
   { label: '最近7天', value: 'last_7d' },
   { label: '最近30天', value: 'last_30d' },
   { label: '本月', value: 'this_month' },
   { label: '上月', value: 'last_month' },
 ];
-
-const parseBoolean = (value) => {
-  if (value === undefined || value === null || value === '') {
-    return undefined;
-  }
-  const text = String(value).toLowerCase();
-  if (['1', 'true', 'yes', 'y'].includes(text)) {
-    return true;
-  }
-  if (['0', 'false', 'no', 'n'].includes(text)) {
-    return false;
-  }
-  return undefined;
-};
 
 const resolveDefaultPerspective = ({ isManager, isExpert }) => {
   if (isManager) {
@@ -81,9 +61,6 @@ const mapDrilldownToTaskQuery = (filters) => {
   }
   if (filters?.end_at) {
     params.set('end_at', String(filters.end_at));
-  }
-  if (typeof filters?.ai_involved === 'boolean') {
-    params.set('ai_involved', String(filters.ai_involved));
   }
 
   if (filters?.system_id) {
@@ -130,7 +107,7 @@ const EfficiencyDashboardPage = () => {
   const { isManager, isExpert } = usePermission();
   const { user } = useAuth();
 
-  const defaultPerspective = useMemo(
+  const perspective = useMemo(
     () => resolveDefaultPerspective({ isManager, isExpert }),
     [isManager, isExpert]
   );
@@ -139,15 +116,7 @@ const EfficiencyDashboardPage = () => {
     const raw = searchParams.get('page');
     return PAGE_OPTIONS.some((item) => item.key === raw) ? raw : 'overview';
   });
-  const [perspective, setPerspective] = useState(() => {
-    const raw = searchParams.get('perspective');
-    return PERSPECTIVE_OPTIONS.some((item) => item.value === raw) ? raw : defaultPerspective;
-  });
   const [timeRange, setTimeRange] = useState(() => searchParams.get('time_range') || 'last_30d');
-  const [aiInvolved, setAiInvolved] = useState(() => {
-    const parsed = parseBoolean(searchParams.get('ai_involved'));
-    return parsed === undefined ? 'all' : parsed;
-  });
 
   const [loading, setLoading] = useState(false);
   const [widgets, setWidgets] = useState([]);
@@ -157,19 +126,15 @@ const EfficiencyDashboardPage = () => {
     (next) => {
       const params = new URLSearchParams();
       params.set('page', next.pageKey);
-      params.set('perspective', next.perspective);
       params.set('time_range', next.timeRange);
-      if (typeof next.aiInvolved === 'boolean') {
-        params.set('ai_involved', String(next.aiInvolved));
-      }
       setSearchParams(params, { replace: true });
     },
     [setSearchParams]
   );
 
   useEffect(() => {
-    syncQuery({ pageKey, perspective, timeRange, aiInvolved });
-  }, [pageKey, perspective, timeRange, aiInvolved, syncQuery]);
+    syncQuery({ pageKey, timeRange });
+  }, [pageKey, timeRange, syncQuery]);
 
   const fetchDashboard = useCallback(async () => {
     setLoading(true);
@@ -178,10 +143,6 @@ const EfficiencyDashboardPage = () => {
       const filters = {
         time_range: timeRange,
       };
-
-      if (typeof aiInvolved === 'boolean') {
-        filters.ai_involved = aiInvolved;
-      }
 
       if (perspective === 'owner' && isManager && user?.id) {
         filters.owner_id = user.id;
@@ -205,7 +166,7 @@ const EfficiencyDashboardPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [pageKey, perspective, timeRange, aiInvolved, isManager, isExpert, user]);
+  }, [pageKey, perspective, timeRange, isManager, isExpert, user]);
 
   useEffect(() => {
     fetchDashboard();
@@ -215,7 +176,6 @@ const EfficiencyDashboardPage = () => {
     const queryString = mapDrilldownToTaskQuery(filters);
     navigate(`/tasks?${queryString}`);
   };
-
 
   const renderItemsTable = (widget, items) => {
     if (!items.length) {
@@ -271,111 +231,89 @@ const EfficiencyDashboardPage = () => {
     );
   };
 
-
   return (
     <div>
-      <PageHeader title="效能看板" subtitle="统一口径展示趋势、排行与任务下钻" />
-      <div className="dashboard-layout">
-        <Card className="dashboard-side-card" bodyStyle={{ padding: 8 }}>
-          <Menu
-            mode="inline"
-            selectedKeys={[pageKey]}
+      <PageHeader title="效能看板" />
+
+      <Card style={{ marginBottom: 12 }}>
+        <div className="dashboard-toolbar">
+          <Tabs
+            className="dashboard-top-tabs"
+            activeKey={pageKey}
+            onChange={setPageKey}
             items={PAGE_OPTIONS}
-            onClick={(event) => setPageKey(event.key)}
           />
-        </Card>
 
-        <div className="dashboard-main">
-          <Card style={{ marginBottom: 12 }}>
-            <Space wrap>
-              <Text strong>视角</Text>
-              <Select
-                value={perspective}
-                style={{ width: 220 }}
-                options={PERSPECTIVE_OPTIONS}
-                onChange={setPerspective}
-              />
-
-              <Text strong>时间范围</Text>
-              <Select
-                value={timeRange}
-                style={{ width: 160 }}
-                options={TIME_RANGE_OPTIONS}
-                onChange={setTimeRange}
-              />
-
-              <Text strong>AI参与</Text>
-              <Select
-                value={aiInvolved}
-                style={{ width: 140 }}
-                options={[
-                  { label: '全部', value: 'all' },
-                  { label: '仅AI参与', value: true },
-                  { label: '仅非AI参与', value: false },
-                ]}
-                onChange={setAiInvolved}
-              />
-
-              <Button icon={<ReloadOutlined />} onClick={fetchDashboard}>
-                刷新
-              </Button>
-            </Space>
-          </Card>
-
-          {errorText && (
-            <Alert
-              type="error"
-              showIcon
-              message="看板加载失败"
-              description={errorText}
-              style={{ marginBottom: 12 }}
+          <Space wrap>
+            <Text strong>时间范围</Text>
+            <Select
+              value={timeRange}
+              style={{ width: 160 }}
+              options={TIME_RANGE_OPTIONS}
+              onChange={setTimeRange}
             />
-          )}
-
-          <Spin spinning={loading}>
-            <Space direction="vertical" style={{ width: '100%' }} size={12}>
-              {widgets.map((widget) => {
-                  const items = Array.isArray(widget?.data?.items) ? widget.data.items : [];
-                  const sampleSize = Number(widget?.sample_size || 0);
-                  const showSampleHint = sampleSize > 0 && sampleSize < 10;
-
-                  return (
-                    <Card
-                      key={widget.widget_id}
-                      title={widget.title || widget.widget_id}
-                      extra={(
-                        <Space>
-                          <Tag color="blue">样本量 {sampleSize}</Tag>
-                          <Button
-                            type="link"
-                            size="small"
-                            onClick={() => handleWidgetDrilldown(widget.drilldown_filters || {})}
-                          >
-                            查看明细
-                          </Button>
-                        </Space>
-                      )}
-                    >
-                      {showSampleHint && (
-                        <Alert
-                          type="warning"
-                          showIcon
-                          message="样本较少，仅供参考"
-                          style={{ marginBottom: 12 }}
-                        />
-                      )}
-                      {items.length ? renderItemsTable(widget, items) : renderWidgetSummary(widget.data || {})}
-                    </Card>
-                  );
-                })}
-                {!loading && widgets.length === 0 && (
-                  <Card>
-                    <Empty description="暂无看板数据，请调整筛选后重试" />
-                  </Card>
-                )}
-              </Space>
-          </Spin>
+            <Button icon={<ReloadOutlined />} onClick={fetchDashboard}>
+              刷新
+            </Button>
+          </Space>
         </div>
+      </Card>
+
+      {errorText && (
+        <Alert
+          type="error"
+          showIcon
+          message="看板加载失败"
+          description={errorText}
+          style={{ marginBottom: 12 }}
+        />
+      )}
+
+      <div className="dashboard-main">
+        <Spin spinning={loading}>
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            {widgets.map((widget) => {
+              const items = Array.isArray(widget?.data?.items) ? widget.data.items : [];
+              const sampleSize = Number(widget?.sample_size || 0);
+              const showSampleHint = sampleSize > 0 && sampleSize < 10;
+
+              return (
+                <Card
+                  key={widget.widget_id}
+                  title={widget.title || widget.widget_id}
+                  extra={(
+                    <Space>
+                      <Tag color="blue">样本量 {sampleSize}</Tag>
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => handleWidgetDrilldown(widget.drilldown_filters || {})}
+                      >
+                        查看明细
+                      </Button>
+                    </Space>
+                  )}
+                >
+                  {showSampleHint && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="样本较少，仅供参考"
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  {items.length ? renderItemsTable(widget, items) : renderWidgetSummary(widget.data || {})}
+                </Card>
+              );
+            })}
+
+            {!loading && widgets.length === 0 && (
+              <Card>
+                <Empty description="暂无看板数据，请调整筛选后重试" />
+              </Card>
+            )}
+          </Space>
+        </Spin>
       </div>
     </div>
   );

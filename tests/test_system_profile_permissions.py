@@ -73,21 +73,24 @@ def test_system_profile_write_requires_owner(client, monkeypatch):
 
     denied = client.put(
         "/api/v1/system-profiles/HOP",
-        json={"fields": {"core_functions": "开户"}, "evidence_refs": []},
+        json={"fields": {"system_scope": "账户领域"}, "evidence_refs": []},
         headers={"Authorization": f"Bearer {other_token}", "X-Request-ID": "req_profile_denied"},
     )
     assert denied.status_code == 403
     denied_payload = denied.json()
-    assert denied_payload.get("error_code") == "AUTH_001"
+    assert denied_payload.get("error_code") == "permission_denied"
     assert denied_payload.get("request_id") == "req_profile_denied"
 
     allowed = client.put(
         "/api/v1/system-profiles/HOP",
-        json={"system_id": "sys_hop", "fields": {"core_functions": "开户"}, "evidence_refs": []},
+        json={"system_id": "sys_hop", "fields": {"system_scope": "账户领域"}, "evidence_refs": []},
         headers={"Authorization": f"Bearer {owner_token}"},
     )
     assert allowed.status_code == 200
-    assert allowed.json().get("data", {}).get("system_name") == "HOP"
+    allowed_data = allowed.json().get("data", {})
+    assert allowed_data.get("system_name") == "HOP"
+    fields = allowed_data.get("fields") or {}
+    assert set(fields.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
 
 
 def test_system_profile_write_rejects_missing_owner_config(client, monkeypatch):
@@ -110,19 +113,19 @@ def test_system_profile_write_rejects_missing_owner_config(client, monkeypatch):
 
     response = client.put(
         "/api/v1/system-profiles/NO_OWNER",
-        json={"system_id": "sys_no_owner", "fields": {"core_functions": "测试"}, "evidence_refs": []},
+        json={"system_id": "sys_no_owner", "fields": {"system_scope": "测试范围"}, "evidence_refs": []},
         headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_profile_no_owner"},
     )
 
     assert response.status_code == 403
     payload = response.json()
-    assert payload.get("error_code") == "AUTH_001"
+    assert payload.get("error_code") == "permission_denied"
     assert payload.get("request_id") == "req_profile_no_owner"
     assert "未配置主责" in str(payload.get("details", {}).get("reason", ""))
 
 
 
-def test_system_profile_admin_cannot_write(client, monkeypatch):
+def test_system_profile_admin_can_write(client, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
 
     owner = _seed_user("owner_admin_case", "owner123", ["manager"])
@@ -144,14 +147,32 @@ def test_system_profile_admin_cannot_write(client, monkeypatch):
 
     response = client.put(
         "/api/v1/system-profiles/HOP",
-        json={"system_id": "sys_hop", "fields": {"core_functions": "开户"}, "evidence_refs": []},
+        json={"system_id": "sys_hop", "fields": {"system_scope": "全局管理"}, "evidence_refs": []},
         headers={"Authorization": f"Bearer {admin_token}", "X-Request-ID": "req_profile_admin_write"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 200
     payload = response.json()
-    assert payload.get("error_code") == "AUTH_001"
-    assert payload.get("request_id") == "req_profile_admin_write"
+    assert payload.get("code") == 200
+    assert payload.get("data", {}).get("system_name") == "HOP"
+
+
+def test_system_profile_write_rejects_unknown_system(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    manager = _seed_user("manager_unknown_system", "manager123", ["manager"])
+    token = _login(client, "manager_unknown_system", "manager123")
+
+    response = client.put(
+        "/api/v1/system-profiles/UNKNOWN_SYSTEM",
+        json={"fields": {"system_scope": "测试"}, "evidence_refs": []},
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_profile_unknown_system"},
+    )
+
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload.get("error_code") == "system_not_found"
+    assert payload.get("request_id") == "req_profile_unknown_system"
 
 
 def test_system_profile_completeness_api_formula(client, monkeypatch):
@@ -175,7 +196,11 @@ def test_system_profile_completeness_api_formula(client, monkeypatch):
     service = system_profile_service.get_system_profile_service()
     service.upsert_profile(
         "HOP",
-        {"system_id": "sys_hop", "fields": {"core_functions": "开户"}, "evidence_refs": []},
+        {
+            "system_id": "sys_hop",
+            "fields": {"system_scope": "账户域", "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}]},
+            "evidence_refs": [],
+        },
         actor=manager,
     )
     service.mark_code_scan_ingested(

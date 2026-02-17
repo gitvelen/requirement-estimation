@@ -28,11 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 PROFILE_FIELDS = [
-    "in_scope",
-    "out_of_scope",
-    "core_functions",
-    "business_goals",
-    "business_objects",
+    "system_scope",
+    "module_structure",
     "integration_points",
     "key_constraints",
 ]
@@ -265,7 +262,7 @@ class ProfileSummaryService:
         return joined[:12000]
 
     def _call_llm(self, *, system_id: str, system_name: str, context: str) -> Dict[str, str]:
-        prompt = f"""请基于以下材料，为系统画像生成7个字段的候选建议（不要求完美，缺信息可留空字符串）。
+        prompt = f"""请基于以下材料，为系统画像生成4个字段的候选建议（不要求完美，缺信息可留空字符串）。
 
 系统：{system_name}（system_id={system_id}）
 
@@ -274,11 +271,8 @@ class ProfileSummaryService:
 
 请只返回JSON（不要解释），格式如下：
 {{
-  "in_scope": "",
-  "out_of_scope": "",
-  "core_functions": "",
-  "business_goals": "",
-  "business_objects": "",
+  "system_scope": "",
+  "module_structure": [],
   "integration_points": "",
   "key_constraints": ""
 }}
@@ -313,4 +307,3 @@ def get_profile_summary_service() -> ProfileSummaryService:
     if _profile_summary_service is None:
         _profile_summary_service = ProfileSummaryService()
     return _profile_summary_service
-

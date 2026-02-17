@@ -141,7 +141,6 @@ const SystemListConfigPage = () => {
     <div style={{ padding: '24px' }}>
       <PageHeader
         title="系统清单配置"
-        subtitle="统一维护标准主系统清单与子系统映射关系"
         extra={(
           <Space>
             <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>

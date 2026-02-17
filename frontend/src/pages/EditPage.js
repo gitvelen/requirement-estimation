@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Row, Col, Statistic, Form, InputNumber, Popover, Checkbox, AutoComplete, Select, Tooltip } from 'antd';
-import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined } from '@ant-design/icons';
+import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm, Modal, Input, Row, Col, Form, InputNumber, Popover, Checkbox, AutoComplete, Select, Dropdown } from 'antd';
+import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined, DownOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import ExpandableText from '../components/ExpandableText';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const { TextArea } = Input;
 
 const EditPage = () => {
@@ -37,7 +37,6 @@ const EditPage = () => {
   ]);
   const [renameVisible, setRenameVisible] = useState(false);
   const [newSystemName, setNewSystemName] = useState('');
-  const [systemCompletenessMap, setSystemCompletenessMap] = useState({});
 
   const [addSystemForm] = Form.useForm();
 
@@ -99,46 +98,6 @@ const EditPage = () => {
     const uniq = Array.from(new Set(merged.map(s => (s || '').trim()).filter(Boolean)));
     setSystemSuggestions(uniq.map(name => ({ value: name })));
   }, [mainSystemNames, aiSystemAnalysis]);
-
-  const resolveCompletenessTagColor = (score) => {
-    if (!Number.isFinite(score)) {
-      return 'default';
-    }
-    if (score < 60) {
-      return 'error';
-    }
-    if (score < 80) {
-      return 'warning';
-    }
-    return 'success';
-  };
-
-  const fetchSystemCompleteness = useCallback(async (systemNames) => {
-    if (!systemNames.length) {
-      setSystemCompletenessMap({});
-      return;
-    }
-
-    const pairs = await Promise.all(
-      systemNames.map(async (systemName) => {
-        try {
-          const response = await axios.get('/api/v1/system-profiles/completeness', {
-            params: { system_name: systemName },
-          });
-          return [systemName, { ...(response.data || {}), unknown: false }];
-        } catch (error) {
-          return [systemName, { unknown: true }];
-        }
-      })
-    );
-
-    setSystemCompletenessMap(Object.fromEntries(pairs));
-  }, []);
-
-  useEffect(() => {
-    const names = Object.keys(systemsData);
-    fetchSystemCompleteness(names);
-  }, [systemsData, fetchSystemCompleteness]);
 
   const normalizeListField = (value) => {
     if (Array.isArray(value)) {
@@ -500,6 +459,76 @@ const EditPage = () => {
     setAddSystemVisible(true);
   };
 
+  const openRebreakdownConfirm = () => {
+    if (confirmed || !currentSystem) {
+      return;
+    }
+    Modal.confirm({
+      title: '确定要重新拆分当前系统吗？',
+      content: '该操作会覆盖当前系统下全部功能点，建议先查看修改历史。',
+      okText: '确定',
+      cancelText: '取消',
+      onOk: handleRebreakdownSystem,
+    });
+  };
+
+  const openDeleteSystemConfirm = () => {
+    if (confirmed || !currentSystem) {
+      return;
+    }
+    Modal.confirm({
+      title: '确定要删除当前系统吗？',
+      content: '该系统下所有功能点将被移除。',
+      okText: '确定',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: handleDeleteSystem,
+    });
+  };
+
+  const systemActionMenuItems = [
+    {
+      key: 'add_system',
+      label: '新增系统',
+      disabled: confirmed || saving,
+    },
+    {
+      key: 'rename_system',
+      label: '重命名系统',
+      disabled: confirmed || !currentSystem,
+    },
+    {
+      key: 'rebreakdown_system',
+      label: '重新拆分当前系统',
+      disabled: confirmed || !currentSystem,
+    },
+    {
+      key: 'delete_system',
+      label: '删除当前系统',
+      danger: true,
+      disabled: confirmed || !currentSystem,
+    },
+  ];
+
+  const handleSystemActionMenuClick = ({ key }) => {
+    if (key === 'add_system') {
+      openAddSystemModal();
+      return;
+    }
+    if (key === 'rename_system') {
+      setNewSystemName(currentSystem);
+      setRenameVisible(true);
+      return;
+    }
+    if (key === 'rebreakdown_system') {
+      openRebreakdownConfirm();
+      return;
+    }
+    if (key === 'delete_system') {
+      openDeleteSystemConfirm();
+    }
+  };
+
   const columns = [
     {
       title: '序号',
@@ -572,44 +601,6 @@ const EditPage = () => {
     columns[4],
   ];
 
-  // 计算统计数据
-  const calculateStats = () => {
-    let totalFeatures = 0;
-    let totalDays = 0;
-
-    Object.values(systemsData).forEach(features => {
-      totalFeatures += features.length;
-      features.forEach(f => {
-        totalDays += f['预估人天'] || 0;
-      });
-    });
-
-    return { totalFeatures, totalDays };
-  };
-
-  const stats = calculateStats();
-
-  const renderSystemTabLabel = (systemName) => {
-    const info = systemCompletenessMap[systemName] || {};
-    const score = Number(info.completeness_score);
-    const hasScore = Number.isFinite(score) && !info.unknown;
-    const breakdown = info.breakdown || { code_scan: 0, documents: 0, esb: 0 };
-    const completenessText = hasScore ? `${score}` : '未知';
-    const tooltip = hasScore
-      ? `完整度：${score}（代码${breakdown.code_scan || 0}，文档${breakdown.documents || 0}，ESB${breakdown.esb || 0}）`
-      : '完整度未知';
-
-    return (
-      <Tooltip title={tooltip}>
-        <Space size={6}>
-          <span>{`${systemName} (${systemsData[systemName].length})`}</span>
-          <Tag color={resolveCompletenessTagColor(hasScore ? score : NaN)}>
-            完整度 {completenessText}
-          </Tag>
-        </Space>
-      </Tooltip>
-    );
-  };
 
   if (loading) {
     return <Card loading={true}>加载中...</Card>;
@@ -623,28 +614,12 @@ const EditPage = () => {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks')}>
             返回列表
           </Button>
-          <Title level={4} style={{ margin: 0 }}>
-            功能点编辑
-          </Title>
-          <Tag color={confirmed ? 'success' : 'processing'}>
-            {confirmed ? '已提交' : '编辑中'}
-          </Tag>
         </Space>
       </div>
 
-      {/* 统计信息 */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Statistic title="功能点总数" value={stats.totalFeatures} />
-        </Col>
-        <Col span={6}>
-          <Statistic title="总工作量（人天）" value={stats.totalDays.toFixed(1)} />
-        </Col>
-      </Row>
-
       {/* 操作按钮 */}
       <div style={{ marginBottom: 16 }}>
-        <Space>
+        <Space wrap>
           <Button
             type="primary"
             icon={<PlusOutlined />}
@@ -672,48 +647,22 @@ const EditPage = () => {
           >
             <Button>列设置</Button>
           </Popover>
-          <Button
-            onClick={() => openAddSystemModal()}
-            disabled={confirmed || saving}
-          >
-            新增系统
-          </Button>
-          <Button
-            onClick={() => {
-              setNewSystemName(currentSystem);
-              setRenameVisible(true);
+          <Dropdown
+            menu={{
+              items: systemActionMenuItems,
+              onClick: handleSystemActionMenuClick,
             }}
-            disabled={confirmed || !currentSystem}
+            trigger={['click']}
           >
-            重命名系统
-          </Button>
-          <Popconfirm
-            title="确定要重新拆分当前系统吗？将覆盖该系统下所有功能点（建议先查看修改历史）"
-            onConfirm={handleRebreakdownSystem}
-            okText="确定"
-            cancelText="取消"
-            disabled={confirmed || !currentSystem}
-          >
-            <Button disabled={confirmed || !currentSystem}>
-              重新拆分当前系统
+            <Button>
+              系统操作 <DownOutlined />
             </Button>
-          </Popconfirm>
-          <Popconfirm
-            title="确定要删除当前系统吗？该系统下所有功能点将被移除"
-            onConfirm={handleDeleteSystem}
-            okText="确定"
-            cancelText="取消"
-            disabled={confirmed || !currentSystem}
-          >
-            <Button danger disabled={confirmed || !currentSystem}>
-              删除系统
-            </Button>
-          </Popconfirm>
+          </Dropdown>
           <Button
             icon={<HistoryOutlined />}
             onClick={() => setHistoryVisible(true)}
           >
-            查看修改历史 ({modifications.length})
+            修改历史
           </Button>
           {!confirmed && (
             <Popconfirm
@@ -740,7 +689,7 @@ const EditPage = () => {
         activeKey={currentSystem}
         onChange={setCurrentSystem}
         items={Object.keys(systemsData).map(system => ({
-          label: renderSystemTabLabel(system),
+          label: system,
           key: system,
           children: (
             <Table

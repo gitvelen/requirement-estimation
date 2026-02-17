@@ -27,12 +27,6 @@ import { formatDateTime, toIsoEndOfDay, toIsoStartOfDay } from '../utils/time';
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
-const roleLabels = {
-  admin: '管理员',
-  manager: '项目经理',
-  expert: '专家',
-  viewer: '查看者',
-};
 
 const statusMap = {
   pending: { color: 'default', text: '待处理' },
@@ -295,7 +289,6 @@ const TaskListPage = () => {
 
   const canCreateTask = isManager;
   const canSeeTasks = isAdmin || isManager || isExpert || isViewer;
-  const roleLabel = roleLabels[activeRole] || activeRole || '-';
 
   if (!canSeeTasks) {
     return (
@@ -317,7 +310,6 @@ const TaskListPage = () => {
     <div>
       <PageHeader
         title="任务管理"
-        subtitle={`当前视角：${roleLabel}`}
         extra={(
           <Space>
             {canCreateTask && (

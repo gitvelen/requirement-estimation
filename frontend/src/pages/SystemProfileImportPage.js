@@ -15,7 +15,6 @@ import {
 } from 'antd';
 import {
   CloudUploadOutlined,
-  InboxOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
@@ -346,7 +345,6 @@ const SystemProfileImportPage = () => {
     <div>
       <PageHeader
         title="系统画像 / 知识导入"
-        subtitle="配置管理 → 系统画像 → 知识导入（不展示导入历史/最近任务列表，仅反馈当前操作结果）"
       />
 
       {responsibleSystems.length === 0 ? (
@@ -362,15 +360,6 @@ const SystemProfileImportPage = () => {
                 onChange={handleSystemTabChange}
                 items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
               />
-              <Descriptions
-                size="small"
-                column={3}
-                items={[
-                  { key: 'name', label: '系统', children: selectedSystem?.name || '-' },
-                  { key: 'id', label: 'ID', children: selectedSystem?.id || '-' },
-                  { key: 'status', label: '状态', children: selectedSystem?.status || '-' },
-                ]}
-              />
               {!canWrite && (
                 <Alert
                   type="warning"
@@ -383,7 +372,7 @@ const SystemProfileImportPage = () => {
           </Card>
 
           <Card
-            title="代码扫描（API-001 / API-002）"
+            title="代码扫描"
             extra={(
               <Button
                 size="small"
@@ -396,16 +385,16 @@ const SystemProfileImportPage = () => {
               </Button>
             )}
           >
-            <Space direction="vertical" style={{ width: '100%' }} size={12}>
-              <Space wrap style={{ width: '100%' }}>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Space wrap style={{ width: '100%' }} size={8}>
                 <Input
-                  style={{ width: 360 }}
+                  style={{ width: 360, maxWidth: '100%' }}
                   placeholder="仓库本地路径（可选）"
                   value={scanRepoPath}
                   onChange={(event) => setScanRepoPath(event.target.value)}
                   disabled={!canWrite}
                 />
-                <Upload.Dragger
+                <Upload
                   accept=".zip,.tar,.gz,.tgz"
                   multiple={false}
                   beforeUpload={(file) => {
@@ -415,11 +404,11 @@ const SystemProfileImportPage = () => {
                   fileList={scanArchiveFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
                   onRemove={() => setScanArchiveFiles([])}
                   disabled={!canWrite}
-                  style={{ width: 320 }}
                 >
-                  <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                  <p className="ant-upload-text">上传仓库压缩包（可选）</p>
-                </Upload.Dragger>
+                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>
+                    选择仓库压缩包（可选）
+                  </Button>
+                </Upload>
                 {canWrite && (
                   <Button type="primary" icon={<PlayCircleOutlined />} loading={scanSubmitting} onClick={handleRunScan}>
                     提交扫描
@@ -474,31 +463,33 @@ const SystemProfileImportPage = () => {
             </Space>
           </Card>
 
-          <Card title="ESB导入（API-003）">
-            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Card title="ESB导入">
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
               <TextArea
-                rows={3}
+                rows={2}
                 value={esbMappingJson}
                 onChange={(event) => setEsbMappingJson(event.target.value)}
                 placeholder='可选：mapping_json，例如 {"provider_system":["提供方系统","provider"]}'
                 disabled={!canWrite}
               />
-              <Upload
-                beforeUpload={(file) => {
-                  setEsbFiles([file]);
-                  return false;
-                }}
-                onRemove={() => setEsbFiles([])}
-                fileList={esbFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
-                disabled={!canWrite}
-              >
-                <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择ESB文件（xlsx/csv）</Button>
-              </Upload>
-              {canWrite && (
-                <Button type="primary" loading={esbSubmitting} onClick={handleImportEsb}>
-                  导入ESB
-                </Button>
-              )}
+              <Space wrap size={8}>
+                <Upload
+                  beforeUpload={(file) => {
+                    setEsbFiles([file]);
+                    return false;
+                  }}
+                  onRemove={() => setEsbFiles([])}
+                  fileList={esbFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
+                  disabled={!canWrite}
+                >
+                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择ESB文件（xlsx/csv）</Button>
+                </Upload>
+                {canWrite && (
+                  <Button type="primary" loading={esbSubmitting} onClick={handleImportEsb}>
+                    导入ESB
+                  </Button>
+                )}
+              </Space>
 
               {esbLastResult && (
                 <Alert
@@ -511,11 +502,11 @@ const SystemProfileImportPage = () => {
             </Space>
           </Card>
 
-          <Card title="知识导入（API-011）">
-            <Space direction="vertical" style={{ width: '100%' }} size={12}>
-              <Space wrap>
+          <Card title="知识导入">
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Space wrap size={8}>
                 <Select
-                  style={{ width: 180 }}
+                  style={{ width: 180, maxWidth: '100%' }}
                   value={knowledgeType}
                   onChange={setKnowledgeType}
                   options={[
@@ -525,7 +516,7 @@ const SystemProfileImportPage = () => {
                   disabled={!canWrite}
                 />
                 <Select
-                  style={{ width: 180 }}
+                  style={{ width: 180, maxWidth: '100%' }}
                   value={knowledgeLevel}
                   onChange={setKnowledgeLevel}
                   options={[
@@ -536,23 +527,25 @@ const SystemProfileImportPage = () => {
                 />
               </Space>
 
-              <Upload
-                beforeUpload={(file) => {
-                  setKnowledgeFiles([file]);
-                  return false;
-                }}
-                onRemove={() => setKnowledgeFiles([])}
-                fileList={knowledgeFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
-                disabled={!canWrite}
-              >
-                <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择知识文件</Button>
-              </Upload>
+              <Space wrap size={8}>
+                <Upload
+                  beforeUpload={(file) => {
+                    setKnowledgeFiles([file]);
+                    return false;
+                  }}
+                  onRemove={() => setKnowledgeFiles([])}
+                  fileList={knowledgeFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
+                  disabled={!canWrite}
+                >
+                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择知识文件</Button>
+                </Upload>
 
-              {canWrite && (
-                <Button type="primary" loading={knowledgeSubmitting} onClick={handleImportKnowledge}>
-                  导入知识
-                </Button>
-              )}
+                {canWrite && (
+                  <Button type="primary" loading={knowledgeSubmitting} onClick={handleImportKnowledge}>
+                    导入知识
+                  </Button>
+                )}
+              </Space>
 
               {knowledgeLastResult && (
                 <Alert

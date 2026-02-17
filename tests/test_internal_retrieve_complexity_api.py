@@ -74,7 +74,16 @@ def test_internal_retrieve_system_profile_context(client):
     profile_service = system_profile_service.get_system_profile_service()
     profile_service.upsert_profile(
         "HOP",
-        {"system_id": "sys_hop", "fields": {"core_functions": "开户"}, "evidence_refs": []},
+        {
+            "system_id": "sys_hop",
+            "fields": {
+                "system_scope": "账户系统",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
+                "integration_points": "核心账务",
+                "key_constraints": "高可用",
+            },
+            "evidence_refs": [],
+        },
         actor={"id": "internal_admin", "username": "internal_admin"},
     )
     profile_service.mark_code_scan_ingested(

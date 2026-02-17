@@ -43,10 +43,10 @@ def _seed_admin():
     return admin
 
 
-def _seed_manager(username: str = "manager", password: str = "manager123"):
+def _seed_manager(username: str = "manager", password: str = "manager123", display_name: str = "经理"):
     manager = user_service.create_user_record({
         "username": username,
-        "display_name": "经理",
+        "display_name": display_name,
         "password": password,
         "roles": ["manager"],
     })
@@ -89,6 +89,22 @@ def _build_owner_alias_xlsx() -> bytes:
     ws2 = wb.create_sheet("应用子系统清单")
     ws2.append(["编号", "英文简称", "系统名称", "所属系统"])
     ws2.append([1, "KFC", "开放存", "HOP"])
+
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+def _build_legacy_owner_name_xlsx(owner_name: str) -> bytes:
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "应用系统清单"
+    ws1.append(["系统名称", "英文简称", "状态", "系统负责人"])
+    ws1.append(["NESB", "NESB", "运行中", owner_name])
+
+    ws2 = wb.create_sheet("应用子系统清单")
+    ws2.append(["编号", "英文简称", "系统名称", "所属系统"])
+    ws2.append([1, "NESB_CORE", "企业总线", "NESB"])
 
     bio = BytesIO()
     wb.save(bio)
@@ -182,6 +198,37 @@ def test_system_list_preview_owner_alias_and_auth_error_schema(client, monkeypat
     assert payload.get("error_code") == "AUTH_001"
     assert payload.get("message")
     assert payload.get("request_id") == "req_system_list_auth"
+
+
+def test_system_list_legacy_owner_name_can_resolve_manager_display_name(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    _seed_admin()
+    manager = _seed_manager(display_name="黄洋")
+    token = _login(client, "admin", "admin123")
+
+    excel_bytes = _build_legacy_owner_name_xlsx("黄洋")
+    preview = client.post(
+        "/api/v1/system-list/batch-import",
+        files={"file": ("system_list_legacy_owner.xlsx", excel_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_system_list_legacy_owner"},
+    )
+    assert preview.status_code == 200
+    data = preview.json()["data"]
+    assert data["summary"]["systems_total"] == 1
+    extra = data["systems"][0].get("extra", {})
+    assert extra.get("owner_name") == "黄洋"
+
+    confirm = client.post(
+        "/api/v1/system-list/batch-import/confirm",
+        json={"mode": "replace", "systems": data["systems"], "mappings": data["mappings"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert confirm.status_code == 200
+
+    owner_info = system_routes.resolve_system_owner(system_name="NESB")
+    assert owner_info.get("system_found") is True
+    assert owner_info.get("resolved_owner_id") == manager["id"]
 
 
 def test_system_list_confirm_invalid_mode_returns_syslist_003(client, monkeypatch):

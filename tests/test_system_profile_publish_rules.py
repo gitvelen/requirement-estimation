@@ -77,7 +77,7 @@ def _seed_system(owner, system_id: str = "sys_hop", system_name: str = "HOP"):
     )
 
 
-def test_publish_requires_only_in_scope_and_core_functions(client, monkeypatch):
+def test_publish_allows_v21_four_fields(client, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
 
     owner = _seed_user("owner_publish_ok", "owner123", ["manager"])
@@ -87,7 +87,16 @@ def test_publish_requires_only_in_scope_and_core_functions(client, monkeypatch):
 
     saved = client.put(
         "/api/v1/system-profiles/HOP",
-        json={"system_id": "sys_hop", "fields": {"in_scope": "做A", "core_functions": "开立"}, "evidence_refs": []},
+        json={
+            "system_id": "sys_hop",
+            "fields": {
+                "system_scope": "账户管理系统",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户", "desc": "开户流程"}]}],
+                "integration_points": "核心账务",
+                "key_constraints": "合规",
+            },
+            "evidence_refs": [],
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     assert saved.status_code == 200
@@ -102,7 +111,7 @@ def test_publish_requires_only_in_scope_and_core_functions(client, monkeypatch):
     assert payload.get("data", {}).get("status") == "published"
 
 
-def test_publish_missing_required_fields_returns_profile_003(client, monkeypatch):
+def test_save_rejects_invalid_module_structure(client, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
 
     owner = _seed_user("owner_publish_missing", "owner123", ["manager"])
@@ -110,25 +119,26 @@ def test_publish_missing_required_fields_returns_profile_003(client, monkeypatch
 
     token = _login(client, "owner_publish_missing", "owner123")
 
-    saved = client.put(
+    response = client.put(
         "/api/v1/system-profiles/HOP",
-        json={"system_id": "sys_hop", "fields": {"core_functions": "开立"}, "evidence_refs": []},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert saved.status_code == 200
-
-    published = client.post(
-        "/api/v1/system-profiles/HOP/publish",
+        json={
+            "system_id": "sys_hop",
+            "fields": {
+                "system_scope": "账户管理系统",
+                "module_structure": {"module_name": "账户"},
+            },
+            "evidence_refs": [],
+        },
         headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_profile_publish_missing"},
     )
-    assert published.status_code == 400
-    payload = published.json()
-    assert payload.get("error_code") == "PROFILE_003"
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload.get("error_code") == "invalid_module_structure"
     assert payload.get("request_id") == "req_profile_publish_missing"
-    assert "in_scope" in str(payload.get("message") or "")
+    assert "module_structure" in str(payload.get("message") or "")
 
 
-def test_business_goal_alias_normalized_to_business_goals(client, monkeypatch, tmp_path):
+def test_profile_fields_only_keep_v21_contract(client, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "DEBUG", False)
 
     owner = _seed_user("owner_business_goal", "owner123", ["manager"])
@@ -140,7 +150,14 @@ def test_business_goal_alias_normalized_to_business_goals(client, monkeypatch, t
         "/api/v1/system-profiles/HOP",
         json={
             "system_id": "sys_hop",
-            "fields": {"in_scope": "做A", "core_functions": "开立", "business_goal": "提升效率"},
+            "fields": {
+                "system_scope": "做A",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开立", "desc": "开立账户"}]}],
+                "integration_points": "核心账务",
+                "key_constraints": "高可用",
+                "business_goal": "应被忽略",
+                "core_functions": "应被忽略",
+            },
             "evidence_refs": [],
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -154,15 +171,17 @@ def test_business_goal_alias_normalized_to_business_goals(client, monkeypatch, t
     assert fetched.status_code == 200
     data = fetched.json().get("data") or {}
     fields = data.get("fields") or {}
-    assert fields.get("business_goals") == "提升效率"
+    assert set(fields.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
+    assert fields.get("system_scope") == "做A"
+    assert isinstance(fields.get("module_structure"), list)
+    assert fields.get("module_structure")[0].get("module_name") == "账户"
 
     store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
     with open(store_path, "r", encoding="utf-8") as f:
         stored = json.load(f)
     assert stored and isinstance(stored, list)
     stored_fields = stored[0].get("fields") or {}
-    assert stored_fields.get("business_goals") == "提升效率"
-    assert "business_goal" not in stored_fields
+    assert set(stored_fields.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
 
     published = client.post(
         "/api/v1/system-profiles/HOP/publish",
@@ -176,4 +195,5 @@ def test_business_goal_alias_normalized_to_business_goals(client, monkeypatch, t
     assert isinstance(entries, list)
     inserted = [item for item in entries if item.get("system_name") == "HOP" and item.get("knowledge_type") == "system_profile"]
     assert inserted
-    assert inserted[-1].get("metadata", {}).get("business_goals") == "提升效率"
+    metadata = inserted[-1].get("metadata", {})
+    assert set(metadata.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}

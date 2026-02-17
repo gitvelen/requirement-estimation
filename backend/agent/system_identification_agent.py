@@ -47,8 +47,7 @@ class SystemIdentificationAgent:
         加载标准系统列表
 
         优先级：
-        1. system_list.md (Markdown格式，更易维护)
-        2. system_list.csv (CSV格式，向后兼容)
+        1. data/system_list.csv (CSV格式，系统清单单一数据源)
 
         Markdown格式示例：
         ```markdown
@@ -57,34 +56,8 @@ class SystemIdentificationAgent:
         ```
         """
         system_list = []
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        # 尝试从MD文件加载
-        md_path = os.path.join(base_dir, "system_list.md")
-        if os.path.exists(md_path):
-            try:
-                with open(md_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        # 跳过注释行和空行
-                        if not line or line.startswith('#') or line.startswith('>'):
-                            continue
-                        # 跳过标题行（包含"系统名称"的行）
-                        if '系统名称' in line and '英文简称' in line:
-                            continue
-                        # 解析数据行：系统名称 | 英文简称 | 系统状态 | 系统分类
-                        if '|' in line:
-                            parts = [p.strip() for p in line.split('|')]
-                            if len(parts) >= 1 and parts[0]:
-                                system_list.append(parts[0])
-
-                logger.info(f"从system_list.md加载了{len(system_list)}个系统")
-                return system_list
-            except Exception as e:
-                logger.warning(f"加载system_list.md失败: {e}，尝试加载CSV文件")
-
-        # 回退到CSV文件加载
-        csv_path = os.path.join(base_dir, "system_list.csv")
+        csv_path = os.path.join(settings.REPORT_DIR, "system_list.csv")
         if os.path.exists(csv_path):
             try:
                 with open(csv_path, 'r', encoding='utf-8', newline='') as f:
@@ -109,10 +82,10 @@ class SystemIdentificationAgent:
                             name = str(row[name_idx]).strip() if row[name_idx] is not None else ""
                             if name:
                                 system_list.append(name)
-                logger.info(f"从system_list.csv加载了{len(system_list)}个系统")
+                logger.info(f"从data/system_list.csv加载了{len(system_list)}个系统")
                 return system_list
             except Exception as e:
-                logger.warning(f"加载system_list.csv失败: {e}")
+                logger.warning(f"加载data/system_list.csv失败: {e}")
 
         if not system_list:
             logger.info(f"未找到系统列表文件（MD或CSV），请在前端配置页面添加系统")
@@ -127,8 +100,7 @@ class SystemIdentificationAgent:
             Dict: 子系统名称 -> 主系统名称 的映射
         """
         subsystem_mapping = {}
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        csv_path = os.path.join(base_dir, "subsystem_list.csv")
+        csv_path = os.path.join(settings.REPORT_DIR, "subsystem_list.csv")
 
         if os.path.exists(csv_path):
             try:
@@ -160,17 +132,17 @@ class SystemIdentificationAgent:
                     if main_idx is None:
                         main_idx = 1
 
-                    for row in data_rows:
-                        subsystem = str(row[subsystem_idx]).strip() if subsystem_idx < len(row) and row[subsystem_idx] is not None else ""
-                        main_system = str(row[main_idx]).strip() if main_idx < len(row) and row[main_idx] is not None else ""
-                        if subsystem and main_system:
-                            subsystem_mapping[subsystem] = main_system
+                for row in data_rows:
+                    subsystem = str(row[subsystem_idx]).strip() if subsystem_idx < len(row) and row[subsystem_idx] is not None else ""
+                    main_system = str(row[main_idx]).strip() if main_idx < len(row) and row[main_idx] is not None else ""
+                    if subsystem and main_system:
+                        subsystem_mapping[subsystem] = main_system
 
-                logger.info(f"从subsystem_list.csv加载了{len(subsystem_mapping)}个子系统映射")
+                logger.info(f"从data/subsystem_list.csv加载了{len(subsystem_mapping)}个子系统映射")
             except Exception as e:
-                logger.warning(f"加载subsystem_list.csv失败: {e}")
+                logger.warning(f"加载data/subsystem_list.csv失败: {e}")
         else:
-            logger.info(f"未找到subsystem_list.csv文件，可通过前端配置页面添加映射")
+            logger.info(f"未找到data/subsystem_list.csv文件，可通过前端配置页面添加映射")
 
         return subsystem_mapping
 
@@ -660,23 +632,22 @@ class SystemIdentificationAgent:
 
             content = str(profile.get("content") or "")
             excerpt = " ".join(content.split())[:220]
-            has_structured = any(
-                (metadata.get(k) or "").strip()
-                for k in ("business_goals", "business_goal", "core_functions", "tech_stack", "architecture", "performance")
+            module_structure = metadata.get("module_structure")
+            module_count = len(module_structure) if isinstance(module_structure, list) else 0
+            has_structured = bool(
+                str(metadata.get("system_scope") or "").strip()
+                or module_count > 0
+                or str(metadata.get("integration_points") or "").strip()
+                or str(metadata.get("key_constraints") or "").strip()
             )
 
             title_name = metadata.get("system_name") or profile.get("system_name") or ""
             title_short = metadata.get("system_short_name") or ""
             extra_excerpt = f"   - 内容摘要: {excerpt}\n" if (not has_structured and excerpt) else ""
-            business_goals = metadata.get("business_goals", "")
-            if not str(business_goals or "").strip():
-                business_goals = metadata.get("business_goal", "")
 
             part = f"""【知识{idx}】{title_name} ({title_short})
-   - 业务目标: {business_goals}
-   - 核心功能: {metadata.get('core_functions', '')}
-   - 系统边界(做什么): {metadata.get('in_scope', '')}
-   - 系统不做什么: {metadata.get('out_of_scope', '')}
+   - 系统定位与边界: {metadata.get('system_scope', '')}
+   - 模块结构数量: {module_count}
    - 主要集成点/上下游: {metadata.get('integration_points', '')}
    - 关键约束: {metadata.get('key_constraints', '')}
    - 技术栈: {metadata.get('tech_stack', '')}

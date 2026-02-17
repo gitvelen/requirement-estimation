@@ -406,49 +406,29 @@ const EvaluationPage = () => {
   return (
     <div className="evaluation-page">
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <Card>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Text type="secondary">灰色数值为AI预估，点击可修改。未修改的值将以AI预估作为您的评估结果。</Text>
-            {roundNo > 1 && (
-              <Alert
-                type="warning"
-                message={`第${roundNo}轮仅展示高偏离功能点，共${highDeviationFeatures.length}条`}
-                showIcon
-              />
-            )}
-            {taskInfo && (
-              <Space wrap>
-                <Text>任务：{taskInfo.name || taskInfo.id} ｜ 当前轮次：{roundNo} ｜ 系统：{currentSystem || '-'}</Text>
-                <Tag color={resolveCompletenessTagColor(currentHasScore ? currentScore : NaN)}>
-                  {currentHasScore ? `当前系统完整度 ${currentScore}` : '当前系统完整度未知'}
-                </Tag>
-              </Space>
-            )}
-          </Space>
-        </Card>
-
-
-        <Card title="COSMIC简明规则（只读）">
-          <Collapse
-            defaultActiveKey={[]}
-            items={[
-              {
-                key: 'rule-guide',
-                label: '查看业务语言说明与拆分示例',
-                children: (
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <Paragraph>
-                      细粒度：每个按钮/操作可拆分为独立功能点；中等粒度：一个完整交易流程（输入+校验+处理+返回）作为一个功能点；粗粒度：一个业务模块作为一个功能点。
-                    </Paragraph>
-                    <Paragraph type="secondary">
-                      评估时优先保证“功能边界清晰、输入输出明确”，避免过细拆分导致噪声。
-                    </Paragraph>
-                  </Space>
-                ),
-              },
-            ]}
-          />
-        </Card>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Card title="COSMIC简明规则（只读）" style={{ width: 'min(100%, 520px)' }}>
+            <Collapse
+              defaultActiveKey={[]}
+              items={[
+                {
+                  key: 'rule-guide',
+                  label: '查看业务语言说明与拆分示例',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Paragraph>
+                        细粒度：每个按钮/操作可拆分为独立功能点；中等粒度：一个完整交易流程（输入+校验+处理+返回）作为一个功能点；粗粒度：一个业务模块作为一个功能点。
+                      </Paragraph>
+                      <Paragraph type="secondary">
+                        评估时优先保证“功能边界清晰、输入输出明确”，避免过细拆分导致噪声。
+                      </Paragraph>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        </div>
 
         <Card loading={loading}>
           <div style={{ marginBottom: 12 }}>
@@ -486,21 +466,44 @@ const EvaluationPage = () => {
           />
         </Card>
 
-        <Card>
-          <Space>
-            {!hasSubmitted && (
-              <Button type="primary" onClick={handleSubmit}>
-                提交评估
-              </Button>
-            )}
-            {hasSubmitted && (
-              <Button danger onClick={handleWithdraw}>
-                撤回评估
-              </Button>
-            )}
-            <Button onClick={() => navigate('/tasks')}>返回列表</Button>
-          </Space>
-        </Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          <Card size="small" style={{ flex: 1, minWidth: 320 }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text type="secondary">灰色数值为AI预估，点击可修改。未修改的值将以AI预估作为您的评估结果。</Text>
+              {taskInfo && (
+                <Space wrap>
+                  <Text>任务：{taskInfo.name || taskInfo.id} ｜ 当前轮次：{roundNo} ｜ 系统：{currentSystem || '-'}</Text>
+                  <Tag color={resolveCompletenessTagColor(currentHasScore ? currentScore : NaN)}>
+                    {currentHasScore ? `当前系统完整度 ${currentScore}` : '当前系统完整度未知'}
+                  </Tag>
+                </Space>
+              )}
+              {roundNo > 1 && (
+                <Alert
+                  type="warning"
+                  message={`第${roundNo}轮仅展示高偏离功能点，共${highDeviationFeatures.length}条`}
+                  showIcon
+                />
+              )}
+            </Space>
+          </Card>
+
+          <Card size="small" bodyStyle={{ padding: '8px 12px' }}>
+            <Space>
+              {!hasSubmitted && (
+                <Button type="primary" onClick={handleSubmit}>
+                  提交评估
+                </Button>
+              )}
+              {hasSubmitted && (
+                <Button danger onClick={handleWithdraw}>
+                  撤回评估
+                </Button>
+              )}
+              <Button onClick={() => navigate('/tasks')}>返回列表</Button>
+            </Space>
+          </Card>
+        </div>
       </Space>
     </div>
   );

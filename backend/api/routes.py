@@ -30,8 +30,9 @@ from backend.agent.agent_orchestrator import get_agent_orchestrator
 from backend.config.config import settings
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service import user_service
+from backend.service.system_profile_service import get_system_profile_service
 from backend.utils.pdf_report import write_report_pdf
-from backend.api.auth import get_current_user, require_roles
+from backend.api.auth import get_current_user, require_roles, decode_access_token
 from backend.api import system_routes
 from backend.service.ai_effect_service import create_snapshots
 from backend.api.notification_routes import create_notification
@@ -1301,6 +1302,12 @@ class FeatureUpdateRequest(BaseModel):
     operation: str  # add, update, delete
     feature_index: int = None  # 功能点索引（update/delete时需要）
     feature_data: dict = None  # 功能点数据（add/update时需要）
+    actor_id: Optional[str] = None
+    actor_role: Optional[str] = None
+
+
+class ReevaluateRequest(BaseModel):
+    force: bool = False
 
 
 class SystemRenameRequest(BaseModel):
@@ -1318,6 +1325,193 @@ class AddSystemRequest(BaseModel):
 class RebreakdownSystemRequest(BaseModel):
     """重新拆分系统请求（覆盖当前系统下全部功能点）"""
     system_type: Optional[str] = None
+
+
+_ALLOWED_ACTOR_ROLES = {"admin", "manager", "expert"}
+
+
+def _pick_actor_role(roles: Any) -> Optional[str]:
+    if not isinstance(roles, list):
+        return None
+    for role in roles:
+        normalized = str(role or "").strip().lower()
+        if normalized in _ALLOWED_ACTOR_ROLES:
+            return normalized
+    return None
+
+
+def _extract_login_user(request: Request) -> Optional[Dict[str, Any]]:
+    auth_header = str(request.headers.get("Authorization") or "").strip()
+    if not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        return None
+
+    user_id = str(payload.get("user_id") or "").strip()
+    if not user_id:
+        return None
+
+    users = user_service.list_users()
+    user = next((item for item in users if str(item.get("id") or "") == user_id), None)
+    if not user or not user.get("is_active"):
+        return None
+    return user
+
+
+def _resolve_actor(request: Request, payload_actor_id: Optional[str], payload_actor_role: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    actor_id = str(payload_actor_id or "").strip()
+    actor_role = str(payload_actor_role or "").strip().lower()
+
+    if actor_role and actor_role not in _ALLOWED_ACTOR_ROLES:
+        return None, None
+
+    login_user = _extract_login_user(request)
+
+    if not actor_id and login_user:
+        actor_id = str(login_user.get("id") or "").strip()
+
+    if not actor_role:
+        user_for_role = None
+        if login_user and actor_id and str(login_user.get("id") or "") == actor_id:
+            user_for_role = login_user
+        elif actor_id:
+            users = user_service.list_users()
+            user_for_role = next((item for item in users if str(item.get("id") or "") == actor_id), None)
+
+        actor_role = _pick_actor_role((user_for_role or {}).get("roles"))
+
+    if not actor_id or not actor_role:
+        return None, None
+
+    if actor_role not in _ALLOWED_ACTOR_ROLES:
+        return None, None
+
+    return actor_id, actor_role
+
+
+def _new_modification_base(operation: str, system: str, actor_id: str, actor_role: str) -> Dict[str, Any]:
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "operation": operation,
+        "system": system,
+        "actor_id": actor_id,
+        "actor_role": actor_role,
+    }
+
+
+def _build_ai_remark_summary(modifications: List[Dict[str, Any]]) -> str:
+    total = len(modifications)
+    add_count = sum(1 for item in modifications if str(item.get("operation") or "") == "add")
+    update_count = sum(1 for item in modifications if str(item.get("operation") or "") == "update")
+    delete_count = sum(1 for item in modifications if str(item.get("operation") or "") == "delete")
+
+    systems: List[str] = []
+    for item in modifications:
+        name = str(item.get("system") or "").strip()
+        if name and name not in systems:
+            systems.append(name)
+
+    systems_text = "、".join(systems[:3]) if systems else "-"
+    summary = (
+        f"AI备注：本次修改共{total}项，新增{add_count}项、调整{update_count}项、删除{delete_count}项，"
+        f"涉及系统：{systems_text}。"
+    )
+    return summary[:500]
+
+
+def _apply_ai_remark(task: Dict[str, Any], source_modifications: List[Dict[str, Any]]) -> bool:
+    if not source_modifications:
+        return False
+
+    modifications = task.get("modifications") or []
+    if not modifications:
+        return False
+
+    latest_mod_id = str(modifications[-1].get("id") or "").strip()
+    if not latest_mod_id:
+        return False
+
+    if str(task.get("last_remark_mod_id") or "") == latest_mod_id:
+        return False
+
+    remark_text = _build_ai_remark_summary(source_modifications)
+    systems_data = task.get("systems_data") or {}
+
+    touched_feature_ids = {
+        str(item.get("feature_id") or "").strip()
+        for item in source_modifications
+        if str(item.get("feature_id") or "").strip()
+    }
+
+    if touched_feature_ids:
+        for _, features in systems_data.items():
+            if not isinstance(features, list):
+                continue
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+                feature_id = str(feature.get("id") or "").strip()
+                if feature_id and feature_id in touched_feature_ids:
+                    feature["备注"] = remark_text
+
+    task["last_remark_mod_id"] = latest_mod_id
+    task["last_ai_remark"] = remark_text
+    task["last_ai_remark_at"] = datetime.now().isoformat()
+    return True
+
+
+def _find_active_reevaluate_job(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    jobs = task.get("reevaluate_jobs") if isinstance(task.get("reevaluate_jobs"), list) else []
+    for job in reversed(jobs):
+        status = str(job.get("status") or "")
+        if status in {"pending", "running"}:
+            return job
+    return None
+
+
+def _update_reevaluate_job_status(task_id: str, job_id: str, status: str, *, error: Optional[str] = None) -> None:
+    with _task_storage_context() as data:
+        task = data.get(task_id)
+        if not task:
+            return
+        jobs = task.get("reevaluate_jobs") if isinstance(task.get("reevaluate_jobs"), list) else []
+        for job in jobs:
+            if str(job.get("job_id") or "") != job_id:
+                continue
+            job["status"] = status
+            if status == "running":
+                job["started_at"] = datetime.now().isoformat()
+            if status in {"completed", "failed"}:
+                job["completed_at"] = datetime.now().isoformat()
+            if error:
+                job["error"] = error
+            break
+
+
+def _run_reevaluate_job_sync(task_id: str, job_id: str) -> None:
+    _update_reevaluate_job_status(task_id, job_id, "running")
+
+    try:
+        with _task_storage_context() as data:
+            task = data.get(task_id)
+            if not task:
+                raise ValueError("task_not_found")
+
+            _ensure_task_schema(task)
+            if settings.V21_AI_REMARK_ENABLED:
+                _apply_ai_remark(task, task.get("modifications") or [])
+
+        _update_reevaluate_job_status(task_id, job_id, "completed")
+    except Exception as exc:
+        logger.error(f"重评估任务失败 task_id={task_id}, job_id={job_id}: {exc}")
+        _update_reevaluate_job_status(task_id, job_id, "failed", error=str(exc))
 
 
 @router.get("/requirement/result/{task_id}")
@@ -1360,7 +1554,7 @@ async def get_evaluation_result(task_id: str):
 
 
 @router.put("/requirement/features/{task_id}")
-async def update_features(task_id: str, request: FeatureUpdateRequest):
+async def update_features(task_id: str, request: FeatureUpdateRequest, http_request: Request):
     """
     批量更新功能点
 
@@ -1394,11 +1588,21 @@ async def update_features(task_id: str, request: FeatureUpdateRequest):
             if request.system not in systems_data:
                 raise HTTPException(status_code=400, detail=f"系统 '{request.system}' 不存在")
 
-            base_mod = {
-                "timestamp": datetime.now().isoformat(),
-                "operation": request.operation,
-                "system": request.system
-            }
+            actor_id, actor_role = _resolve_actor(http_request, request.actor_id, request.actor_role)
+            if not actor_id or not actor_role:
+                return build_error_response(
+                    request=http_request,
+                    status_code=400,
+                    error_code="missing_actor",
+                    message="缺少操作人信息",
+                )
+
+            base_mod = _new_modification_base(
+                operation=request.operation,
+                system=request.system,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
             last_mod_id = None
 
             if request.operation == "update":
@@ -1417,6 +1621,8 @@ async def update_features(task_id: str, request: FeatureUpdateRequest):
                 # 记录修改
                 changes = []
                 for key, new_value in request.feature_data.items():
+                    if str(key or "").strip() in {"备注", "remark"}:
+                        continue
                     old_value = old_feature.get(key)
                     if old_value != new_value:
                         changes.append({
@@ -1516,7 +1722,9 @@ async def update_features(task_id: str, request: FeatureUpdateRequest):
             "message": "更新成功",
             "data": {
                 "modification_id": last_mod_id,
-                "updated_systems_data": systems_data
+                "updated_systems_data": systems_data,
+                "actor_id": actor_id,
+                "actor_role": actor_role,
             }
         }
 
@@ -2257,6 +2465,642 @@ def _parse_dashboard_time_window(filters: Dict[str, Any]) -> Tuple[Optional[date
     return None, None, "time_range"
 
 
+def _dashboard_safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _dashboard_parse_iso_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _dashboard_extract_final_days_by_system(task: Dict[str, Any]) -> Dict[str, float]:
+    by_system = task.get("final_estimation_days_by_system") if isinstance(task.get("final_estimation_days_by_system"), list) else []
+    result: Dict[str, float] = {}
+    for item in by_system:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("system_id") or item.get("system_name") or "").strip()
+        if not sid:
+            continue
+        result[sid] = result.get(sid, 0.0) + _dashboard_safe_float(item.get("days"))
+
+    if result:
+        return result
+
+    systems = task.get("systems") if isinstance(task.get("systems"), list) else []
+    systems = [str(item or "").strip() for item in systems if str(item or "").strip()]
+    if len(systems) == 1:
+        total = _dashboard_safe_float(task.get("final_estimation_days_total"))
+        if total > 0:
+            result[systems[0]] = total
+    return result
+
+
+def _dashboard_extract_ai_initial_feature_counts(task: Dict[str, Any]) -> Tuple[Dict[str, int], bool]:
+    counts: Dict[str, int] = {}
+    ai_initial_features = task.get("ai_initial_features") if isinstance(task.get("ai_initial_features"), list) else []
+    if ai_initial_features:
+        for item in ai_initial_features:
+            if not isinstance(item, dict):
+                continue
+            feature_payload = item.get("feature") if isinstance(item.get("feature"), dict) else {}
+            system_name = str(item.get("system_name") or feature_payload.get("系统") or "").strip()
+            if not system_name:
+                continue
+            counts[system_name] = counts.get(system_name, 0) + 1
+        return counts, False
+
+    systems_data = task.get("systems_data") if isinstance(task.get("systems_data"), dict) else {}
+    for system_name, features in systems_data.items():
+        normalized = str(system_name or "").strip()
+        if not normalized:
+            continue
+        if isinstance(features, list):
+            counts[normalized] = counts.get(normalized, 0) + len([item for item in features if isinstance(item, dict)])
+    return counts, True
+
+
+def _dashboard_extract_ai_days_by_system(task: Dict[str, Any]) -> Tuple[Dict[str, float], bool]:
+    days: Dict[str, float] = {}
+    ai_initial_features = task.get("ai_initial_features") if isinstance(task.get("ai_initial_features"), list) else []
+    if ai_initial_features:
+        for item in ai_initial_features:
+            if not isinstance(item, dict):
+                continue
+            feature_payload = item.get("feature") if isinstance(item.get("feature"), dict) else {}
+            system_name = str(item.get("system_name") or feature_payload.get("系统") or "").strip()
+            if not system_name:
+                continue
+            days[system_name] = days.get(system_name, 0.0) + _get_ai_estimate(feature_payload)
+        return days, False
+
+    systems_data = task.get("systems_data") if isinstance(task.get("systems_data"), dict) else {}
+    for system_name, features in systems_data.items():
+        normalized = str(system_name or "").strip()
+        if not normalized or not isinstance(features, list):
+            continue
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            days[normalized] = days.get(normalized, 0.0) + _get_ai_estimate(feature)
+
+    if days:
+        return days, True
+
+    final_by_system = _dashboard_extract_final_days_by_system(task)
+    if len(final_by_system) == 1:
+        ai_total = _dashboard_safe_float(task.get("ai_estimation_days_total"))
+        if ai_total > 0:
+            only_system = next(iter(final_by_system.keys()))
+            return {only_system: ai_total}, True
+
+    return {}, True
+
+
+def _dashboard_feature_key(modification: Dict[str, Any]) -> str:
+    feature_id = str(modification.get("feature_id") or "").strip()
+    if feature_id:
+        return feature_id
+
+    feature_name = str(modification.get("feature_name") or "").strip()
+    feature_index = modification.get("feature_index")
+    if feature_name:
+        return f"{feature_name}#{feature_index}"
+
+    mod_id = str(modification.get("id") or "").strip()
+    if mod_id:
+        return mod_id
+
+    return uuid.uuid4().hex
+
+
+def _dashboard_is_profile_stale(profile: Dict[str, Any]) -> bool:
+    stale_days = int(os.getenv("PROFILE_STALE_DAYS", "30"))
+    if stale_days <= 0:
+        return False
+
+    updated_at = str(profile.get("updated_at") or profile.get("created_at") or "").strip()
+    if not updated_at:
+        return True
+
+    updated_dt = _dashboard_parse_iso_datetime(updated_at)
+    if not updated_dt:
+        return True
+
+    return updated_dt < (datetime.now() - timedelta(days=stale_days))
+
+
+def _dashboard_documents_score(document_count: int) -> int:
+    if document_count >= 11:
+        return 25
+    if document_count >= 6:
+        return 15
+    if document_count >= 1:
+        return 5
+    return 0
+
+
+def _dashboard_profile_completeness(profile: Dict[str, Any]) -> Dict[str, Any]:
+    fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+    completeness = profile.get("completeness") if isinstance(profile.get("completeness"), dict) else {}
+
+    code_scan_score = 30 if bool(completeness.get("code_scan")) else 0
+    esb_score = 25 if bool(completeness.get("esb")) else 0
+    document_count = int(completeness.get("documents_normal") or profile.get("document_count") or 0)
+    documents_score = _dashboard_documents_score(document_count)
+    module_structure = fields.get("module_structure") if isinstance(fields.get("module_structure"), list) else []
+    module_score = 20 if len(module_structure) >= 1 else 0
+    total_score = max(0, min(100, code_scan_score + esb_score + documents_score + module_score))
+
+    return {
+        "total_score": total_score,
+        "code_scan_score": code_scan_score,
+        "esb_score": esb_score,
+        "documents_score": documents_score,
+        "module_score": module_score,
+        "document_count": document_count,
+        "module_count": len(module_structure),
+        "is_stale": _dashboard_is_profile_stale(profile),
+    }
+
+
+def _dashboard_user_display_name_map() -> Dict[str, str]:
+    users = user_service.list_users()
+    name_map: Dict[str, str] = {}
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        user_id = str(user.get("id") or "").strip()
+        username = str(user.get("username") or "").strip()
+        display_name = str(user.get("display_name") or username or user_id).strip()
+        if user_id:
+            name_map[user_id] = display_name
+        if username and username not in name_map:
+            name_map[username] = display_name
+    return name_map
+
+
+def _build_management_dashboard_widgets(
+    *,
+    page: str,
+    scoped_tasks: List[Dict[str, Any]],
+    shared_filters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    profile_service = get_system_profile_service()
+    profiles = profile_service.list_profiles()
+    user_name_map = _dashboard_user_display_name_map()
+
+    profile_completeness_items: List[Dict[str, Any]] = []
+    profile_score_map: Dict[str, float] = {}
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        system_id = str(profile.get("system_id") or profile.get("system_name") or "").strip()
+        if not system_id:
+            continue
+        score_payload = _dashboard_profile_completeness(profile)
+        total_score = float(score_payload.get("total_score") or 0)
+        profile_score_map[system_id] = total_score
+
+        profile_completeness_items.append(
+            {
+                "system_id": system_id,
+                "system_name": str(profile.get("system_name") or system_id),
+                "completeness_score": int(total_score),
+                "code_scan": int(score_payload.get("code_scan_score") or 0),
+                "esb": int(score_payload.get("esb_score") or 0),
+                "documents": int(score_payload.get("documents_score") or 0),
+                "module_structure": int(score_payload.get("module_score") or 0),
+                "stale": "过期" if bool(score_payload.get("is_stale")) else "-",
+                "risk": "低分预警" if total_score < 40 else "-",
+                "drilldown_filters": {**shared_filters, "system_id": system_id},
+            }
+        )
+
+    profile_completeness_items.sort(
+        key=lambda item: (
+            -_dashboard_safe_float(item.get("completeness_score")),
+            str(item.get("system_id") or ""),
+        )
+    )
+
+    pm_stats: Dict[str, Dict[str, Any]] = {}
+    ai_stats: Dict[str, Dict[str, Any]] = {}
+    owner_cycle_stats: Dict[str, Dict[str, Any]] = {}
+
+    for task in scoped_tasks:
+        task_id = str(task.get("task_id") or "").strip()
+        final_days_by_system = _dashboard_extract_final_days_by_system(task)
+        ai_feature_count_by_system, feature_count_downgraded = _dashboard_extract_ai_initial_feature_counts(task)
+        ai_days_by_system, ai_days_downgraded = _dashboard_extract_ai_days_by_system(task)
+
+        for system_id in final_days_by_system.keys():
+            if system_id not in pm_stats:
+                pm_stats[system_id] = {
+                    "task_ids": set(),
+                    "correction_keys": set(),
+                    "addition_keys": set(),
+                    "ai_initial_total": 0,
+                    "caliber_downgraded": False,
+                }
+            pm_stats[system_id]["task_ids"].add(task_id)
+            pm_stats[system_id]["ai_initial_total"] += int(ai_feature_count_by_system.get(system_id) or 0)
+            if feature_count_downgraded:
+                pm_stats[system_id]["caliber_downgraded"] = True
+
+        modifications = task.get("modifications") if isinstance(task.get("modifications"), list) else []
+        for modification in modifications:
+            if not isinstance(modification, dict):
+                continue
+            if str(modification.get("actor_role") or "").strip() != "manager":
+                continue
+            operation = str(modification.get("operation") or "").strip().lower()
+            if operation not in {"add", "update", "delete"}:
+                continue
+            system_id = str(modification.get("system") or "").strip()
+            if not system_id:
+                continue
+            if system_id not in pm_stats:
+                pm_stats[system_id] = {
+                    "task_ids": set(),
+                    "correction_keys": set(),
+                    "addition_keys": set(),
+                    "ai_initial_total": 0,
+                    "caliber_downgraded": feature_count_downgraded,
+                }
+            pm_stats[system_id]["task_ids"].add(task_id)
+            feature_key = _dashboard_feature_key(modification)
+            dedupe_key = f"{task_id}:{feature_key}"
+            if operation == "add":
+                pm_stats[system_id]["addition_keys"].add(dedupe_key)
+            else:
+                pm_stats[system_id]["correction_keys"].add(dedupe_key)
+
+        for system_id, final_days in final_days_by_system.items():
+            if system_id not in ai_stats:
+                ai_stats[system_id] = {
+                    "task_ids": set(),
+                    "metric_count": 0,
+                    "hit_count": 0,
+                    "deviation_values": [],
+                    "trend_points": [],
+                    "caliber_downgraded": False,
+                }
+            stat = ai_stats[system_id]
+            stat["task_ids"].add(task_id)
+
+            ai_days = ai_days_by_system.get(system_id)
+            if ai_days is None and len(final_days_by_system) == 1:
+                fallback_ai_total = _dashboard_safe_float(task.get("ai_estimation_days_total"))
+                if fallback_ai_total > 0:
+                    ai_days = fallback_ai_total
+                    stat["caliber_downgraded"] = True
+
+            if ai_days is None or final_days <= 0:
+                continue
+
+            if ai_days_downgraded:
+                stat["caliber_downgraded"] = True
+
+            stat["metric_count"] += 1
+            abs_error = abs(ai_days - final_days)
+            if (abs_error / final_days) <= 0.2 or abs_error <= 0.5:
+                stat["hit_count"] += 1
+
+            deviation_pct = ((ai_days - final_days) / final_days) * 100
+            stat["deviation_values"].append(deviation_pct)
+
+            created_dt = _dashboard_parse_iso_datetime(task.get("created_at")) or _dashboard_parse_iso_datetime(task.get("frozen_at"))
+            if created_dt:
+                stat["trend_points"].append(
+                    {
+                        "created_at": created_dt.isoformat(),
+                        "correction_rate": round(abs_error / final_days * 100, 2),
+                    }
+                )
+
+        owner_snapshot = task.get("owner_snapshot") if isinstance(task.get("owner_snapshot"), dict) else {}
+        owner_id = str(owner_snapshot.get("primary_owner_id") or task.get("creator_id") or "UNASSIGNED").strip() or "UNASSIGNED"
+        owner_name = (
+            str(owner_snapshot.get("primary_owner_name") or "").strip()
+            or user_name_map.get(owner_id)
+            or str(task.get("creator_name") or owner_id)
+        )
+
+        created_dt = _dashboard_parse_iso_datetime(task.get("created_at"))
+        frozen_dt = _dashboard_parse_iso_datetime(task.get("frozen_at"))
+        if owner_id not in owner_cycle_stats:
+            owner_cycle_stats[owner_id] = {
+                "owner_name": owner_name,
+                "task_ids": set(),
+                "cycle_days": [],
+            }
+        owner_cycle_stats[owner_id]["task_ids"].add(task_id)
+        if created_dt and frozen_dt:
+            owner_cycle_stats[owner_id]["cycle_days"].append((frozen_dt - created_dt).total_seconds() / 86400)
+
+    pm_correction_items: List[Dict[str, Any]] = []
+    for system_id, stat in pm_stats.items():
+        task_count = len(stat["task_ids"])
+        ai_initial_total = int(stat.get("ai_initial_total") or 0)
+        correction_count = len(stat.get("correction_keys") or [])
+        addition_count = len(stat.get("addition_keys") or [])
+
+        correction_rate_value: Optional[float] = None
+        addition_rate_value: Optional[float] = None
+        if task_count >= 3 and ai_initial_total > 0:
+            correction_rate_value = round(correction_count / ai_initial_total * 100, 1)
+            addition_rate_value = round(addition_count / ai_initial_total * 100, 1)
+
+        pm_correction_items.append(
+            {
+                "system_id": system_id,
+                "sample_tasks": task_count,
+                "ai_initial_features": ai_initial_total,
+                "pm_corrections": correction_count,
+                "pm_additions": addition_count,
+                "correction_rate": correction_rate_value if correction_rate_value is not None else "N/A",
+                "addition_rate": addition_rate_value if addition_rate_value is not None else "N/A",
+                "caliber": "口径降级" if stat.get("caliber_downgraded") else "标准",
+                "drilldown_filters": {**shared_filters, "system_id": system_id},
+            }
+        )
+
+    pm_correction_items.sort(
+        key=lambda item: (
+            -9999 if isinstance(item.get("correction_rate"), str) else -_dashboard_safe_float(item.get("correction_rate")),
+            str(item.get("system_id") or ""),
+        )
+    )
+
+    ai_hit_items: List[Dict[str, Any]] = []
+    ai_deviation_items: List[Dict[str, Any]] = []
+    ai_trend_items: List[Dict[str, Any]] = []
+    ai_trend_series: List[Dict[str, Any]] = []
+
+    for system_id, stat in ai_stats.items():
+        task_count = len(stat.get("task_ids") or [])
+        metric_count = int(stat.get("metric_count") or 0)
+        hit_count = int(stat.get("hit_count") or 0)
+
+        hit_rate_value: Optional[float] = None
+        if task_count >= 3 and metric_count >= 3:
+            hit_rate_value = round(hit_count / metric_count * 100, 1)
+
+        completeness_score = profile_score_map.get(system_id)
+        priority_tag = ""
+        if hit_rate_value is not None and completeness_score is not None:
+            if hit_rate_value < 50 and completeness_score < 60:
+                priority_tag = "优先补画像"
+
+        ai_hit_items.append(
+            {
+                "system_id": system_id,
+                "sample_tasks": task_count,
+                "metric_tasks": metric_count,
+                "hit_rate": hit_rate_value if hit_rate_value is not None else "N/A",
+                "profile_score": int(completeness_score) if completeness_score is not None else "N/A",
+                "priority_tag": priority_tag or "-",
+                "caliber": "口径降级" if stat.get("caliber_downgraded") else "标准",
+                "drilldown_filters": {**shared_filters, "system_id": system_id},
+            }
+        )
+
+        deviation_values = stat.get("deviation_values") if isinstance(stat.get("deviation_values"), list) else []
+        avg_deviation_value: Optional[float] = None
+        if task_count >= 3 and deviation_values:
+            avg_deviation_value = round(statistics.mean(deviation_values), 1)
+
+        ai_deviation_items.append(
+            {
+                "system_id": system_id,
+                "sample_tasks": task_count,
+                "avg_deviation_pct": avg_deviation_value if avg_deviation_value is not None else "N/A",
+                "max_deviation_pct": round(max(deviation_values), 1) if deviation_values else None,
+                "min_deviation_pct": round(min(deviation_values), 1) if deviation_values else None,
+                "caliber": "口径降级" if stat.get("caliber_downgraded") else "标准",
+                "drilldown_filters": {**shared_filters, "system_id": system_id},
+            }
+        )
+
+        trend_points = stat.get("trend_points") if isinstance(stat.get("trend_points"), list) else []
+        trend_points = sorted(
+            [item for item in trend_points if isinstance(item, dict)],
+            key=lambda item: str(item.get("created_at") or ""),
+        )
+        trend_value = "N/A"
+        first_rate = None
+        latest_rate = None
+        if len(trend_points) >= 3:
+            first_rate = _dashboard_safe_float(trend_points[0].get("correction_rate"))
+            latest_rate = _dashboard_safe_float(trend_points[-1].get("correction_rate"))
+            if latest_rate < first_rate:
+                trend_value = "improving"
+            elif latest_rate > first_rate:
+                trend_value = "worsening"
+            else:
+                trend_value = "flat"
+
+        ai_trend_items.append(
+            {
+                "system_id": system_id,
+                "sample_tasks": len(trend_points),
+                "first_correction_rate": round(first_rate, 1) if first_rate is not None else "N/A",
+                "latest_correction_rate": round(latest_rate, 1) if latest_rate is not None else "N/A",
+                "trend": trend_value,
+                "drilldown_filters": {**shared_filters, "system_id": system_id},
+            }
+        )
+
+        ai_trend_series.append(
+            {
+                "system_id": system_id,
+                "points": [
+                    {
+                        "x": str(item.get("created_at") or ""),
+                        "y": round(_dashboard_safe_float(item.get("correction_rate")), 2),
+                    }
+                    for item in trend_points
+                ],
+            }
+        )
+
+    ai_hit_items.sort(
+        key=lambda item: (
+            -9999 if isinstance(item.get("hit_rate"), str) else -_dashboard_safe_float(item.get("hit_rate")),
+            str(item.get("system_id") or ""),
+        )
+    )
+    ai_deviation_items.sort(
+        key=lambda item: (
+            9999 if isinstance(item.get("avg_deviation_pct"), str) else -abs(_dashboard_safe_float(item.get("avg_deviation_pct"))),
+            str(item.get("system_id") or ""),
+        )
+    )
+    ai_trend_items.sort(key=lambda item: str(item.get("system_id") or ""))
+
+    evaluation_cycle_items: List[Dict[str, Any]] = []
+    for owner_id, stat in owner_cycle_stats.items():
+        task_count = len(stat.get("task_ids") or [])
+        cycle_days = stat.get("cycle_days") if isinstance(stat.get("cycle_days"), list) else []
+        avg_cycle = None
+        if task_count >= 3 and cycle_days:
+            avg_cycle = round(statistics.mean(cycle_days), 1)
+
+        evaluation_cycle_items.append(
+            {
+                "owner_id": owner_id,
+                "owner_name": stat.get("owner_name") or owner_id,
+                "sample_tasks": task_count,
+                "avg_cycle_days": avg_cycle if avg_cycle is not None else "N/A",
+                "drilldown_filters": {**shared_filters, "owner_id": owner_id},
+            }
+        )
+
+    evaluation_cycle_items.sort(
+        key=lambda item: (
+            -9999 if isinstance(item.get("avg_cycle_days"), str) else -_dashboard_safe_float(item.get("avg_cycle_days")),
+            str(item.get("owner_id") or ""),
+        )
+    )
+
+    profile_contribution_stats: Dict[str, Dict[str, Any]] = {}
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+
+        actor_id = str(profile.get("updated_by") or "").strip()
+        if not actor_id:
+            continue
+
+        fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+        module_structure = fields.get("module_structure") if isinstance(fields.get("module_structure"), list) else []
+        completeness = profile.get("completeness") if isinstance(profile.get("completeness"), dict) else {}
+        document_count = int(completeness.get("documents_normal") or profile.get("document_count") or 0)
+
+        field_count = 0
+        for field_key in ("system_scope", "integration_points", "key_constraints"):
+            if str(fields.get(field_key) or "").strip():
+                field_count += 1
+
+        module_item_count = 0
+        for module_item in module_structure:
+            if not isinstance(module_item, dict):
+                continue
+            functions = module_item.get("functions") if isinstance(module_item.get("functions"), list) else []
+            if functions:
+                module_item_count += len([item for item in functions if isinstance(item, dict)])
+            else:
+                module_item_count += 1
+
+        contribution_score = document_count + field_count + module_item_count
+        if actor_id not in profile_contribution_stats:
+            profile_contribution_stats[actor_id] = {
+                "contribution_score": 0,
+                "document_count": 0,
+                "field_count": 0,
+                "module_item_count": 0,
+                "systems": set(),
+            }
+
+        profile_contribution_stats[actor_id]["contribution_score"] += contribution_score
+        profile_contribution_stats[actor_id]["document_count"] += document_count
+        profile_contribution_stats[actor_id]["field_count"] += field_count
+        profile_contribution_stats[actor_id]["module_item_count"] += module_item_count
+        profile_contribution_stats[actor_id]["systems"].add(str(profile.get("system_name") or "").strip())
+
+    profile_contribution_items: List[Dict[str, Any]] = []
+    for actor_id, stat in profile_contribution_stats.items():
+        profile_contribution_items.append(
+            {
+                "owner_id": actor_id,
+                "owner_name": user_name_map.get(actor_id, actor_id),
+                "contribution_score": int(stat.get("contribution_score") or 0),
+                "document_count": int(stat.get("document_count") or 0),
+                "field_count": int(stat.get("field_count") or 0),
+                "module_item_count": int(stat.get("module_item_count") or 0),
+                "systems_count": len(stat.get("systems") or []),
+                "drilldown_filters": {**shared_filters, "owner_id": actor_id},
+            }
+        )
+
+    profile_contribution_items.sort(
+        key=lambda item: (
+            -_dashboard_safe_float(item.get("contribution_score")),
+            str(item.get("owner_id") or ""),
+        )
+    )
+
+    widgets_by_page = {
+        "system": [
+            {
+                "widget_id": "profile_completeness_ranking",
+                "title": "画像完整度排名",
+                "sample_size": len(profile_completeness_items),
+                "data": {"items": profile_completeness_items[:20]},
+                "drilldown_filters": shared_filters,
+            }
+        ],
+        "ai": [
+            {
+                "widget_id": "pm_correction_rate_ranking",
+                "title": "PM修正率排行（按系统）",
+                "sample_size": len(pm_correction_items),
+                "data": {"items": pm_correction_items[:20]},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "ai_hit_rate_ranking",
+                "title": "AI命中率排行（按系统）",
+                "sample_size": len(ai_hit_items),
+                "data": {"items": ai_hit_items[:20]},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "ai_deviation_monitoring",
+                "title": "AI工作量偏差监控",
+                "sample_size": len(ai_deviation_items),
+                "data": {"items": ai_deviation_items[:20]},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "ai_learning_trend",
+                "title": "AI学习趋势",
+                "sample_size": len(ai_trend_items),
+                "data": {"items": ai_trend_items[:20], "series": ai_trend_series},
+                "drilldown_filters": shared_filters,
+            },
+        ],
+        "rankings": [
+            {
+                "widget_id": "evaluation_cycle_ranking",
+                "title": "评估周期排行（按PM）",
+                "sample_size": len(evaluation_cycle_items),
+                "data": {"items": evaluation_cycle_items[:20]},
+                "drilldown_filters": shared_filters,
+            },
+            {
+                "widget_id": "profile_contribution_ranking",
+                "title": "画像贡献度排行（按PM）",
+                "sample_size": len(profile_contribution_items),
+                "data": {"items": profile_contribution_items[:20]},
+                "drilldown_filters": shared_filters,
+            },
+        ],
+    }
+
+    return widgets_by_page.get(page, [])
+
+
 @router.post("/efficiency/dashboard/query")
 async def query_efficiency_dashboard(
     payload: DashboardQueryRequest,
@@ -2277,8 +3121,8 @@ async def query_efficiency_dashboard(
         return build_error_response(
             request=request,
             status_code=400,
-            error_code="REPORT_002",
-            message="报表参数不合法",
+            error_code="invalid_perspective",
+            message="perspective 必须为 owner/expert/executive",
             details={"field": "perspective"},
         )
 
@@ -2330,12 +3174,8 @@ async def query_efficiency_dashboard(
             if not any(_assignment_matches_user(item, current_user) for item in _get_active_assignments(task)):
                 continue
 
-        frozen_at = str(task.get("frozen_at") or "").strip()
-        if not frozen_at:
-            continue
-        try:
-            frozen_dt = datetime.fromisoformat(frozen_at)
-        except Exception:
+        frozen_dt = _dashboard_parse_iso_datetime(task.get("frozen_at"))
+        if not frozen_dt:
             continue
 
         if start_at and frozen_dt < start_at:
@@ -2343,24 +3183,13 @@ async def query_efficiency_dashboard(
         if end_at and frozen_dt > end_at:
             continue
 
-        if filters.get("ai_involved") is not None:
-            ai_flag = bool(task.get("ai_involved") or task.get("ai_initial_feature_count") or task.get("ai_initial_features"))
-            if ai_flag != bool(filters.get("ai_involved")):
-                continue
-
         if filter_project_ids:
             project_id = str(task.get("project_id") or "").strip()
             if project_id not in filter_project_ids:
                 continue
 
-        by_system = task.get("final_estimation_days_by_system") if isinstance(task.get("final_estimation_days_by_system"), list) else []
-        task_system_ids = set()
-        for item in by_system:
-            if not isinstance(item, dict):
-                continue
-            sid = str(item.get("system_id") or item.get("system_name") or "").strip()
-            if sid:
-                task_system_ids.add(sid)
+        final_days_by_system = _dashboard_extract_final_days_by_system(task)
+        task_system_ids = set(final_days_by_system.keys())
         if filter_system_ids and not (task_system_ids & filter_system_ids):
             continue
 
@@ -2386,9 +3215,13 @@ async def query_efficiency_dashboard(
 
     sample_size = len(scoped_tasks)
 
-    total_final_days = sum(float(item.get("final_estimation_days_total") or 0.0) for item in scoped_tasks)
+    total_final_days = sum(_dashboard_safe_float(item.get("final_estimation_days_total")) for item in scoped_tasks)
     avg_final_days = round(total_final_days / sample_size, 2) if sample_size else 0.0
-    ai_involved_count = sum(1 for item in scoped_tasks if bool(item.get("ai_involved") or item.get("ai_initial_feature_count")))
+    ai_involved_count = sum(
+        1
+        for item in scoped_tasks
+        if bool(item.get("ai_involved") or item.get("ai_initial_feature_count") or item.get("ai_initial_features"))
+    )
     ai_involved_rate = round(ai_involved_count / sample_size * 100, 2) if sample_size else 0.0
 
     owner_counts: Dict[str, int] = {}
@@ -2404,19 +3237,16 @@ async def query_efficiency_dashboard(
         owner_counts[owner_id] = owner_counts.get(owner_id, 0) + 1
 
         counted_system_ids = set()
-        for item in task.get("final_estimation_days_by_system") or []:
-            if not isinstance(item, dict):
+        for system_id, days in _dashboard_extract_final_days_by_system(task).items():
+            if filter_system_ids and system_id not in filter_system_ids:
                 continue
-            sid = str(item.get("system_id") or item.get("system_name") or "UNASSIGNED").strip()
-            if filter_system_ids and sid not in filter_system_ids:
-                continue
-            system_days[sid] = system_days.get(sid, 0.0) + float(item.get("days") or 0.0)
-            if sid not in counted_system_ids:
-                system_task_counts[sid] = system_task_counts.get(sid, 0) + 1
-                counted_system_ids.add(sid)
+            system_days[system_id] = system_days.get(system_id, 0.0) + _dashboard_safe_float(days)
+            if system_id not in counted_system_ids:
+                system_task_counts[system_id] = system_task_counts.get(system_id, 0) + 1
+                counted_system_ids.add(system_id)
 
-        ai_total = float(task.get("ai_estimation_days_total") or 0.0)
-        final_total = float(task.get("final_estimation_days_total") or 0.0)
+        ai_total = _dashboard_safe_float(task.get("ai_estimation_days_total"))
+        final_total = _dashboard_safe_float(task.get("final_estimation_days_total"))
         if final_total > 0:
             ai_metric_count += 1
             abs_error = abs(ai_total - final_total)
@@ -2435,7 +3265,6 @@ async def query_efficiency_dashboard(
         "time_range": filters.get("time_range"),
         "start_at": filters.get("start_at"),
         "end_at": filters.get("end_at"),
-        "ai_involved": filters.get("ai_involved"),
     }
     if len(filter_system_ids) == 1:
         shared_filters["system_id"] = next(iter(filter_system_ids))
@@ -2446,7 +3275,7 @@ async def query_efficiency_dashboard(
     if filter_expert_id:
         shared_filters["expert_id"] = filter_expert_id
 
-    widgets = []
+    widgets: List[Dict[str, Any]] = []
     if page == "overview":
         widgets = [
             {
@@ -2554,14 +3383,11 @@ async def query_efficiency_dashboard(
     elif page == "flow":
         cycle_times = []
         for task in scoped_tasks:
-            created_at = str(task.get("created_at") or "").strip()
-            frozen_at = str(task.get("frozen_at") or "").strip()
-            if not created_at or not frozen_at:
+            created_dt = _dashboard_parse_iso_datetime(task.get("created_at"))
+            frozen_dt = _dashboard_parse_iso_datetime(task.get("frozen_at"))
+            if not created_dt or not frozen_dt:
                 continue
-            try:
-                cycle_times.append((datetime.fromisoformat(frozen_at) - datetime.fromisoformat(created_at)).total_seconds() / 86400)
-            except Exception:
-                continue
+            cycle_times.append((frozen_dt - created_dt).total_seconds() / 86400)
         avg_cycle = round(statistics.mean(cycle_times), 2) if cycle_times else 0.0
 
         widgets = [
@@ -2581,6 +3407,15 @@ async def query_efficiency_dashboard(
             },
         ]
 
+    if settings.V21_DASHBOARD_MGMT_ENABLED:
+        widgets.extend(
+            _build_management_dashboard_widgets(
+                page=page,
+                scoped_tasks=scoped_tasks,
+                shared_filters=shared_filters,
+            )
+        )
+
     return {
         "result": {
             "page": page,
@@ -2588,8 +3423,6 @@ async def query_efficiency_dashboard(
             "widgets": widgets,
         }
     }
-
-
 @router.get("/tasks")
 async def list_tasks_v2(
     scope: Optional[str] = Query(None),
@@ -4228,3 +5061,107 @@ async def health_check():
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION
     }
+
+
+@router.post("/tasks/{task_id}/reevaluate")
+async def trigger_task_reevaluate(
+    task_id: str,
+    payload: ReevaluateRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    with _task_storage_context() as data:
+        task = data.get(task_id)
+        if not task:
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="task_not_found",
+                message="任务不存在",
+            )
+
+        _ensure_task_schema(task)
+        if task.get("status") not in {"completed"}:
+            return build_error_response(
+                request=request,
+                status_code=409,
+                error_code="task_locked",
+                message="任务正在评估中，请稍后再试",
+            )
+
+        active_job = _find_active_reevaluate_job(task)
+        if active_job:
+            return {
+                "job_id": active_job.get("job_id"),
+                "status": active_job.get("status"),
+                "created_at": active_job.get("created_at"),
+            }
+
+        auto_enabled = bool(settings.V21_AUTO_REEVAL_ENABLED)
+        force = bool(payload.force)
+
+        should_start_job = auto_enabled or force
+
+        jobs = task.get("reevaluate_jobs") if isinstance(task.get("reevaluate_jobs"), list) else []
+        task["reevaluate_jobs"] = jobs
+
+        if not should_start_job:
+            if settings.V21_AI_REMARK_ENABLED:
+                _apply_ai_remark(task, task.get("modifications") or [])
+
+            created_at = datetime.now().isoformat()
+            skipped_job = {
+                "job_id": None,
+                "status": "skipped",
+                "created_at": created_at,
+                "requested_by": str(current_user.get("id") or ""),
+                "force": force,
+            }
+            jobs.append(skipped_job)
+            return {
+                "job_id": None,
+                "status": "skipped",
+                "created_at": created_at,
+            }
+
+        job_id = f"reeval_{uuid.uuid4().hex}"
+        created_at = datetime.now().isoformat()
+        job = {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": created_at,
+            "requested_by": str(current_user.get("id") or ""),
+            "force": force,
+        }
+        jobs.append(job)
+
+    if settings.V21_AUTO_REEVAL_ENABLED or force:
+        executor.submit(_run_reevaluate_job_sync, task_id, job_id)
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "created_at": created_at,
+    }
+
+
+@router.get("/system/config/feature-flags")
+async def get_feature_flags(
+    request: Request,
+    _current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """返回 v2.1 功能开关状态。"""
+    try:
+        return {
+            "V21_AUTO_REEVAL_ENABLED": bool(settings.V21_AUTO_REEVAL_ENABLED),
+            "V21_AI_REMARK_ENABLED": bool(settings.V21_AI_REMARK_ENABLED),
+            "V21_DASHBOARD_MGMT_ENABLED": bool(settings.V21_DASHBOARD_MGMT_ENABLED),
+        }
+    except Exception as exc:
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="FLAG_001",
+            message="Feature Flags 查询失败",
+            details={"reason": str(exc)},
+        )

@@ -11,6 +11,7 @@ from typing import Any, List, Dict, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from backend.api.auth import require_admin_api_key
+from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class SubsystemListResponse(BaseModel):
 
 
 # CSV文件路径
-CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "backend", "subsystem_list.csv")
+CSV_PATH = os.path.join(settings.REPORT_DIR, "subsystem_list.csv")
 
 SUBSYSTEM_HEADER_KEYS = {
     "ID", "id",

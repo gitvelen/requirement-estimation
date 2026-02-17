@@ -62,13 +62,39 @@ def _is_profile_stale(profile: Dict[str, Any]) -> bool:
     return updated_dt < (datetime.now() - timedelta(days=stale_days))
 
 
-def _forbidden_write_response(request: Request, reason: str, system_name: str, system_id: Optional[str] = None):
+def _forbidden_write_response(
+    request: Request,
+    reason: str,
+    system_name: str,
+    system_id: Optional[str] = None,
+    *,
+    error_code: str = "permission_denied",
+):
     return build_error_response(
         request=request,
         status_code=403,
-        error_code="AUTH_001",
-        message="权限不足",
+        error_code=error_code,
+        message="无权编辑该系统画像",
         details={"reason": reason, "system_name": system_name, "system_id": system_id},
+    )
+
+
+def _resolve_system_ref(system_name: str, system_id: Optional[str]) -> Dict[str, Any]:
+    owner_info = system_routes.resolve_system_owner(system_id=system_id, system_name=system_name)
+    return {
+        "owner_info": owner_info,
+        "resolved_system_id": str(owner_info.get("system_id") or system_id or "").strip(),
+        "resolved_system_name": str(owner_info.get("system_name") or system_name or "").strip(),
+    }
+
+
+def _system_not_found_response(request: Request, *, system_name: str, system_id: Optional[str] = None):
+    return build_error_response(
+        request=request,
+        status_code=404,
+        error_code="system_not_found",
+        message="系统不存在",
+        details={"system_name": system_name, "system_id": system_id},
     )
 
 
@@ -80,6 +106,9 @@ def _ensure_owner_or_backup_for_draft_write(
     system_id: Optional[str],
 ):
     roles = current_user.get("roles") or []
+    if "admin" in roles:
+        return None
+
     if "manager" not in roles:
         return _forbidden_write_response(request, "当前角色不可写系统画像", system_name, system_id)
 
@@ -94,7 +123,7 @@ def _ensure_owner_or_backup_for_draft_write(
     owner_info = ownership.get("owner_info") or {}
     reason = "当前用户不是系统主责或B角"
     if not owner_info.get("system_found"):
-        reason = "系统不存在或未纳入系统清单"
+        reason = "系统不存在"
     else:
         resolved_owner_id = str(owner_info.get("resolved_owner_id") or "").strip()
         resolved_backups = owner_info.get("resolved_backup_owner_ids") or []
@@ -239,25 +268,46 @@ async def save_profile(
     request: Request,
     current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
 ):
+    normalized_system_name = str(system_name or "").strip()
+    system_ref = _resolve_system_ref(normalized_system_name, payload.system_id)
+    owner_info = system_ref.get("owner_info") or {}
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(
+            request,
+            system_name=normalized_system_name,
+            system_id=payload.system_id,
+        )
+
+    resolved_system_name = str(system_ref.get("resolved_system_name") or normalized_system_name).strip()
+    resolved_system_id = str(system_ref.get("resolved_system_id") or payload.system_id or "").strip() or None
+    payload_data = payload.model_dump()
+    payload_data["system_id"] = resolved_system_id
+
     forbidden = _ensure_owner_or_backup_for_draft_write(
         current_user,
         request=request,
-        system_name=system_name,
-        system_id=payload.system_id,
+        system_name=resolved_system_name,
+        system_id=resolved_system_id,
     )
     if forbidden:
         return forbidden
 
     try:
         service = get_system_profile_service()
-        profile = service.upsert_profile(system_name, payload.model_dump(), actor=current_user)
+        profile = service.upsert_profile(resolved_system_name, payload_data, actor=current_user)
         return {"code": 200, "data": profile}
     except ValueError as exc:
+        message = str(exc)
+        error_code = "PROFILE_001"
+        detail_message = message
+        if message == "invalid_module_structure":
+            error_code = "invalid_module_structure"
+            detail_message = "module_structure 格式错误，需为 JSON 数组"
         return build_error_response(
             request=request,
             status_code=400,
-            error_code="PROFILE_001",
-            message=str(exc),
+            error_code=error_code,
+            message=detail_message,
         )
     except Exception as exc:
         logger.error("保存系统画像失败: %s", exc)

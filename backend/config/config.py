@@ -6,6 +6,13 @@ import os
 from typing import Optional, List
 from pydantic_settings import BaseSettings
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
 class Settings(BaseSettings):
     """系统配置类"""
 
@@ -84,6 +91,11 @@ class Settings(BaseSettings):
     TASK_TIMEOUT: int = 600  # 任务超时时间（秒）
     TASK_RETRY_TIMES: int = 3  # 任务重试次数
     TASK_RETENTION_DAYS: int = int(os.getenv("TASK_RETENTION_DAYS", "7"))  # 任务保留天数
+
+    # v2.1 功能开关（Feature Flags）
+    V21_AUTO_REEVAL_ENABLED: bool = _env_bool("V21_AUTO_REEVAL_ENABLED", True)
+    V21_AI_REMARK_ENABLED: bool = _env_bool("V21_AI_REMARK_ENABLED", True)
+    V21_DASHBOARD_MGMT_ENABLED: bool = _env_bool("V21_DASHBOARD_MGMT_ENABLED", True)
 
     # 简单鉴权（生产环境建议启用）
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")

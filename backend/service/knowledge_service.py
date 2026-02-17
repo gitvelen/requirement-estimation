@@ -71,28 +71,8 @@ class KnowledgeService:
             return self._system_list
 
         system_list: List[str] = []
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_path = os.path.join(settings.REPORT_DIR, "system_list.csv")
 
-        md_path = os.path.join(base_dir, "system_list.md")
-        if os.path.exists(md_path):
-            try:
-                with open(md_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or line.startswith(">"):
-                            continue
-                        if "系统名称" in line and "英文简称" in line:
-                            continue
-                        if "|" in line:
-                            parts = [p.strip() for p in line.split("|")]
-                            if parts and parts[0]:
-                                system_list.append(parts[0])
-                self._system_list = system_list
-                return system_list
-            except Exception as e:
-                logger.warning(f"加载system_list.md失败: {e}，尝试加载CSV文件")
-
-        csv_path = os.path.join(base_dir, "system_list.csv")
         if os.path.exists(csv_path):
             try:
                 with open(csv_path, "r", encoding="utf-8", newline="") as f:
@@ -119,7 +99,7 @@ class KnowledgeService:
                             if name:
                                 system_list.append(name)
             except Exception as e:
-                logger.warning(f"加载system_list.csv失败: {e}")
+                logger.warning(f"加载data/system_list.csv失败: {e}")
 
         self._system_list = system_list
         return system_list
@@ -629,14 +609,11 @@ class KnowledgeService:
                 continue
 
             metadata = knowledge.get("metadata") or {}
-            business_goals = metadata.get("business_goals", "")
-            if not str(business_goals or "").strip():
-                business_goals = metadata.get("business_goal", "")
+            module_structure = metadata.get("module_structure")
+            module_count = len(module_structure) if isinstance(module_structure, list) else 0
             part = f"""【知识{idx}】{metadata.get('system_name', '')} ({metadata.get('system_short_name', '')})
-   - 业务目标: {business_goals}
-   - 核心功能: {metadata.get('core_functions', '')}
-   - 系统边界(做什么): {metadata.get('in_scope', '')}
-   - 系统不做什么: {metadata.get('out_of_scope', '')}
+   - 系统定位与边界: {metadata.get('system_scope', '')}
+   - 模块结构数量: {module_count}
    - 主要集成点/上下游: {metadata.get('integration_points', '')}
    - 关键约束: {metadata.get('key_constraints', '')}
    - 技术栈: {metadata.get('tech_stack', '')}
@@ -657,16 +634,30 @@ class KnowledgeService:
     def _build_system_profile_text(self, system: Dict[str, Any]) -> str:
         """构建系统知识的检索文本"""
         system = system or {}
-        business_goals = system.get("business_goals", "") or system.get("business_goal", "") or ""
+        module_structure = system.get("module_structure") if isinstance(system.get("module_structure"), list) else []
+        module_segments = []
+        for module_item in module_structure[:20]:
+            if not isinstance(module_item, dict):
+                continue
+            module_name = str(module_item.get("module_name") or "").strip()
+            functions = module_item.get("functions") if isinstance(module_item.get("functions"), list) else []
+            function_names = [
+                str(function_item.get("name") or "").strip()
+                for function_item in functions
+                if isinstance(function_item, dict) and str(function_item.get("name") or "").strip()
+            ]
+            if module_name and function_names:
+                module_segments.append(f"{module_name}({ '、'.join(function_names[:20]) })")
+            elif module_name:
+                module_segments.append(module_name)
+        module_text = "；".join(module_segments)
         return (
             f"系统名称:{system.get('system_name', '') or ''} | "
             f"系统简称:{system.get('system_short_name', '') or ''} | "
-            f"系统边界(做什么):{system.get('in_scope', '') or ''} | "
-            f"系统不做什么:{system.get('out_of_scope', '') or ''} | "
+            f"系统定位与边界:{system.get('system_scope', '') or ''} | "
+            f"模块结构:{module_text} | "
             f"主要集成点/上下游:{system.get('integration_points', '') or ''} | "
             f"关键约束:{system.get('key_constraints', '') or ''} | "
-            f"业务目标:{business_goals} | "
-            f"核心功能:{system.get('core_functions', '') or ''} | "
             f"技术栈:{system.get('tech_stack', '') or ''} | "
             f"架构特点:{system.get('architecture', '') or ''} | "
             f"性能指标:{system.get('performance', '') or ''} | "

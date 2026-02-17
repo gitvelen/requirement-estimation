@@ -1,27 +1,27 @@
-.dashboard-layout {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.dashboard-side-card {
-  width: 220px;
-  position: sticky;
-  top: 80px;
-}
-
 .dashboard-main {
-  flex: 1;
   min-width: 0;
 }
 
-@media (max-width: 1200px) {
-  .dashboard-layout {
-    flex-direction: column;
-  }
+.dashboard-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 
-  .dashboard-side-card {
+.dashboard-top-tabs {
+  flex: 1;
+  min-width: 360px;
+}
+
+.dashboard-top-tabs .ant-tabs-nav {
+  margin: 0 !important;
+}
+
+@media (max-width: 960px) {
+  .dashboard-top-tabs {
+    min-width: 0;
     width: 100%;
-    position: static;
   }
 }
