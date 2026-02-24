@@ -6,14 +6,14 @@ _run_status: running
 _change_status: in_progress
 _change_level: major
 _review_round: 0
-_phase: Design
+_phase: Planning
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.2 |
 | 变更目录 | `docs/v2.2/` |
-| 当前阶段 | Design |
+| 当前阶段 | Planning |
 | 变更状态 | In Progress |
 | 基线版本（对比口径） | v2.1 |
 | 当前代码版本 | HEAD (dev) |
@@ -62,6 +62,7 @@ _phase: Design
 - 本文件用于显式标记阶段/完成状态，避免仅靠"文件存在性"推断导致误判。
 - 建议为 v2.1 补打 git tag：`git tag v2.1 91ec97c`
 - Requirements：`requirements.md` v0.3 已完成第 2 轮审查（见 `review_requirements.md`），已确认禁止项清单，进入 Design 阶段。
+- Design：`design.md` + `review_design.md` 已收敛（P0/P1 open=0），进入 Planning 阶段。
 
 ---
 
@@ -86,6 +87,7 @@ _phase: Design
 | ChangeManagement | Proposal | 2026-02-24 | 进入提案阶段 | User | 明确总体目标、范围边界与指标口径 |
 | Proposal | Requirements | 2026-02-24 | 人工确认提案已收敛 | User | 明确 FUNC-022 下线；补齐 ESB 导入合并处置；进入需求编写 |
 | Requirements | Design | 2026-02-24 | 人工确认需求已收敛 | User | 确认禁止项清单；进入技术方案设计 |
+| Design | Planning | 2026-02-24 | AI 自动审查已收敛（第 1 轮） | AI | 追溯覆盖通过；进入任务计划拆解 |
 
 ## 紧急中断记录
 | 触发时间 | 原因 | 当前状态 | 恢复条件 |
