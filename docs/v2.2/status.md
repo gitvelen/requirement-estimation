@@ -2,18 +2,18 @@
 _baseline: v2.1
 _current: HEAD
 _workflow_mode: manual
-_run_status: running
+_run_status: wait_confirm
 _change_status: in_progress
 _change_level: major
-_review_round: 0
-_phase: ChangeManagement
+_review_round: 2
+_phase: Requirements
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.2 |
 | 变更目录 | `docs/v2.2/` |
-| 当前阶段 | ChangeManagement |
+| 当前阶段 | Requirements |
 | 变更状态 | In Progress |
 | 基线版本（对比口径） | v2.1 |
 | 当前代码版本 | HEAD (dev) |
@@ -61,7 +61,7 @@ _phase: ChangeManagement
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠"文件存在性"推断导致误判。
 - 建议为 v2.1 补打 git tag：`git tag v2.1 91ec97c`
-- ChangeManagement：已明确基线版本与变更级别，进入 Proposal 起草。
+- Requirements：`requirements.md` v0.3 已完成第 2 轮审查（见 `review_requirements.md`），所有 GWT 缺口已补齐，等待人工确认进入 Design 阶段。
 
 ---
 
@@ -83,6 +83,8 @@ _phase: ChangeManagement
 | 从阶段 | 到阶段 | 日期 | 原因 | 触发人 | 关键决策 |
 |---|---|---|---|---|---|
 | - | ChangeManagement | 2026-02-24 | 初始化 v2.2 综合优化 | User | Major 级别，走完整 8 阶段流程 |
+| ChangeManagement | Proposal | 2026-02-24 | 进入提案阶段 | User | 明确总体目标、范围边界与指标口径 |
+| Proposal | Requirements | 2026-02-24 | 人工确认提案已收敛 | User | 明确 FUNC-022 下线；补齐 ESB 导入合并处置；进入需求编写 |
 
 ## 紧急中断记录
 | 触发时间 | 原因 | 当前状态 | 恢复条件 |

@@ -156,7 +156,7 @@ if [ "$HAS_PHASE" = true ]; then
 
       if [ "$SHOULD_CHECK" = true ]; then
         VERSION_SLUG=$(echo "$AICODING_VERSION_DIR" | tr '/' '_')
-        GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-${CLAUDE_SESSION_ID:-$$}"
+        GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-$(aicoding_session_key)"
         if [ ! -f "$GATE_PASSED" ]; then
           case "$AICODING_PHASE" in
             ChangeManagement)
@@ -207,7 +207,7 @@ templates/deployment_template.md" ;;
           esac
 
           if [ -n "$REQUIRED_PATTERNS" ]; then
-            READ_LOG="/tmp/aicoding-reads-${CLAUDE_SESSION_ID:-$$}.log"
+            READ_LOG="/tmp/aicoding-reads-$(aicoding_session_key).log"
             [ ! -f "$READ_LOG" ] && READ_LOG_CONTENT="" || READ_LOG_CONTENT=$(< "$READ_LOG")
             MISSING=""
             while IFS= read -r pattern; do
