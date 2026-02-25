@@ -1,25 +1,25 @@
 ---
 _baseline: v2.1
 _current: HEAD
-_workflow_mode: auto
+_workflow_mode: semi-auto
 _run_status: running
 _change_status: in_progress
 _change_level: major
-_review_round: 0
-_phase: Planning
+_review_round: 2
+_phase: Implementation
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.2 |
 | 变更目录 | `docs/v2.2/` |
-| 当前阶段 | Planning |
+| 当前阶段 | Implementation |
 | 变更状态 | In Progress |
 | 基线版本（对比口径） | v2.1 |
 | 当前代码版本 | HEAD (dev) |
 | 本次复查口径 | full |
 | 负责人 | - |
-| 最后更新 | 2026-02-24 |
+| 最后更新 | 2026-02-25 |
 | 完成日期 | - |
 
 ## 变更摘要
@@ -46,23 +46,30 @@ _phase: Planning
 
 | CR-ID | 状态 | 标题 | 影响面（文档/模块/ID） | 链接 |
 |---|---|---|---|---|
-| （暂无） | - | - | - | - |
+| CR-20260225-001 | In Progress | 收口后可读性与紧凑布局优化补记 | plan/test_report/frontend pages/backend route | `cr/CR-20260225-001.md` |
+| CR-20260225-002 | Accepted | 知识导入与信息展示页 UI 重设计 | requirements/design/test_report/SystemProfileImportPage/SystemProfileBoardPage | `cr/CR-20260225-002.md` |
 
 ## 需要同步的主文档清单（如适用）
-- [ ] `docs/系统功能说明书.md`
-- [ ] `docs/技术方案设计.md`
-- [ ] `docs/接口文档.md`
-- [ ] `docs/用户手册.md`
-- [ ] `docs/部署记录.md`
+- [x] `docs/系统功能说明书.md`
+- [x] `docs/技术方案设计.md`
+- [x] `docs/接口文档.md`
+- [x] `docs/用户手册.md`
+- [x] `docs/部署记录.md`
 
 ## 回滚要点
-- 待实现阶段补充
+- 发布异常时优先回退至 v2.1 对应版本；必要时恢复 `backups/v2.2_*` 快照（`task_storage.json`、`task_modifications.json`、`system_profiles.json`、`system_list.csv`）
 
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠"文件存在性"推断导致误判。
 - 建议为 v2.1 补打 git tag：`git tag v2.1 91ec97c`
 - Requirements：`requirements.md` v0.3 已完成第 2 轮审查（见 `review_requirements.md`），已确认禁止项清单，进入 Design 阶段。
 - Design：`design.md` + `review_design.md` 已收敛（P0/P1 open=0），进入 Planning 阶段。
+- Planning：`plan.md` + `review_planning.md` 已收敛（P0/P1 open=0，反向覆盖通过），进入 Implementation 阶段。
+- Implementation：已完成 T001~T013（含 REQ-C 全量回归、兼容/死链校验、无 DB 迁移证明、主文档同步）；可进入 Testing 阶段。
+- Testing：已完成 `test_report.md`、`review_testing.md`、`spotcheck_testing_main.md`（GWT 53/53 覆盖，P0/P1 open=0）。
+- Deployment：已产出 `deployment.md`、`review_deployment.md`，并修复 result-gate 命令为可执行口径（`.venv/bin/pytest` + `compileall`）；等待人工确认上线。
+- Deployment：用户确认后已执行正式部署（fallback 构建成功、backend healthy、最小回归通过），本次变更完成。
+- ChangeManagement（增量）：用户在收口阶段提出多项 UI/可读性优化诉求，已登记 `CR-20260225-001` 并按 diff-only 口径回填追溯链路。
 
 ---
 
@@ -87,7 +94,12 @@ _phase: Planning
 | ChangeManagement | Proposal | 2026-02-24 | 进入提案阶段 | User | 明确总体目标、范围边界与指标口径 |
 | Proposal | Requirements | 2026-02-24 | 人工确认提案已收敛 | User | 明确 FUNC-022 下线；补齐 ESB 导入合并处置；进入需求编写 |
 | Requirements | Design | 2026-02-24 | 人工确认需求已收敛 | User | 确认禁止项清单；进入技术方案设计 |
-| Design | Planning | 2026-02-24 | AI 自动审查已收敛（第 1 轮） | AI | 追溯覆盖通过；进入任务计划拆解 |
+| Design | Planning | 2026-02-24 | 独立审查发现问题后修复并复核收敛（第 3 轮） | AI | 追溯覆盖通过；RVW-001~007 已关闭；进入任务计划拆解 |
+| Planning | Implementation | 2026-02-24 | Planning 第 1 轮自检收敛（P0/P1 open=0） | AI | R6 引用自检通过；requirements ↔ plan 反向覆盖差集为空 |
+| Implementation | Testing | 2026-02-24 | Testing 第 1 轮自审收敛（P0/P1 open=0，GWT 覆盖 53/53） | AI | 生成 `test_report.md`、`review_testing.md`、`spotcheck_testing_main.md`；发现并记录 result-gate 命令阻塞 |
+| Testing | Deployment | 2026-02-24 | Deployment 文档与门禁命令修复完成，转入人工确认上线 | AI | 生成 `deployment.md`、`review_deployment.md`；`_run_status` 置 `wait_confirm` |
+| Deployment | Deployment | 2026-02-24 | 人工确认后完成正式部署与上线验证 | AI | 备份 `backups/v2.2_20260224_223625`；`docker-compose up -d --build` fallback 成功；健康检查与最小回归通过 |
+| Deployment | Deployment | 2026-02-25 | 收口后新增优化需求，按 CR 流程补记追溯并继续迭代 | User/AI | 新增 `CR-20260225-001`，复查口径维持 full（文档执行 diff-only 回填） |
 
 ## 紧急中断记录
 | 触发时间 | 原因 | 当前状态 | 恢复条件 |
