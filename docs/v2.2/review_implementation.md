@@ -41,7 +41,7 @@
 | GWT-ID | REQ-ID | 判定 | 证据类型 | 证据（可复现） | 备注 |
 |--------|--------|------|---------|--------------|------|
 | GWT-REQ-001-01 | REQ-001 | ✅ | CODE_REF | `frontend/src/pages/TaskListPage.js:317` | 任务列表页已移除 PageHeader，仅保留列表与筛选区 |
-| GWT-REQ-001-02 | REQ-001 | ✅ | CODE_REF | `frontend/src/pages/SystemProfileImportPage.js:865` | 系统画像-知识导入页已移除 PageHeader，页面主体由系统选择卡片 + Tab 内容构成 |
+| GWT-REQ-001-02 | REQ-001 | ✅ | CODE_REF | `frontend/src/pages/SystemProfileImportPage.js:349` | 系统画像-知识导入页已移除 PageHeader，页面主体由系统选择区 + 业务卡片构成 |
 | GWT-REQ-001-03 | REQ-001 | ✅ | RUN_OUTPUT | `bash -lc '/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_req001_pageheader_v22.py'` | 消息通知页已移除 `PageHeader`，自动化检查覆盖 |
 | GWT-REQ-001-04 | REQ-001 | ✅ | RUN_OUTPUT | `bash -lc '/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_req001_pageheader_v22.py'` | 已完成“已完成任务/系统清单/COSMIC/用户管理/知识库/信息展示”等页面 `PageHeader` 去除校验 |
 | GWT-REQ-002-01 | REQ-002 | ✅ | CODE_REF | `frontend/src/components/MainLayout.js:45` | 菜单“效能看板”仅 2 子菜单（排行榜/多维报表） |
@@ -63,10 +63,10 @@
 | GWT-REQ-007-01 | REQ-007 | ✅ | CODE_REF | `frontend/src/pages/EditPage.js:211` | 实质性修改进入“保存并确认”弹窗；确认后携带 `confirm=true` 保存并触发重评估 |
 | GWT-REQ-007-02 | REQ-007 | ✅ | CODE_REF | `backend/api/routes.py:1734` | manager 新增功能点时后端强制 `预估人天=None`（前端新增默认空值） |
 | GWT-REQ-007-03 | REQ-007 | ✅ | CODE_REF | `frontend/src/pages/EditPage.js:183` | 仅非实质性字段（如序号）变更时直接保存，不触发确认弹窗与重评估 |
-| GWT-REQ-008-01 | REQ-008 | ✅ | CODE_REF | `frontend/src/pages/SystemProfileImportPage.js:885` | 知识导入页主体仅保留“代码扫描/文档导入”两个 Tab |
+| GWT-REQ-008-01 | REQ-008 | ✅ | CODE_REF | `frontend/src/pages/SystemProfileImportPage.js:465` | 知识导入页主体包含“代码扫描”“文档导入”两块核心功能区 |
 | GWT-REQ-008-02 | REQ-008 | ✅ | CODE_REF | `frontend/src/pages/SystemProfileImportPage.js:40` | 文档导入类型下拉固定 5 种：requirements/design/tech_solution/history_report/esb |
 | GWT-REQ-008-03 | REQ-008 | ✅ | CODE_REF | `frontend/src/components/MainLayout.js:74` | 系统画像子菜单第二项为“信息展示” |
-| GWT-REQ-009-01 | REQ-009 | ✅ | CODE_REF | `backend/api/esb_routes.py:217` | ESB 导入响应新增 `mapping_resolved`；前端在导入页展示“列映射结果提示”（`frontend/src/pages/SystemProfileImportPage.js:777`） |
+| GWT-REQ-009-01 | REQ-009 | ✅ | CODE_REF | `backend/api/esb_routes.py:217` | ESB 导入响应新增 `mapping_resolved` 字段，接口契约对齐前端导入流程 |
 | GWT-REQ-009-02 | REQ-009 | ✅ | RUN_OUTPUT | `bash -lc '/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_esb_import_api.py::test_esb_search_and_stats_support_scope_and_include_deprecated'` | include_deprecated=false 时 consumer 检索结果不含“废弃使用”；开启后可检索到废弃条目 |
 | GWT-REQ-010-01 | REQ-010 | ✅ | CODE_REF | `frontend/src/pages/EvaluationPage.js:410` | 评估页顶部新增“COSMIC规则 + ?”入口，右侧不再常驻 COSMIC 大卡片 |
 | GWT-REQ-010-02 | REQ-010 | ✅ | CODE_REF | `frontend/src/pages/EvaluationPage.js:413` | 点击“?”后以可关闭、可滚动 Popover 展示规则详情（`maxHeight + overflowY`），不占用底部提交区 |
