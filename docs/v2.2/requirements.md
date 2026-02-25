@@ -63,17 +63,17 @@
 #### 参考记录（便于人工核对）
 | Proposal In Scope（来自 proposal.md） | 对应 REQ/API | 验收标准（GWT） | 状态 |
 |---|---|---|---|
-| 8 个页面标题精简、菜单重构、路由调整、组件改造 | REQ-001/REQ-002/REQ-005/REQ-013 | GWT-REQ-001-01…；GWT-REQ-013-01… | Draft |
-| 效能看板拆分为排行榜+多维报表两个子页面 | REQ-002/REQ-003/REQ-004 | GWT-REQ-002-01… | Draft |
-| 任务管理子菜单化 | REQ-005/REQ-013 | GWT-REQ-005-01… | Draft |
-| 任务详情页摘要优化 + 历史报告下载入口 | REQ-006 | GWT-REQ-006-01… | Draft |
-| PM 编辑管控（只读/确认/重评估） | REQ-007/REQ-C001/REQ-C002 | GWT-REQ-007-01…；GWT-REQ-C001-01… | Draft |
-| 知识导入页 Tab 化 + 5 种文档类型 | REQ-008 | GWT-REQ-008-01… | Draft |
-| ESB 特有能力保留 | REQ-009 | GWT-REQ-009-01… | Draft |
-| COSMIC 规则入口优化 | REQ-010 | GWT-REQ-010-01… | Draft |
-| 备注字段 AI 自动生成 | REQ-011 | GWT-REQ-011-01… | Draft |
-| FUNC-022 下线与旧入口处理 | REQ-012/REQ-C007 | GWT-REQ-012-01…；GWT-REQ-C007-01… | Draft |
-| 主文档同步更新 | REQ-014 | GWT-REQ-014-01… | Draft |
+| 8 个页面标题精简、菜单重构、路由调整、组件改造 | REQ-001/REQ-002/REQ-005/REQ-013 | 见对应 REQ 明细 | Draft |
+| 效能看板拆分为排行榜+多维报表两个子页面 | REQ-002/REQ-003/REQ-004 | 见对应 REQ 明细 | Draft |
+| 任务管理子菜单化 | REQ-005/REQ-013 | 见对应 REQ 明细 | Draft |
+| 任务详情页摘要优化 + 历史报告下载入口 | REQ-006 | 见对应 REQ 明细 | Draft |
+| PM 编辑管控（只读/确认/重评估） | REQ-007/REQ-C001/REQ-C002 | 见对应 REQ 明细 | Draft |
+| 知识导入页 Tab 化 + 5 种文档类型 | REQ-008 | 见对应 REQ 明细 | Draft |
+| ESB 特有能力保留 | REQ-009 | 见对应 REQ 明细 | Draft |
+| COSMIC 规则入口优化 | REQ-010 | 见对应 REQ 明细 | Draft |
+| 备注字段 AI 自动生成 | REQ-011 | 见对应 REQ 明细 | Draft |
+| FUNC-022 下线与旧入口处理 | REQ-012/REQ-C007 | 见对应 REQ 明细 | Draft |
+| 主文档同步更新 | REQ-014 | 见对应 REQ 明细 | Draft |
 
 ## 2. 业务场景说明
 
@@ -474,8 +474,8 @@
 ### 4.1 非功能需求列表
 | 需求分类 | REQ-ID | 需求名称 | 优先级 | 需求说明 | 验收/指标 |
 |---|---|---|---|---|---|
-| 可用性 | REQ-101 | 统一加载/空/错误态 | M | 新增/重构页面必须具备可理解的加载态、空态与错误态，并提供重试 | GWT-REQ-101-01… |
-| 兼容性 | REQ-102 | 兼容跳转不产生回退死循环 | M | 旧 URL 跳转使用 replace，返回键不应回到旧 URL 再次跳转 | GWT-REQ-102-01… |
+| 可用性 | REQ-101 | 统一加载/空/错误态 | M | 新增/重构页面必须具备可理解的加载态、空态与错误态，并提供重试 | 见 REQ-101 明细 |
+| 兼容性 | REQ-102 | 兼容跳转不产生回退死循环 | M | 旧 URL 跳转使用 replace，返回键不应回到旧 URL 再次跳转 | 见 REQ-102 明细 |
 
 ### 4.2 非功能需求明细
 
@@ -498,14 +498,14 @@
 ### 4A.1 禁止项列表
 | REQ-ID | 禁止项名称 | 适用范围 | 来源 | 关联GWT-ID |
 |--------|-----------|---------|------|-----------|
-| REQ-C001 | PM 不可编辑预估人天 | 功能点编辑页（manager） | proposal P-DONT-01 | GWT-REQ-C001-01 |
-| REQ-C002 | 实质性修改不可绕过确认 | 功能点编辑页（manager） | proposal P-DONT-02 | GWT-REQ-C002-01 |
-| REQ-C003 | 不得破坏既有数据兼容性 | 全局 | proposal P-DONT-03 | GWT-REQ-C003-01 |
-| REQ-C004 | 不得出现菜单/路由死链 | 全局 | proposal P-DONT-04 | GWT-REQ-C004-01 |
-| REQ-C005 | 不得引入 DB 迁移/存储结构变更 | 全局 | proposal 约束/前提 | GWT-REQ-C005-01 |
-| REQ-C006 | 文档导入不支持批量上传 | 系统画像-知识导入 | proposal 开放问题决策 | GWT-REQ-C006-01 |
-| REQ-C007 | 禁止保留 FUNC-022 入口 | 全局（admin/manager/expert） | 用户确认（2026-02-24）+ proposal Non-goals | GWT-REQ-C007-01 |
-| REQ-C008 | 排行榜统计周期不可配置 | 效能看板 | proposal 开放问题决策 | GWT-REQ-C008-01 |
+| REQ-C001 | PM 不可编辑预估人天 | 功能点编辑页（manager） | proposal P-DONT-01 | 见 REQ-C001 明细 |
+| REQ-C002 | 实质性修改不可绕过确认 | 功能点编辑页（manager） | proposal P-DONT-02 | 见 REQ-C002 明细 |
+| REQ-C003 | 不得破坏既有数据兼容性 | 全局 | proposal P-DONT-03 | 见 REQ-C003 明细 |
+| REQ-C004 | 不得出现菜单/路由死链 | 全局 | proposal P-DONT-04 | 见 REQ-C004 明细 |
+| REQ-C005 | 不得引入 DB 迁移/存储结构变更 | 全局 | proposal 约束/前提 | 见 REQ-C005 明细 |
+| REQ-C006 | 文档导入不支持批量上传 | 系统画像-知识导入 | proposal 开放问题决策 | 见 REQ-C006 明细 |
+| REQ-C007 | 禁止保留 FUNC-022 入口 | 全局（admin/manager/expert） | 用户确认（2026-02-24）+ proposal Non-goals | 见 REQ-C007 明细 |
+| REQ-C008 | 排行榜统计周期不可配置 | 效能看板 | proposal 开放问题决策 | 见 REQ-C008 明细 |
 
 ### 4A.2 禁止项明细
 
