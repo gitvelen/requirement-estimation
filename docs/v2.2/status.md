@@ -6,14 +6,14 @@ _run_status: running
 _change_status: in_progress
 _change_level: major
 _review_round: 2
-_phase: Testing
+_phase: Deployment
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.2 |
 | 变更目录 | `docs/v2.2/` |
-| 当前阶段 | Testing |
+| 当前阶段 | Deployment |
 | 变更状态 | In Progress |
 | 基线版本（对比口径） | v2.1 |
 | 当前代码版本 | HEAD (dev) |
