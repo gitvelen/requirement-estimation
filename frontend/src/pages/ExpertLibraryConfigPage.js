@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
+  Col,
   Form,
   Input,
   Modal,
+  Row,
   Select,
   Space,
   Switch,
@@ -344,33 +346,39 @@ const ExpertLibraryConfigPage = () => {
             </Space>
           )}
 
-          <Form.Item
-            label="部门"
-            name="department"
-            extra={departmentOptions.length ? null : '部门清单未配置，请先点击“部门配置”维护下拉选项。'}
-          >
-            <Select
-              placeholder={departmentOptions.length ? '请选择部门' : '请先配置部门清单'}
-              options={departmentOptions}
-              disabled={!departmentOptions.length}
-              showSearch
-              optionFilterProp="label"
-              allowClear
-            />
-          </Form.Item>
-
-          <Form.Item label="专长（多标签）" name="expertise">
-            <Select
-              mode="tags"
-              placeholder="输入专长后回车添加，例如：信贷、支付、架构、性能"
-              tokenSeparators={[' ', ',', '，']}
-              options={expertiseOptions}
-            />
-          </Form.Item>
-
-          <Form.Item label="在岗" name="onDuty" valuePropName="checked">
-            <Switch checkedChildren="在岗" unCheckedChildren="休假" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="部门"
+                name="department"
+                extra={departmentOptions.length ? null : '部门清单未配置，请先点击“部门配置”维护下拉选项。'}
+              >
+                <Select
+                  placeholder={departmentOptions.length ? '请选择部门' : '请先配置部门清单'}
+                  options={departmentOptions}
+                  disabled={!departmentOptions.length}
+                  showSearch
+                  optionFilterProp="label"
+                  allowClear
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="在岗" name="onDuty" valuePropName="checked">
+                <Switch checkedChildren="在岗" unCheckedChildren="休假" />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="专长（多标签）" name="expertise">
+                <Select
+                  mode="tags"
+                  placeholder="输入专长后回车添加，例如：信贷、支付、架构、性能"
+                  tokenSeparators={[' ', ',', '，']}
+                  options={expertiseOptions}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
 
           {target && addMode ? (
             <div style={{ marginTop: 8 }}>
@@ -445,4 +453,3 @@ const ExpertLibraryConfigPage = () => {
 };
 
 export default ExpertLibraryConfigPage;
-

@@ -11,7 +11,9 @@ import {
   Card,
   Typography,
   Tag,
-  Select
+  Select,
+  Row,
+  Col
 } from 'antd';
 import {
   PlusOutlined,
@@ -286,61 +288,76 @@ const MainSystemConfigPage = ({ embedded = false }) => {
           layout="vertical"
           autoComplete="off"
         >
-          <Form.Item
-            label="系统名称"
-            name="name"
-            rules={[
-              { max: 100, message: '系统名称不能超过100个字符' }
-            ]}
-          >
-            <Input
-              placeholder="例如：新一代核心、支付中台、新移动银行"
-            />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="系统名称"
+                name="name"
+                rules={[
+                  { max: 100, message: '系统名称不能超过100个字符' }
+                ]}
+              >
+                <Input
+                  placeholder="例如：新一代核心、支付中台、新移动银行"
+                />
+              </Form.Item>
+            </Col>
 
-          <Form.Item
-            label="系统简称"
-            name="abbreviation"
-            rules={[
-              { max: 20, message: '系统简称不能超过20个字符' },
-              {
-                validator: (_, value) => {
-                  if (!value) return Promise.resolve();
-                  if (/^[A-Z0-9]+$/.test(value)) return Promise.resolve();
-                  return Promise.reject(new Error('系统简称只能包含大写字母和数字'));
-                }
-              }
-            ]}
-          >
-            <Input
-              placeholder="例如：CBS、PAY、MBANK"
-              style={{ textTransform: 'uppercase' }}
-            />
-          </Form.Item>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="系统简称"
+                name="abbreviation"
+                rules={[
+                  { max: 20, message: '系统简称不能超过20个字符' },
+                  {
+                    validator: (_, value) => {
+                      if (!value) return Promise.resolve();
+                      if (/^[A-Z0-9]+$/.test(value)) return Promise.resolve();
+                      return Promise.reject(new Error('系统简称只能包含大写字母和数字'));
+                    }
+                  }
+                ]}
+              >
+                <Input
+                  placeholder="例如：CBS、PAY、MBANK"
+                  style={{ textTransform: 'uppercase' }}
+                />
+              </Form.Item>
+            </Col>
 
-          <Form.Item
-            label="系统状态"
-            name="status"
-          >
-            <Select
-              placeholder="请选择系统状态"
-              allowClear
-              options={statusOptions}
-            />
-          </Form.Item>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="系统状态"
+                name="status"
+              >
+                <Select
+                  placeholder="请选择系统状态"
+                  allowClear
+                  options={statusOptions}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
 
           {extraKeys.length ? (
             <div style={{ marginTop: 8 }}>
               <Title level={5} style={{ marginBottom: 8 }}>其它字段（来自模板列）</Title>
-              {extraKeys.map((key) => (
-                <Form.Item key={key} label={key} name={['extra', key]}>
-                  {/(描述|备注|关联系统)/.test(key) ? (
-                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
-                  ) : (
-                    <Input />
-                  )}
-                </Form.Item>
-              ))}
+              <Row gutter={16}>
+                {extraKeys.map((key) => {
+                  const longText = /(描述|备注|关联系统)/.test(key);
+                  return (
+                    <Col key={key} xs={24} md={longText ? 24 : 12}>
+                      <Form.Item label={key} name={['extra', key]}>
+                        {longText ? (
+                          <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
+                        ) : (
+                          <Input />
+                        )}
+                      </Form.Item>
+                    </Col>
+                  );
+                })}
+              </Row>
             </div>
           ) : null}
 

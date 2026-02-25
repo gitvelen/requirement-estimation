@@ -14,7 +14,8 @@ import UserManagementPage from './pages/UserManagementPage';
 import NotificationPage from './pages/NotificationPage';
 import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
-import EfficiencyDashboardPage from './pages/EfficiencyDashboardPage';
+import DashboardRankingsPage from './pages/DashboardRankingsPage';
+import DashboardReportsPage from './pages/DashboardReportsPage';
 import SystemProfileImportPage from './pages/SystemProfileImportPage';
 import SystemProfileBoardPage from './pages/SystemProfileBoardPage';
 import MainLayout from './components/MainLayout';
@@ -23,29 +24,43 @@ import RequireRole from './components/RequireRole';
 import usePermission from './hooks/usePermission';
 import './App.css';
 
+const AI_EFFECT_OFFLINE_TIP_STORAGE_KEY = 'ai_effect_report_offline_tip_shown_v22';
+
+const showAIEffectOfflineTipOnce = () => {
+  try {
+    if (sessionStorage.getItem(AI_EFFECT_OFFLINE_TIP_STORAGE_KEY) === '1') {
+      return;
+    }
+    sessionStorage.setItem(AI_EFFECT_OFFLINE_TIP_STORAGE_KEY, '1');
+  } catch (error) {
+    // ignore storage exceptions (privacy mode, disabled storage, etc.)
+  }
+  message.info('AI效果报告已下线');
+};
+
 const HomeRedirect = () => {
   const { activeRole, hasAnyRole } = usePermission();
 
   if (activeRole === 'admin') {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/dashboard/reports" replace />;
   }
   if (activeRole === 'manager') {
-    return <Navigate to="/tasks" replace />;
+    return <Navigate to="/tasks/ongoing" replace />;
   }
   if (activeRole === 'expert') {
-    return <Navigate to="/tasks" replace />;
+    return <Navigate to="/tasks/ongoing" replace />;
   }
   if (activeRole === 'viewer') {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/dashboard/reports" replace />;
   }
   if (hasAnyRole(['admin'])) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/dashboard/reports" replace />;
   }
   if (hasAnyRole(['manager', 'expert'])) {
-    return <Navigate to="/tasks" replace />;
+    return <Navigate to="/tasks/ongoing" replace />;
   }
   if (hasAnyRole(['viewer'])) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/dashboard/reports" replace />;
   }
   return <Navigate to="/profile" replace />;
 };
@@ -68,8 +83,46 @@ const LegacyAIEffectRedirect = () => {
   const location = useLocation();
 
   useEffect(() => {
-    message.info('“效果统计”已迁移至“效能看板”，本入口将自动跳转。');
-    navigate(`/dashboard${location.search || ''}`, { replace: true });
+    showAIEffectOfflineTipOnce();
+    navigate(`/dashboard/reports${location.search || ''}`, { replace: true });
+  }, [location.search, navigate]);
+
+  return null;
+};
+
+const LegacyDashboardRedirect = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const page = String(params.get('page') || '').trim().toLowerCase();
+    params.delete('page');
+
+    if (page === 'ai') {
+      showAIEffectOfflineTipOnce();
+    }
+
+    const target = page === 'rankings' ? '/dashboard/rankings' : '/dashboard/reports';
+    const search = params.toString();
+    navigate(`${target}${search ? `?${search}` : ''}`, { replace: true });
+  }, [location.search, navigate]);
+
+  return null;
+};
+
+const LegacyTasksRedirect = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const tab = String(params.get('tab') || '').trim().toLowerCase();
+    params.delete('tab');
+
+    const target = tab === 'completed' ? '/tasks/completed' : '/tasks/ongoing';
+    const search = params.toString();
+    navigate(`${target}${search ? `?${search}` : ''}`, { replace: true });
   }, [location.search, navigate]);
 
   return null;
@@ -98,7 +151,7 @@ function App() {
               path="/dashboard"
               element={(
                 <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
-                  <EfficiencyDashboardPage />
+                  <LegacyDashboardRedirect />
                 </RequireRole>
               )}
             />
@@ -106,7 +159,7 @@ function App() {
               path="/tasks"
               element={(
                 <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
-                  <TaskListPage />
+                  <LegacyTasksRedirect />
                 </RequireRole>
               )}
             />
@@ -114,7 +167,7 @@ function App() {
               path="/tasks/my-tasks"
               element={(
                 <RequireRole roles={['manager']}>
-                  <TaskListPage />
+                  <Navigate to="/tasks/ongoing" replace />
                 </RequireRole>
               )}
             />
@@ -122,7 +175,23 @@ function App() {
               path="/tasks/my-evaluations"
               element={(
                 <RequireRole roles={['expert']}>
-                  <TaskListPage />
+                  <Navigate to="/tasks/ongoing" replace />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/tasks/ongoing"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <TaskListPage defaultTab="ongoing" />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/tasks/completed"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <TaskListPage defaultTab="completed" />
                 </RequireRole>
               )}
             />
@@ -204,6 +273,22 @@ function App() {
               element={(
                 <RequireRole roles={['admin', 'manager', 'expert']}>
                   <LegacyAIEffectRedirect />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/dashboard/rankings"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <DashboardRankingsPage />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/dashboard/reports"
+              element={(
+                <RequireRole roles={['admin', 'manager', 'expert', 'viewer']}>
+                  <DashboardReportsPage />
                 </RequireRole>
               )}
             />

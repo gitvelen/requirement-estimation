@@ -39,18 +39,19 @@ const MainLayout = () => {
     }
   }, [refreshUnread, location.pathname]);
 
-  const taskMenuItem = useMemo(() => {
-    if (isAdmin || isManager || isExpert || isViewer) {
-      return { key: '/tasks', label: '任务管理', icon: <FileTextOutlined /> };
-    }
-    return null;
-  }, [isAdmin, isManager, isExpert, isViewer]);
-
   const menuItems = useMemo(() => {
     const items = [];
 
-    if (taskMenuItem) {
-      items.push(taskMenuItem);
+    if (isAdmin || isManager || isExpert || isViewer) {
+      items.push({
+        key: 'tasks-group',
+        label: '任务管理',
+        icon: <FileTextOutlined />,
+        children: [
+          { key: '/tasks/ongoing', label: '进行中' },
+          { key: '/tasks/completed', label: '已完成' },
+        ],
+      });
     }
 
     // 项目经理：系统画像菜单（知识导入 + 信息看板）
@@ -61,7 +62,7 @@ const MainLayout = () => {
         icon: <ApartmentOutlined />,
         children: [
           { key: '/system-profiles/import', label: '知识导入' },
-          { key: '/system-profiles/board', label: '信息看板' },
+          { key: '/system-profiles/board', label: '信息展示' },
         ],
       });
     }
@@ -82,9 +83,13 @@ const MainLayout = () => {
 
     if (isAdmin || isManager || isExpert || isViewer) {
       items.push({
-        key: '/dashboard',
+        key: 'dashboard-group',
         label: '效能看板',
         icon: <DashboardOutlined />,
+        children: [
+          { key: '/dashboard/rankings', label: '排行榜' },
+          { key: '/dashboard/reports', label: '多维报表' },
+        ],
       });
     }
 
@@ -107,14 +112,20 @@ const MainLayout = () => {
     });
 
     return items;
-  }, [taskMenuItem, isAdmin, isManager, isExpert, isViewer, unread]);
+  }, [isAdmin, isManager, isExpert, isViewer, unread]);
 
   const selectedKey = useMemo(() => {
+    if (location.pathname.startsWith('/tasks/completed')) {
+      return '/tasks/completed';
+    }
     if (location.pathname.startsWith('/tasks')) {
-      return taskMenuItem?.key || '/tasks';
+      return '/tasks/ongoing';
+    }
+    if (location.pathname.startsWith('/dashboard/rankings')) {
+      return '/dashboard/rankings';
     }
     if (location.pathname.startsWith('/dashboard')) {
-      return '/dashboard';
+      return '/dashboard/reports';
     }
     if (location.pathname.startsWith('/system-profiles')) {
       if (location.pathname.startsWith('/system-profiles/import')) {
@@ -123,7 +134,7 @@ const MainLayout = () => {
       return '/system-profiles/board';
     }
     return location.pathname;
-  }, [location.pathname, taskMenuItem]);
+  }, [location.pathname]);
 
   const handleMenuClick = ({ key }) => {
     const path = String(key || '');
@@ -140,7 +151,7 @@ const MainLayout = () => {
       return;
     }
     setActiveRole(normalized);
-    const targetPath = normalized === 'admin' || normalized === 'viewer' ? '/dashboard' : '/tasks';
+    const targetPath = normalized === 'admin' || normalized === 'viewer' ? '/dashboard/reports' : '/tasks/ongoing';
     navigate(targetPath, { replace: true });
   }, [activeRole, navigate, setActiveRole]);
 

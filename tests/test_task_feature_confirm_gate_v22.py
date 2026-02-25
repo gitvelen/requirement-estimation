@@ -1,0 +1,249 @@
+import os
+import sys
+from datetime import datetime
+
+import pytest
+from fastapi.testclient import TestClient
+
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from backend.api import routes as task_routes
+from backend.app import app
+from backend.config.config import settings
+from backend.service import user_service
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    monkeypatch.setattr(user_service, "USER_STORE_PATH", str(data_dir / "users.json"))
+    monkeypatch.setattr(user_service, "USER_STORE_LOCK_PATH", str(data_dir / "users.json.lock"))
+
+    monkeypatch.setattr(task_routes, "TASK_STORE_PATH", str(data_dir / "task_storage.json"))
+    monkeypatch.setattr(task_routes, "TASK_STORE_LOCK_PATH", str(data_dir / "task_storage.json.lock"))
+
+    return TestClient(app)
+
+
+def _seed_user(username: str, password: str, roles):
+    user = user_service.create_user_record(
+        {
+            "username": username,
+            "display_name": username,
+            "password": password,
+            "roles": roles,
+        }
+    )
+    with user_service.user_storage_context() as users:
+        users.append(user)
+    return user
+
+
+def _login(client: TestClient, username: str, password: str) -> str:
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    return response.json()["data"]["token"]
+
+
+def _seed_task(task_id: str):
+    task = {
+        "task_id": task_id,
+        "name": "编辑门禁任务",
+        "creator_id": "mgr_1",
+        "status": "completed",
+        "workflow_status": "draft",
+        "created_at": datetime.now().isoformat(),
+        "systems_data": {
+            "HOP": [
+                {
+                    "id": "feat_1",
+                    "序号": "1.1",
+                    "功能点": "开户",
+                    "业务描述": "旧描述",
+                    "预估人天": 3,
+                    "系统": "HOP",
+                }
+            ]
+        },
+        "systems": ["HOP"],
+        "modifications": [],
+    }
+    with task_routes._task_storage_context() as data:
+        data[task_id] = task
+
+
+def test_substantive_feature_update_requires_confirm(client):
+    _seed_user("mgr_confirm_1", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_1", "pwd123")
+    task_id = "task_confirm_update"
+    _seed_task(task_id)
+
+    response = client.put(
+        f"/api/v1/requirement/features/{task_id}",
+        json={
+            "system": "HOP",
+            "operation": "update",
+            "feature_index": 0,
+            "feature_data": {"业务描述": "新描述"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json().get("detail") == "实质性修改需要确认"
+
+    task = task_routes._get_task(task_id)
+    feature = task.get("systems_data", {}).get("HOP", [])[0]
+    assert feature.get("业务描述") == "旧描述"
+    assert task.get("modifications") == []
+
+
+def test_non_substantive_feature_update_can_skip_confirm(client):
+    _seed_user("mgr_confirm_2", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_2", "pwd123")
+    task_id = "task_non_substantive_update"
+    _seed_task(task_id)
+
+    response = client.put(
+        f"/api/v1/requirement/features/{task_id}",
+        json={
+            "system": "HOP",
+            "operation": "update",
+            "feature_index": 0,
+            "feature_data": {"序号": "2.1"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+
+    task = task_routes._get_task(task_id)
+    feature = task.get("systems_data", {}).get("HOP", [])[0]
+    assert feature.get("序号") == "2.1"
+    assert len(task.get("modifications", [])) == 1
+
+
+def test_manager_cannot_modify_estimated_days(client):
+    _seed_user("mgr_confirm_3", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_3", "pwd123")
+    task_id = "task_manager_estimated_days_update"
+    _seed_task(task_id)
+
+    response = client.put(
+        f"/api/v1/requirement/features/{task_id}",
+        json={
+            "system": "HOP",
+            "operation": "update",
+            "feature_index": 0,
+            "confirm": True,
+            "feature_data": {"预估人天": 9},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload.get("error_code") == "AUTH_001"
+
+    task = task_routes._get_task(task_id)
+    feature = task.get("systems_data", {}).get("HOP", [])[0]
+    assert feature.get("预估人天") == 3
+    assert task.get("modifications") == []
+
+
+def test_add_feature_requires_confirm_and_no_persist(client):
+    _seed_user("mgr_confirm_4", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_4", "pwd123")
+    task_id = "task_add_without_confirm"
+    _seed_task(task_id)
+
+    response = client.put(
+        f"/api/v1/requirement/features/{task_id}",
+        json={
+            "system": "HOP",
+            "operation": "add",
+            "feature_data": {
+                "功能点": "证件校验",
+                "业务描述": "新增功能点",
+                "预估人天": 8,
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json().get("detail") == "实质性修改需要确认"
+
+    task = task_routes._get_task(task_id)
+    assert len(task.get("systems_data", {}).get("HOP", [])) == 1
+    assert task.get("modifications") == []
+
+
+def test_add_feature_for_manager_forces_empty_estimated_days(client):
+    _seed_user("mgr_confirm_5", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_5", "pwd123")
+    task_id = "task_add_with_confirm"
+    _seed_task(task_id)
+
+    response = client.put(
+        f"/api/v1/requirement/features/{task_id}",
+        json={
+            "system": "HOP",
+            "operation": "add",
+            "confirm": True,
+            "feature_data": {
+                "功能点": "证件校验",
+                "业务描述": "新增功能点",
+                "预估人天": 8,
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+
+    task = task_routes._get_task(task_id)
+    features = task.get("systems_data", {}).get("HOP", [])
+    assert len(features) == 2
+    assert features[-1].get("预估人天") in (None, "")
+
+
+def test_system_add_rename_delete_require_confirm(client):
+    _seed_user("mgr_confirm_6", "pwd123", ["manager"])
+    token = _login(client, "mgr_confirm_6", "pwd123")
+    task_id = "task_system_confirm_gate"
+    _seed_task(task_id)
+
+    add_response = client.post(
+        f"/api/v1/requirement/systems/{task_id}",
+        json={"name": "CRM", "auto_breakdown": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert add_response.status_code == 400
+    assert add_response.json().get("detail") == "实质性修改需要确认"
+
+    rename_response = client.put(
+        f"/api/v1/requirement/systems/{task_id}/HOP/rename",
+        json={"new_name": "HOP2"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert rename_response.status_code == 400
+    assert rename_response.json().get("detail") == "实质性修改需要确认"
+
+    delete_response = client.delete(
+        f"/api/v1/requirement/systems/{task_id}/HOP",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert delete_response.status_code == 400
+    assert delete_response.json().get("detail") == "实质性修改需要确认"
+
+    task = task_routes._get_task(task_id)
+    assert sorted((task.get("systems_data") or {}).keys()) == ["HOP"]
+

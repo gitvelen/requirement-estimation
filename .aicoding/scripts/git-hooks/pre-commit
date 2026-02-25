@@ -811,6 +811,48 @@ if [ -n "$PLAN_FILES" ]; then
   done <<< "$PLAN_FILES"
 fi
 
+# --- Git-Hook 新增: 文档作用域校验（与 CC Gate 3 对齐，堵住 git commit 绕过）---
+DOC_FILES=$(echo "$STAGED" | grep -E '^docs/v[0-9]+\.[0-9]+/' || true)
+if [ -n "$DOC_FILES" ]; then
+  while IFS= read -r df; do
+    [ -z "$df" ] && continue
+    DF_VERSION_DIR=$(echo "$df" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
+    [ -z "$DF_VERSION_DIR" ] && continue
+    DF_STATUS="${DF_VERSION_DIR}status.md"
+    DF_PHASE=$(aicoding_staged_content "$DF_STATUS" | awk '
+      NR==1 && $0!="---" {exit}
+      NR==1 {next}
+      /^---$/ {exit}
+      /^_phase:/ {sub(/^_phase:[[:space:]]*/, ""); gsub(/[[:space:]]+$/, ""); print; exit}
+    ')
+    [ -z "$DF_PHASE" ] && continue
+    case "$DF_PHASE" in
+      "Change Management"|ChangeManagement) DF_ALLOWED="status.md|review_|cr/" ;;
+      Proposal)       DF_ALLOWED="status.md|proposal.md|review_|cr/" ;;
+      Requirements)   DF_ALLOWED="status.md|requirements.md|proposal.md|review_|cr/" ;;
+      Design)         DF_ALLOWED="status.md|design.md|review_|cr/" ;;
+      Planning)       DF_ALLOWED="status.md|plan.md|review_|cr/" ;;
+      Implementation) DF_ALLOWED="status.md|review_|cr/|plan.md|tasks/|design.md|requirements.md" ;;
+      Testing)        DF_ALLOWED="status.md|test_report.md|review_|cr/|design.md|requirements.md|spotcheck_" ;;
+      Deployment)     DF_ALLOWED="status.md|deployment.md|test_report.md|review_|cr/|spotcheck_" ;;
+      *) continue ;;
+    esac
+    DF_BASENAME=$(basename "$df")
+    DF_MATCH=false
+    for pat in $(echo "$DF_ALLOWED" | tr '|' ' '); do
+      case "$pat" in
+        */) echo "$df" | grep -q "/${pat}" && { DF_MATCH=true; break; } ;;
+        *)  [ "$DF_BASENAME" = "$pat" ] && { DF_MATCH=true; break; }
+            echo "$DF_BASENAME" | grep -q "^${pat}" && { DF_MATCH=true; break; } ;;
+      esac
+    done
+    if [ "$DF_MATCH" = false ]; then
+      echo "❌ 文档作用域校验：当前阶段 ${DF_PHASE}，不允许提交 ${df}。本阶段允许：${DF_ALLOWED//|/, }"
+      exit 1
+    fi
+  done <<< "$DOC_FILES"
+fi
+
 # --- Git-Hook 5: git config 防篡改 ---
 if echo "$STAGED" | grep -qE '(^|/)\.gitconfig$|(^|/)\.gitmodules$'; then
   echo "❌ 检测到 git 配置文件变更，需人工确认"

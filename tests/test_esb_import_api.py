@@ -164,6 +164,8 @@ def test_esb_import_filters_by_system_id_and_updates_completeness(client):
     payload = response.json()
     assert payload["imported"] == 1
     assert payload["skipped"] >= 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "提供方系统简称"
+    assert payload.get("mapping_resolved", {}).get("service_name") == "交易名称"
 
     profile = system_profile_service.get_system_profile_service().get_profile("HOP")
     assert profile
@@ -196,3 +198,84 @@ def test_esb_import_embedding_unavailable_returns_emb001(client):
 
     profile = system_profile_service.get_system_profile_service().get_profile("HOP")
     assert not profile or not profile.get("completeness", {}).get("esb")
+
+
+def test_esb_search_and_stats_support_scope_and_include_deprecated(client):
+    owner = _seed_user("esb_owner5", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner5", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    csv_content = (
+        "提供方系统简称,调用方系统简称,交易名称,状态\n"
+        "sys_hop,sys_x,查询接口,正常使用\n"
+        "sys_y,sys_hop,同步接口,废弃使用\n"
+    ).encode("utf-8")
+
+    import_response = client.post(
+        "/api/v1/esb/imports",
+        data={"system_id": "sys_hop"},
+        files={"file": ("esb.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert import_response.status_code == 200
+
+    stats_response = client.get(
+        "/api/v1/esb/stats",
+        params={"system_id": "sys_hop"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert stats_response.status_code == 200
+    stats_payload = stats_response.json()
+    assert stats_payload["active_entry_count"] == 1
+    assert stats_payload["deprecated_entry_count"] == 1
+    assert stats_payload["active_unique_service_count"] == 1
+
+    search_response = client.get(
+        "/api/v1/esb/search",
+        params={
+            "q": "接口",
+            "system_id": "sys_hop",
+            "scope": "consumer",
+            "include_deprecated": "false",
+            "top_k": 10,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert search_response.status_code == 200
+    search_payload = search_response.json()
+    assert search_payload["total"] == 0
+    assert search_payload["items"] == []
+
+    search_with_deprecated_response = client.get(
+        "/api/v1/esb/search",
+        params={
+            "q": "接口",
+            "system_id": "sys_hop",
+            "scope": "consumer",
+            "include_deprecated": "true",
+            "top_k": 10,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert search_with_deprecated_response.status_code == 200
+    search_with_deprecated_payload = search_with_deprecated_response.json()
+    assert search_with_deprecated_payload["total"] >= 1
+    assert any(item.get("status") == "废弃使用" for item in search_with_deprecated_payload["items"])
+
+
+def test_esb_search_requires_owner_or_admin(client):
+    owner = _seed_user("esb_owner6", "owner123", ["manager"])
+    other = _seed_user("esb_other6", "other123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_other6", "other123")
+
+    response = client.get(
+        "/api/v1/esb/search",
+        params={"q": "接口", "system_id": "sys_hop"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "AUTH_001"

@@ -2,7 +2,7 @@ const toTrimmedString = (value) => String(value ?? '').trim();
 
 export const PROFILE_FIELD_LABELS_V21 = {
   system_scope: '系统定位与边界',
-  module_structure: '功能模块结构（JSON）',
+  module_structure: '功能模块结构',
   integration_points: '主要集成点',
   key_constraints: '关键约束',
 };

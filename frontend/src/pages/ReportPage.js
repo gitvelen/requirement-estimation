@@ -12,24 +12,72 @@ import {
   Space,
   Row,
   Col,
-  Collapse,
-  Statistic,
   Typography,
+  Descriptions,
+  Dropdown,
+  Empty,
+  Result,
 } from 'antd';
-import { ArrowLeftOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  ArrowLeftOutlined,
+  DownloadOutlined,
+  ReloadOutlined,
+  DownOutlined,
+} from '@ant-design/icons';
 import axios from 'axios';
 import usePermission from '../hooks/usePermission';
 import Loading from '../components/Loading';
+import { formatDateTime } from '../utils/time';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
+const metricCardStyle = {
+  border: '1px solid #f0f0f0',
+  borderRadius: 8,
+  padding: '8px 12px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+};
+
+const reportStatusMap = {
+  draft: { color: 'default', text: '草稿' },
+  awaiting_assignment: { color: 'warning', text: '待分配' },
+  evaluating: { color: 'processing', text: '评估中' },
+  completed: { color: 'success', text: '已完成' },
+  archived: { color: 'default', text: '已归档' },
+};
+
+const getReportTimestamp = (record) => {
+  const source = record?.generated_at || record?.generatedAt || '';
+  const parsed = Date.parse(String(source));
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const sortReportVersions = (versions) => (
+  [...versions].sort((a, b) => {
+    const tsDiff = getReportTimestamp(b) - getReportTimestamp(a);
+    if (tsDiff !== 0) {
+      return tsDiff;
+    }
+    const roundDiff = Number(b?.round || 0) - Number(a?.round || 0);
+    if (roundDiff !== 0) {
+      return roundDiff;
+    }
+    return Number(b?.version || 0) - Number(a?.version || 0);
+  })
+);
 
 const ReportPage = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
   const { isAdmin } = usePermission();
+
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [task, setTask] = useState(null);
   const [assignVisible, setAssignVisible] = useState(false);
+  const [assignmentDetailVisible, setAssignmentDetailVisible] = useState(false);
   const [assignments, setAssignments] = useState([]);
   const [assignForm] = Form.useForm();
   const [expertCandidates, setExpertCandidates] = useState([]);
@@ -45,17 +93,15 @@ const ReportPage = () => {
         axios.get(`/api/v1/tasks/${taskId}`),
         axios.get(`/api/v1/tasks/${taskId}/high-deviation`).catch(() => ({ data: { data: { round: null, isOfficial: false, items: [] } } })),
       ]);
-      const payload = taskRes.data.data;
+      const payload = taskRes.data?.data || null;
       setTask(payload);
-      setAssignments(payload.expertAssignments || []);
-      const highPayload = highRes.data.data || { round: null, isOfficial: false, items: [] };
+      setAssignments(payload?.expertAssignments || []);
+      const highPayload = highRes.data?.data || { round: null, isOfficial: false, items: [] };
       setHighDeviation(highPayload);
+      setLoadError('');
     } catch (error) {
-      if (error.response?.status === 404) {
-        message.error('任务不存在');
-      } else {
-        message.error(error.response?.data?.detail || '获取任务信息失败');
-      }
+      const detail = error?.response?.data?.detail || error?.response?.data?.message || '获取任务信息失败';
+      setLoadError(detail);
     } finally {
       setHighDeviationLoading(false);
       setLoading(false);
@@ -90,7 +136,36 @@ const ReportPage = () => {
     fetchExperts();
   }, [assignVisible, fetchExperts]);
 
-  const handleDownloadLatest = async () => {
+  const reportVersions = useMemo(
+    () => sortReportVersions(task?.reportVersions || []),
+    [task?.reportVersions],
+  );
+
+  const latestReport = reportVersions[0] || null;
+  const historyReports = reportVersions.slice(1);
+
+  const downloadMenuItems = useMemo(() => {
+    if (!latestReport) {
+      return [];
+    }
+    return [
+      {
+        key: 'latest',
+        label: '最新报告',
+      },
+      ...historyReports.map((record) => ({
+        key: `history-${record.id}`,
+        label: `历史版本 · 第${record.round || '-'}轮 · v${record.version || '-'} · ${record.generated_at || record.generatedAt || '-'}`,
+      })),
+    ];
+  }, [historyReports, latestReport]);
+
+  const historyReportMap = useMemo(
+    () => new Map(historyReports.map((record) => [`history-${record.id}`, record])),
+    [historyReports],
+  );
+
+  const handleDownloadLatest = useCallback(async () => {
     try {
       const response = await axios.get(`/api/v1/tasks/${taskId}/report`, {
         responseType: 'blob',
@@ -106,9 +181,9 @@ const ReportPage = () => {
     } catch (error) {
       message.error(error.response?.data?.detail || '下载失败');
     }
-  };
+  }, [taskId]);
 
-  const handleDownloadVersion = async (record) => {
+  const handleDownloadVersion = useCallback(async (record) => {
     try {
       const response = await axios.get(`/api/v1/tasks/${taskId}/reports/${record.id}`, {
         responseType: 'blob',
@@ -124,7 +199,18 @@ const ReportPage = () => {
     } catch (error) {
       message.error(error.response?.data?.detail || '下载失败');
     }
-  };
+  }, [taskId]);
+
+  const handleDownloadReportMenu = useCallback(async ({ key }) => {
+    if (key === 'latest') {
+      await handleDownloadLatest();
+      return;
+    }
+    const record = historyReportMap.get(String(key));
+    if (record) {
+      await handleDownloadVersion(record);
+    }
+  }, [handleDownloadLatest, handleDownloadVersion, historyReportMap]);
 
   const handleDownloadDocument = async () => {
     try {
@@ -197,14 +283,7 @@ const ReportPage = () => {
   }, [taskId, fetchTask]);
 
   const renderStatus = (status) => {
-    const statusMap = {
-      draft: { color: 'default', text: '草稿' },
-      awaiting_assignment: { color: 'warning', text: '待分配' },
-      evaluating: { color: 'processing', text: '评估中' },
-      completed: { color: 'success', text: '已完成' },
-      archived: { color: 'default', text: '已归档' },
-    };
-    const { color, text } = statusMap[status] || { color: 'default', text: status || '-' };
+    const { color, text } = reportStatusMap[status] || { color: 'default', text: status || '-' };
     return <Tag color={color}>{text}</Tag>;
   };
 
@@ -313,204 +392,172 @@ const ReportPage = () => {
     return columns;
   }, [isAdmin, task, handleResend, handleRevoke]);
 
-  const reportColumns = [
-    { title: '轮次', dataIndex: 'round', key: 'round', width: 80 },
-    { title: '版本', dataIndex: 'version', key: 'version', width: 80 },
-    { title: '文件名', dataIndex: 'file_name', key: 'file_name', width: 280 },
-    { title: '生成时间', dataIndex: 'generated_at', key: 'generated_at', width: 200 },
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
-      render: (_, record) => (
-        <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadVersion(record)}>
-          下载
-        </Button>
-      ),
-    },
-  ];
+  const expertProgress = useMemo(() => {
+    const submitted = Number(task?.evaluationProgress?.submitted || 0);
+    const total = Number(task?.evaluationProgress?.total || 0);
+    const pending = Math.max(total - submitted, 0);
+    return `${submitted}/${pending}/${total}`;
+  }, [task?.evaluationProgress?.submitted, task?.evaluationProgress?.total]);
 
   if (loading) {
     return <Loading fullScreen tip="加载中..." />;
   }
 
+  if (loadError) {
+    return (
+      <Result
+        status="error"
+        title="获取任务信息失败"
+        subTitle={loadError}
+        extra={[
+          <Button key="retry" type="primary" onClick={fetchTask}>重试</Button>,
+          <Button key="back" onClick={() => navigate('/tasks/ongoing')}>返回任务列表</Button>,
+        ]}
+      />
+    );
+  }
+
   if (!task) {
-    return <Text>未找到该任务的评估报告。</Text>;
+    return (
+      <Card>
+        <Empty description="未找到该任务的评估报告" />
+      </Card>
+    );
   }
 
   return (
     <div className="report-page" style={{ padding: '24px' }}>
       <Space style={{ marginBottom: 16 }} wrap>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks')}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks/ongoing')}>
           返回任务列表
         </Button>
         <Button icon={<ReloadOutlined />} onClick={fetchTask}>
           刷新
         </Button>
-        <Button
-          type="primary"
-          icon={<DownloadOutlined />}
-          onClick={handleDownloadLatest}
-          disabled={!task.reportVersions || task.reportVersions.length === 0}
+        <Dropdown
+          menu={{
+            items: downloadMenuItems,
+            onClick: handleDownloadReportMenu,
+          }}
+          disabled={!latestReport}
         >
-          下载最新报告
+          <Button type="primary" icon={<DownloadOutlined />} disabled={!latestReport}>
+            下载报告
+            <DownOutlined style={{ marginLeft: 8 }} />
+          </Button>
+        </Dropdown>
+        {!latestReport && <Text type="secondary">暂无可下载报告</Text>}
+        <Button onClick={handleDownloadDocument} disabled={!task.documentName}>
+          下载需求文档
         </Button>
+        <Button onClick={() => setAssignmentDetailVisible(true)} disabled={!assignments.length}>
+          专家评估明细
+        </Button>
+        {isAdmin && task.status === 'awaiting_assignment' && (
+          <Button type="primary" onClick={() => setAssignVisible(true)}>
+            分配专家
+          </Button>
+        )}
       </Space>
 
       <Card title="摘要" style={{ marginBottom: 16 }}>
-        <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} md={8}>
-            <Space direction="vertical" size={4}>
-              <Text type="secondary">任务名称</Text>
-              <Text strong>{task.name || '-'}</Text>
-              <Space>
-                {renderStatus(task.status)}
-                <Tag color="processing">第 {task.currentRound || 1} 轮</Tag>
-              </Space>
-            </Space>
-          </Col>
-          <Col xs={12} md={4}>
-            <Statistic title="已提交" value={task.evaluationProgress?.submitted || 0} />
-          </Col>
-          <Col xs={12} md={4}>
-            <Statistic title="总专家数" value={task.evaluationProgress?.total || 0} />
-          </Col>
-          <Col xs={12} md={4}>
-            <Statistic title="涉及系统" value={(task.systems || []).length} />
-          </Col>
-          <Col xs={12} md={4}>
-            <Statistic title="报告版本" value={(task.reportVersions || []).length} />
-          </Col>
-        </Row>
-      </Card>
+        <Descriptions bordered column={{ xs: 1, sm: 2, md: 3 }} size="small">
+          <Descriptions.Item label="任务状态">{renderStatus(task.status)}</Descriptions.Item>
+          <Descriptions.Item label="创建时间">{formatDateTime(task.createdAt)}</Descriptions.Item>
+          <Descriptions.Item label="提交人">{task.creatorName || '-'}</Descriptions.Item>
+          <Descriptions.Item label="系统名称">{(task.systems || []).join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="功能点数量">{task.featureCount ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="专家评估状态（已评/待评/总数）">{expertProgress}</Descriptions.Item>
+          <Descriptions.Item label="当前评估轮次">第 {task.currentRound || 1} 轮</Descriptions.Item>
+        </Descriptions>
 
-      <Card title="主体" style={{ marginBottom: 16 }}>
-        <Row gutter={[16, 16]}>
-          <Col xs={24} lg={8}>
-            <Card type="inner" title="任务详情">
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <div>
-                  <Text type="secondary">发起人</Text>
-                  <div>{task.creatorName || '-'}</div>
-                </div>
-                <div>
-                  <Text type="secondary">创建时间</Text>
-                  <div>{task.createdAt || '-'}</div>
-                </div>
-                <div>
-                  <Text type="secondary">涉及系统</Text>
-                  <div>{(task.systems || []).join('、') || '-'}</div>
-                </div>
-                <div>
-                  <Text type="secondary">需求文档</Text>
-                  <Space wrap>
-                    <Text>{task.documentName || '未上传'}</Text>
-                    <Button size="small" onClick={handleDownloadDocument} disabled={!task.documentName}>
-                      下载
-                    </Button>
-                  </Space>
-                </div>
-                <div>
-                  <Text type="secondary">任务说明</Text>
-                  <div>{task.description || '-'}</div>
-                </div>
-              </Space>
-            </Card>
-          </Col>
-
-          <Col xs={24} lg={16}>
-            <Card
-              type="inner"
-              title="专家评估进度"
-              extra={task.status === 'awaiting_assignment' && isAdmin ? (
-                <Button type="primary" onClick={() => setAssignVisible(true)}>
-                  分配专家
-                </Button>
-              ) : null}
-            >
-              <Table
-                rowKey="assignment_id"
-                columns={assignmentColumns}
-                dataSource={assignments}
-                pagination={false}
-                scroll={{ x: 900 }}
-              />
-            </Card>
-          </Col>
-        </Row>
+        <Card type="inner" title="备注" style={{ marginTop: 16 }}>
+          <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
+            {task.remark || '-'}
+          </Paragraph>
+        </Card>
       </Card>
 
       <Card title="分析" style={{ marginBottom: 16 }}>
-        <Collapse
-          defaultActiveKey={[]}
-          items={[
-            {
-              key: 'deviation-panel',
-              label: '偏离度统计与高偏离功能点',
-              children: (
-                <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                  {deviationSummary.available ? (
-                    <Row gutter={16}>
-                      <Col xs={12} md={6}>
-                        <Statistic title="统计轮次" value={`第${deviationSummary.round}轮`} />
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Statistic title="平均偏离度" value={`${deviationSummary.avg}%`} />
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Statistic title="高偏离数" value={deviationSummary.highCount} />
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Statistic title="功能点数" value={deviationSummary.total} />
-                      </Col>
-                      <Col xs={24} style={{ marginTop: 12 }}>
-                        <Tag color={deviationSummary.isOfficial ? 'success' : 'warning'}>
-                          {deviationSummary.isOfficial ? '正式' : '预览'}
-                        </Tag>
-                      </Col>
-                    </Row>
-                  ) : (
-                    <Text type="secondary">报告生成后展示偏离度统计</Text>
-                  )}
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {deviationSummary.available && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Tag color={deviationSummary.isOfficial ? 'success' : 'warning'}>
+                {deviationSummary.isOfficial ? '正式' : '预览'}
+              </Tag>
+            </div>
+          )}
 
-                  {highDeviation.items && highDeviation.items.length ? (
-                    <>
-                      <Space>
-                        <Text type="secondary">统计轮次：</Text>
-                        <Text>第 {highDeviation.round} 轮</Text>
-                        <Tag color={highDeviation.isOfficial ? 'success' : 'warning'}>
-                          {highDeviation.isOfficial ? '正式' : '预览'}
-                        </Tag>
-                      </Space>
-                      <Table
-                        rowKey="id"
-                        columns={highDeviationColumns}
-                        dataSource={highDeviation.items}
-                        pagination={false}
-                        size="small"
-                        scroll={{ x: 800 }}
-                        loading={highDeviationLoading}
-                      />
-                    </>
-                  ) : (
-                    <Text type="secondary">暂无高偏离功能点</Text>
-                  )}
-                </Space>
-              ),
-            },
-          ]}
-        />
+          {deviationSummary.available ? (
+            <Row gutter={[8, 8]}>
+              <Col xs={24} sm={12} md={8} lg={6}>
+                <div style={metricCardStyle}>
+                  <Text type="secondary">统计轮次</Text>
+                  <Text strong>第 {deviationSummary.round} 轮</Text>
+                </div>
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={6}>
+                <div style={metricCardStyle}>
+                  <Text type="secondary">平均偏离度</Text>
+                  <Text strong>{deviationSummary.avg}%</Text>
+                </div>
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={6}>
+                <div style={metricCardStyle}>
+                  <Text type="secondary">高偏离数</Text>
+                  <Text strong>{deviationSummary.highCount}</Text>
+                </div>
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={6}>
+                <div style={metricCardStyle}>
+                  <Text type="secondary">功能点数</Text>
+                  <Text strong>{deviationSummary.total}</Text>
+                </div>
+              </Col>
+            </Row>
+          ) : (
+            <Text type="secondary">报告生成后展示偏离度统计</Text>
+          )}
+
+          {highDeviation.items && highDeviation.items.length ? (
+            <>
+              <Space size={8}>
+                <Text type="secondary">高偏离功能点（第 {highDeviation.round} 轮）</Text>
+                <Tag color={highDeviation.isOfficial ? 'success' : 'warning'}>
+                  {highDeviation.isOfficial ? '正式' : '预览'}
+                </Tag>
+              </Space>
+              <Table
+                rowKey="id"
+                columns={highDeviationColumns}
+                dataSource={highDeviation.items}
+                pagination={false}
+                size="small"
+                scroll={{ x: 800 }}
+                loading={highDeviationLoading}
+              />
+            </>
+          ) : (
+            <Text type="secondary">暂无高偏离功能点</Text>
+          )}
+        </Space>
       </Card>
 
-      <Card title="报告版本列表" style={{ marginTop: 16 }}>
+      <Modal
+        title="专家评估明细"
+        open={assignmentDetailVisible}
+        onCancel={() => setAssignmentDetailVisible(false)}
+        footer={<Button onClick={() => setAssignmentDetailVisible(false)}>关闭</Button>}
+        width={980}
+      >
         <Table
-          rowKey="id"
-          columns={reportColumns}
-          dataSource={task.reportVersions || []}
+          rowKey="assignment_id"
+          columns={assignmentColumns}
+          dataSource={assignments}
           pagination={false}
-          scroll={{ x: 800 }}
+          scroll={{ x: 920 }}
         />
-      </Card>
+      </Modal>
 
       <Modal
         title="分配专家"
@@ -521,54 +568,62 @@ const ReportPage = () => {
         cancelText="取消"
       >
         <Form form={assignForm} layout="vertical">
-          <Form.Item
-            label="专家1账号"
-            name="expert1Id"
-            rules={[{ required: true, message: '请输入专家1账号' }]}
-          >
-            <Select
-              placeholder="请选择专家1"
-              loading={expertLoading}
-              showSearch
-              optionFilterProp="label"
-              options={expertCandidates.map((user) => ({
-                value: user.username,
-                label: `${user.display_name || user.username}（${user.username}）`,
-              }))}
-            />
-          </Form.Item>
-          <Form.Item
-            label="专家2账号"
-            name="expert2Id"
-            rules={[{ required: true, message: '请输入专家2账号' }]}
-          >
-            <Select
-              placeholder="请选择专家2"
-              loading={expertLoading}
-              showSearch
-              optionFilterProp="label"
-              options={expertCandidates.map((user) => ({
-                value: user.username,
-                label: `${user.display_name || user.username}（${user.username}）`,
-              }))}
-            />
-          </Form.Item>
-          <Form.Item
-            label="专家3账号"
-            name="expert3Id"
-            rules={[{ required: true, message: '请输入专家3账号' }]}
-          >
-            <Select
-              placeholder="请选择专家3"
-              loading={expertLoading}
-              showSearch
-              optionFilterProp="label"
-              options={expertCandidates.map((user) => ({
-                value: user.username,
-                label: `${user.display_name || user.username}（${user.username}）`,
-              }))}
-            />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={8}>
+              <Form.Item
+                label="专家1账号"
+                name="expert1Id"
+                rules={[{ required: true, message: '请输入专家1账号' }]}
+              >
+                <Select
+                  placeholder="请选择专家1"
+                  loading={expertLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  options={expertCandidates.map((user) => ({
+                    value: user.username,
+                    label: `${user.display_name || user.username}（${user.username}）`,
+                  }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                label="专家2账号"
+                name="expert2Id"
+                rules={[{ required: true, message: '请输入专家2账号' }]}
+              >
+                <Select
+                  placeholder="请选择专家2"
+                  loading={expertLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  options={expertCandidates.map((user) => ({
+                    value: user.username,
+                    label: `${user.display_name || user.username}（${user.username}）`,
+                  }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                label="专家3账号"
+                name="expert3Id"
+                rules={[{ required: true, message: '请输入专家3账号' }]}
+              >
+                <Select
+                  placeholder="请选择专家3"
+                  loading={expertLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  options={expertCandidates.map((user) => ({
+                    value: user.username,
+                    label: `${user.display_name || user.username}（${user.username}）`,
+                  }))}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
       </Modal>
     </div>

@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Button,
   Card,
   DatePicker,
   message,
   Space,
-  Tabs,
   Tooltip,
   Typography,
 } from 'antd';
@@ -19,10 +19,10 @@ import {
 import axios from 'axios';
 import { useLocation, useNavigate } from 'react-router-dom';
 import usePermission from '../hooks/usePermission';
-import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import StatusTag from '../components/StatusTag';
 import { formatDateTime, toIsoEndOfDay, toIsoStartOfDay } from '../utils/time';
+import { resolveActionColumnWidth } from '../utils/taskTableLayout';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -48,16 +48,17 @@ const parseErrorMessage = (error, fallback) => {
   return responseData?.message || responseData?.detail || fallback;
 };
 
-const TaskListPage = () => {
+const TaskListPage = ({ defaultTab = 'ongoing' }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const intervalRef = useRef(null);
+  const resolvedTab = defaultTab === 'completed' ? 'completed' : 'ongoing';
 
   const { activeRole, isAdmin, isManager, isExpert, isViewer } = usePermission();
 
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [activeTab, setActiveTab] = useState('ongoing');
+  const [errorMessage, setErrorMessage] = useState('');
   const [dateRange, setDateRange] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -100,13 +101,16 @@ const TaskListPage = () => {
 
       const response = await axios.get('/api/v1/tasks', { params });
       const groups = response.data?.task_groups || {};
+      setErrorMessage('');
       setTaskGroups({
         pending: groups.pending || { total: 0, items: [] },
         in_progress: groups.in_progress || { total: 0, items: [] },
         completed: groups.completed || { total: 0, items: [] },
       });
+      return true;
     } catch (error) {
-      message.error(parseErrorMessage(error, '获取任务列表失败'));
+      setErrorMessage(parseErrorMessage(error, '获取任务列表失败'));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -124,6 +128,10 @@ const TaskListPage = () => {
     };
   }, [autoRefresh, fetchTaskGroups]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [resolvedTab]);
+
   const combinedOngoingItems = useMemo(() => {
     const merged = [
       ...(taskGroups.pending?.items || []),
@@ -134,7 +142,7 @@ const TaskListPage = () => {
   }, [taskGroups.in_progress?.items, taskGroups.pending?.items]);
 
   useEffect(() => {
-    const candidates = activeTab === 'completed'
+    const candidates = resolvedTab === 'completed'
       ? (taskGroups.completed?.items || [])
       : combinedOngoingItems;
     const hasProcessingTasks = candidates.some((task) => task.aiStatus === 'processing' || task.aiStatus === 'pending');
@@ -143,11 +151,13 @@ const TaskListPage = () => {
     } else if (!hasProcessingTasks && autoRefresh) {
       setAutoRefresh(false);
     }
-  }, [activeTab, autoRefresh, combinedOngoingItems, taskGroups.completed?.items]);
+  }, [resolvedTab, autoRefresh, combinedOngoingItems, taskGroups.completed?.items]);
 
   const handleRefresh = async () => {
-    await fetchTaskGroups();
-    message.success('已刷新');
+    const ok = await fetchTaskGroups();
+    if (ok) {
+      message.success('已刷新');
+    }
   };
 
   const handleView = useCallback((taskId) => {
@@ -255,10 +265,10 @@ const TaskListPage = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 280,
+      width: resolveActionColumnWidth({ isExpert, resolvedTab }),
       fixed: 'right',
       render: (_, record) => (
-        <Space>
+        <Space size={4}>
           <Tooltip title="查看详情">
             <Button size="small" icon={<EyeOutlined />} onClick={() => handleView(record.id)} />
           </Tooltip>
@@ -267,7 +277,7 @@ const TaskListPage = () => {
               <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record.id)} />
             </Tooltip>
           )}
-          {isExpert && activeTab === 'ongoing' && (
+          {isExpert && resolvedTab === 'ongoing' && (
             <Tooltip title="进入评估">
               <Button size="small" type="primary" onClick={() => handleEvaluate(record)}>
                 评估
@@ -282,7 +292,7 @@ const TaskListPage = () => {
         </Space>
       ),
     },
-  ]), [activeTab, isExpert, isManager, handleDownload, handleEdit, handleEvaluate, handleView, renderAiStatus]);
+  ]), [resolvedTab, isExpert, isManager, handleDownload, handleEdit, handleEvaluate, handleView, renderAiStatus]);
 
   const ongoingTotal = (taskGroups.pending?.total || 0) + (taskGroups.in_progress?.total || 0);
   const completedTotal = taskGroups.completed?.total || 0;
@@ -298,20 +308,23 @@ const TaskListPage = () => {
     );
   }
 
-  const tabItems = [
-    { key: 'ongoing', label: `进行中（${ongoingTotal}）` },
-    { key: 'completed', label: `已完成（${completedTotal}）` },
-  ];
-
-  const dataSource = activeTab === 'completed' ? (taskGroups.completed?.items || []) : combinedOngoingItems;
-  const total = activeTab === 'completed' ? completedTotal : ongoingTotal;
+  const dataSource = resolvedTab === 'completed' ? (taskGroups.completed?.items || []) : combinedOngoingItems;
+  const total = resolvedTab === 'completed' ? completedTotal : ongoingTotal;
+  const listSummary = `共 ${total} 条`;
 
   return (
-    <div>
-      <PageHeader
-        title="任务管理"
-        extra={(
-          <Space>
+    <Card>
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space wrap align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
+          <Text strong>{listSummary}</Text>
+          <Space wrap>
+            <RangePicker
+              value={dateRange}
+              onChange={(value) => {
+                setDateRange(value);
+                setPage(1);
+              }}
+            />
             {canCreateTask && (
               <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate(`/upload${location.search || ''}`)}>
                 发起评估
@@ -321,51 +334,42 @@ const TaskListPage = () => {
               刷新
             </Button>
           </Space>
-        )}
-      />
-
-      <Card>
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Space wrap>
-            <Tabs
-              activeKey={activeTab}
-              onChange={(key) => {
-                setActiveTab(key);
-                setPage(1);
-              }}
-              items={tabItems}
-            />
-            <RangePicker
-              value={dateRange}
-              onChange={(value) => {
-                setDateRange(value);
-                setPage(1);
-              }}
-            />
-          </Space>
-
-          <DataTable
-            rowKey="id"
-            columns={columns}
-            dataSource={dataSource}
-            loading={loading}
-            scroll={{ x: 1200 }}
-            pagination={{
-              current: page,
-              pageSize,
-              total,
-              showSizeChanger: true,
-              onChange: (nextPage, nextSize) => {
-                setPage(nextPage);
-                if (nextSize !== pageSize) {
-                  setPageSize(nextSize);
-                }
-              },
-            }}
-          />
         </Space>
-      </Card>
-    </div>
+
+        {errorMessage && (
+          <Alert
+            type="error"
+            showIcon
+            message={errorMessage}
+            action={(
+              <Button size="small" type="link" onClick={handleRefresh}>
+                重试
+              </Button>
+            )}
+          />
+        )}
+
+        <DataTable
+          rowKey="id"
+          columns={columns}
+          dataSource={dataSource}
+          loading={loading}
+          scroll={{ x: 1200 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            onChange: (nextPage, nextSize) => {
+              setPage(nextPage);
+              if (nextSize !== pageSize) {
+                setPageSize(nextSize);
+              }
+            },
+          }}
+        />
+      </Space>
+    </Card>
   );
 };
 

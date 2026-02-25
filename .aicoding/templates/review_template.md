@@ -149,6 +149,20 @@ Major 交付还必须填写 `SPOTCHECK_FILE`，指向独立的人类抽检文件
 - 未受影响的 GWT 可沿用上次判定：在表中将判定列标记为 `CARRIED`，并在摘要块填写 `CARRIED_FROM_COMMIT` + `CARRIED_GWTS`
 - **限制**：REQ-C 类 GWT 不允许 carry-over（禁止项必须每次重新验证）
 
+### 对抗性自检（🔴 MUST，自审时必填）
+
+> 来源：lessons_learned 2026-02-24 — 自审偏差（自己写自己审）容易用"意图"替代"文本是否无歧义"。
+> 本清单强制 reviewer 从"最坏情况"出发审视自己的产出，缓解自审盲区。
+
+```markdown
+### 对抗性自检
+- [ ] 是否存在"我知道意思但文本没写清"的地方？
+- [ ] 所有新增 API 是否都有完整契约（路径/参数/返回/权限/错误码）？
+- [ ] 所有"可选/或者/暂不"表述是否已收敛为单一口径？
+- [ ] 是否有验收用例无法仅凭文档文本判定 pass/fail？
+- [ ] 高风险项（兼容/回滚/权限/REQ-C）是否已在本阶段收敛，而非留给后续阶段？
+```
+
 ### 机器可读摘要块（🔴 MUST，文件末尾）
 
 > 门禁只认**最后一次**摘要块；`GWT_*` 计数必须可验真（由脚本从 requirements/review 表重算交叉校验）。
@@ -173,6 +187,7 @@ SPOTCHECK_FILE: docs/<版本号>/spotcheck_<stage>_<cr-id>.md
 GWT_CHANGE_CLASS: clarification|structural|N/A
 CLARIFICATION_CONFIRMED_BY: <human-or-N/A>
 CLARIFICATION_CONFIRMED_AT: YYYY-MM-DD|N/A
+VERIFICATION_COMMANDS: <实际执行的验证命令列表，逗号分隔>  # 宣称 pass 前必须列出已执行的验证命令（证据门禁）
 REVIEW_RESULT: pass|fail
 <!-- REVIEW-SUMMARY-END -->
 ```

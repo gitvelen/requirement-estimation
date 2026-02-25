@@ -78,6 +78,7 @@ GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-001-01
 SPOTCHECK_FILE: docs/v1.0/spotcheck_testing_main.md
+VERIFICATION_COMMANDS: echo spotcheck-file-required
 REVIEW_RESULT: pass
 <!-- REVIEW-SUMMARY-END -->
 EOF_REVIEW

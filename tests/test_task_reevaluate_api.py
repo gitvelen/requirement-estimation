@@ -168,3 +168,23 @@ def test_reevaluate_creates_pending_job_when_enabled(client, monkeypatch):
     assert payload.get("job_id")
     assert payload.get("status") == "pending"
 
+
+def test_reevaluate_accepts_missing_body(client, monkeypatch):
+    manager = _seed_user("reeval_mgr_no_body", "pwd123", ["manager"])
+    token = _login(client, "reeval_mgr_no_body", "pwd123")
+
+    task_id = "task_reeval_no_body"
+    _seed_task(task_id, manager["id"])
+
+    monkeypatch.setattr(settings, "V21_AUTO_REEVAL_ENABLED", False)
+    monkeypatch.setattr(settings, "V21_AI_REMARK_ENABLED", True)
+
+    response = client.post(
+        f"/api/v1/tasks/{task_id}/reevaluate",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("job_id") is None
+    assert payload.get("status") == "skipped"

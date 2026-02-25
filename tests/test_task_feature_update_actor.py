@@ -89,6 +89,7 @@ def test_update_feature_fills_actor_from_login_context(client):
             "system": "HOP",
             "operation": "update",
             "feature_index": 0,
+            "confirm": True,
             "feature_data": {"业务描述": "新描述"},
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -118,6 +119,7 @@ def test_update_feature_ignores_client_remark_write(client):
             "system": "HOP",
             "operation": "update",
             "feature_index": 0,
+            "confirm": True,
             "feature_data": {"备注": "客户端恶意备注", "业务描述": "新描述2"},
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -148,4 +150,3 @@ def test_update_feature_returns_missing_actor_without_login(client):
     assert response.status_code == 400
     payload = response.json()
     assert payload.get("error_code") == "missing_actor"
-

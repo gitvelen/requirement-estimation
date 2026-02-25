@@ -10,7 +10,9 @@ import {
   Popconfirm,
   Card,
   Typography,
-  Tag
+  Tag,
+  Row,
+  Col
 } from 'antd';
 import {
   PlusOutlined,
@@ -255,43 +257,56 @@ const SubsystemConfigPage = ({ embedded = false }) => {
           layout="vertical"
           autoComplete="off"
         >
-          <Form.Item
-            label="子系统名称"
-            name="subsystem"
-            rules={[
-              { max: 100, message: '子系统名称不能超过100个字符' }
-            ]}
-          >
-          <Input
-            placeholder="例如：开放存、联合贷平台"
-          />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="子系统名称"
+                name="subsystem"
+                rules={[
+                  { max: 100, message: '子系统名称不能超过100个字符' }
+                ]}
+              >
+                <Input
+                  placeholder="例如：开放存、联合贷平台"
+                />
+              </Form.Item>
+            </Col>
 
-          <Form.Item
-            label="所属主系统"
-            name="main_system"
-            rules={[
-              { max: 50, message: '主系统名称不能超过50个字符' }
-            ]}
-          >
-            <Input
-              placeholder="例如：HOP、CLMP、ECIF"
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="所属主系统"
+                name="main_system"
+                rules={[
+                  { max: 50, message: '主系统名称不能超过50个字符' }
+                ]}
+              >
+                <Input
+                  placeholder="例如：HOP、CLMP、ECIF"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
 
           {extraKeys.length ? (
             <div style={{ marginTop: 8 }}>
               <Title level={5} style={{ marginBottom: 8 }}>其它字段（来自模板列）</Title>
-              {extraKeys.map((key) => (
-                <Form.Item key={key} label={key} name={['extra', key]}>
-                  {/(描述|备注|关联系统)/.test(key) ? (
-                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
-                  ) : (
-                    <Input />
-                  )}
-                </Form.Item>
-              ))}
+              <Row gutter={16}>
+                {extraKeys.map((key) => {
+                  const longText = /(描述|备注|关联系统)/.test(key);
+                  return (
+                    <Col key={key} xs={24} md={longText ? 24 : 12}>
+                      <Form.Item label={key} name={['extra', key]}>
+                        {longText ? (
+                          <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
+                        ) : (
+                          <Input />
+                        )}
+                      </Form.Item>
+                    </Col>
+                  );
+                })}
+              </Row>
             </div>
           ) : null}
 

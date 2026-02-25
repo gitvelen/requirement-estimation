@@ -16,7 +16,8 @@ SCRIPT_DIR="${REPO_ROOT}/.aicoding/scripts/git-hooks"
 BACKUP_DIR="${HOOK_DIR}/backup-$(date +%Y%m%d%H%M%S)"
 
 # 依赖检查
-for cmd in jq awk grep; do
+# Git hooks 仅依赖常见的文本工具（jq 仅 CC hooks 需要）
+for cmd in awk grep sed; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "❌ 缺少依赖: $cmd" >&2; exit 1; }
 done
 

@@ -83,6 +83,7 @@ GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-1000-01
 SPOTCHECK_FILE: docs/v1.0/spotcheck_testing_main.md
+VERIFICATION_COMMANDS: echo test-report-gwt-id-width
 REVIEW_RESULT: pass
 <!-- REVIEW-SUMMARY-END -->
 EOF

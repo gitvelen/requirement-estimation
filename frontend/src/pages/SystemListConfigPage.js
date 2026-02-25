@@ -2,7 +2,6 @@ import React, { useMemo, useState } from 'react';
 import { Alert, Button, Divider, Modal, Space, Switch, Tabs, Upload, message } from 'antd';
 import { DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
-import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import MainSystemConfigPage from './MainSystemConfigPage';
 import SubsystemConfigPage from './SubsystemConfigPage';
@@ -139,20 +138,21 @@ const SystemListConfigPage = () => {
 
   return (
     <div style={{ padding: '24px' }}>
-      <PageHeader
-        title="系统清单配置"
-        extra={(
-          <Space>
-            <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>
-              下载模板
-            </Button>
-            <Button type="primary" icon={<UploadOutlined />} onClick={() => setImportVisible(true)}>
-              批量导入（XLSX）
-            </Button>
-          </Space>
-        )}
-      />
-      <Tabs defaultActiveKey="main">
+      <Tabs
+        defaultActiveKey="main"
+        tabBarExtraContent={{
+          right: (
+            <Space size={8}>
+              <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>
+                下载模板
+              </Button>
+              <Button type="primary" icon={<UploadOutlined />} onClick={() => setImportVisible(true)}>
+                批量导入（XLSX）
+              </Button>
+            </Space>
+          ),
+        }}
+      >
         <TabPane tab="主系统清单" key="main">
           <MainSystemConfigPage embedded key={`main-${refreshKey}`} />
         </TabPane>

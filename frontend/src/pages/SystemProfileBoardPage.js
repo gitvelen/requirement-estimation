@@ -3,36 +3,38 @@ import {
   Alert,
   Button,
   Card,
-  Descriptions,
   Form,
   Input,
   message,
-  Progress,
   Space,
   Tabs,
   Tag,
   Typography,
 } from 'antd';
-import { ReloadOutlined, SaveOutlined, SendOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SendOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import PageHeader from '../components/PageHeader';
 import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
 import {
   PROFILE_FIELD_LABELS_V21,
-  buildEmptyV21ProfileFormValues,
-  parseModuleStructureDraft,
   parseV21ProfileFormValues,
-  stringifyModuleStructureDraft,
 } from '../utils/systemProfileV21';
 
-const { TextArea } = Input;
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
-const emptyFormValues = buildEmptyV21ProfileFormValues();
+const TEXT_FIELD_LABELS = Object.fromEntries(
+  Object.entries(PROFILE_FIELD_LABELS_V21).filter(([key]) => key !== 'module_structure')
+);
+
+const emptyFormValues = {
+  system_scope: '',
+  integration_points: '',
+  key_constraints: '',
+  modules: [],
+};
 
 const parseErrorMessage = (error, fallback) => {
   const responseData = error?.response?.data;
@@ -149,10 +151,17 @@ const SystemProfileBoardPage = () => {
 
       if (payload) {
         const fields = typeof payload.fields === 'object' && payload.fields ? payload.fields : {};
+        const moduleArray = Array.isArray(fields.module_structure) ? fields.module_structure : [];
+        const modules = moduleArray.map((m) => ({
+          module_name: m.module_name || '',
+          functions: (m.functions || []).map((f) => ({ name: f.name || '', desc: f.desc || '' })),
+        }));
         form.setFieldsValue({
           ...emptyFormValues,
-          ...fields,
-          module_structure: stringifyModuleStructureDraft(fields.module_structure),
+          system_scope: fields.system_scope || '',
+          integration_points: fields.integration_points || '',
+          key_constraints: fields.key_constraints || '',
+          modules,
         });
         setProfileMeta({
           status: payload.status || 'draft',
@@ -224,9 +233,15 @@ const SystemProfileBoardPage = () => {
     }
 
     const values = form.getFieldsValue(true);
-    const parsed = parseV21ProfileFormValues(values);
+    const moduleStructure = (values.modules || [])
+      .filter((m) => m && m.module_name)
+      .map((m) => ({
+        module_name: m.module_name,
+        functions: (m.functions || []).filter((f) => f && f.name).map((f) => ({ name: f.name, desc: f.desc || '' })),
+      }));
+    const parsed = parseV21ProfileFormValues({ ...values, module_structure: moduleStructure });
     if (!parsed.ok) {
-      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
+      message.error(parsed.message || '数据格式错误');
       return;
     }
 
@@ -254,9 +269,15 @@ const SystemProfileBoardPage = () => {
     }
 
     const values = form.getFieldsValue(true);
-    const parsed = parseV21ProfileFormValues(values);
+    const moduleStructure = (values.modules || [])
+      .filter((m) => m && m.module_name)
+      .map((m) => ({
+        module_name: m.module_name,
+        functions: (m.functions || []).filter((f) => f && f.name).map((f) => ({ name: f.name, desc: f.desc || '' })),
+      }));
+    const parsed = parseV21ProfileFormValues({ ...values, module_structure: moduleStructure });
     if (!parsed.ok) {
-      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
+      message.error(parsed.message || '数据格式错误');
       return;
     }
     if (!parsed.value.system_scope) {
@@ -280,21 +301,6 @@ const SystemProfileBoardPage = () => {
     }
   };
 
-  const handleFormatModuleStructure = () => {
-    const currentText = form.getFieldValue('module_structure');
-    const parsed = parseModuleStructureDraft(currentText);
-    if (!parsed.ok) {
-      message.error(parsed.message || 'module_structure 格式错误，需为 JSON 数组');
-      return;
-    }
-    try {
-      form.setFieldValue('module_structure', stringifyModuleStructureDraft(parsed.value));
-      message.success('JSON 已格式化');
-    } catch (_error) {
-      message.error('格式化失败');
-    }
-  };
-
   const profileStatusTag = useMemo(() => (
     <Tag color={profileMeta.status === 'published' ? 'green' : 'gold'}>
       {profileMeta.status === 'published' ? '已发布' : '草稿'}
@@ -306,68 +312,48 @@ const SystemProfileBoardPage = () => {
 
   return (
     <div>
-      <PageHeader
-        title="系统画像 / 信息看板"
-      />
-
       {responsibleSystems.length === 0 ? (
         <Card>
           <Text type="secondary">暂无可操作系统（仅展示主责/B角系统）。请联系管理员维护系统负责关系。</Text>
         </Card>
       ) : (
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Card>
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
-              <Tabs
-                activeKey={selectedSystemName || undefined}
-                onChange={handleSystemTabChange}
-                items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
-              />
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            <Tabs
+              size="small"
+              activeKey={selectedSystemName || undefined}
+              onChange={handleSystemTabChange}
+              items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
+            />
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <Title level={4} style={{ margin: 0 }}>{selectedSystemName || '-'}</Title>
-                <Space>
-                  {profileStatusTag}
-                  {profileMeta.is_stale && <Tag color="orange">画像过时</Tag>}
-                  <Text type="secondary">最后更新：{formatDateTime(profileMeta.updated_at)}</Text>
-                </Space>
-              </div>
-
-              <Descriptions
-                size="small"
-                column={2}
-                items={[
-                  { key: 'status', label: '系统状态', children: selectedSystem?.status || '-' },
-                  { key: 'score', label: '完整度', children: `${totalScore} / 100` },
-                ]}
-              />
-
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {profileStatusTag}
+              {profileMeta.is_stale && <Tag color="orange">画像过时</Tag>}
+              <Tag>{selectedSystem?.status || '-'}</Tag>
               {completenessUnknown ? (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="完整度未知"
-                  description="完整度接口暂时不可用，不影响继续查看与编辑画像。"
-                />
+                <Tag color="default">完整度未知</Tag>
               ) : (
-                <Space direction="vertical" style={{ width: '100%' }} size={6}>
-                  <Text type="secondary">完整度分析</Text>
-                  <Progress percent={breakdown.code_scan ?? 0} size="small" strokeColor="#1677ff" format={(p) => `代码扫描 ${p}/30`} />
-                  <Progress percent={breakdown.documents ?? 0} size="small" strokeColor="#52c41a" format={(p) => `文档 ${p}/40`} />
-                  <Progress percent={breakdown.esb ?? 0} size="small" strokeColor="#faad14" format={(p) => `ESB ${p}/30`} />
-                </Space>
+                <>
+                  <Tag color="blue">完整度 {totalScore}/100</Tag>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    代码{breakdown.code_scan ?? 0}/30 · 文档{breakdown.documents ?? 0}/40 · ESB{breakdown.esb ?? 0}/30
+                  </Text>
+                </>
               )}
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
+                更新：{formatDateTime(profileMeta.updated_at)}
+              </Text>
+            </div>
 
-              {!canWrite && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="当前系统为只读"
-                  description="仅系统主责或B角 PM 可执行保存草稿；发布仅主责可执行。"
-                />
-              )}
-            </Space>
-          </Card>
+            {!canWrite && (
+              <Alert
+                type="warning"
+                showIcon
+                message="当前系统为只读"
+                description="仅系统主责或B角 PM 可执行保存草稿；发布仅主责可执行。"
+              />
+            )}
+          </Space>
 
           <Card
             title="画像字段（可编辑）"
@@ -380,41 +366,71 @@ const SystemProfileBoardPage = () => {
           >
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               <Form form={form} layout="vertical" initialValues={emptyFormValues} disabled={!canWrite}>
-                {Object.entries(PROFILE_FIELD_LABELS_V21).map(([key, label]) => (
-                  <div key={key}>
-                    <Form.Item
-                      name={key}
-                      label={label}
-                      rules={key === 'module_structure'
-                        ? [
-                          {
-                            validator: (_rule, value) => {
-                              const parsed = parseModuleStructureDraft(value);
-                              if (parsed.ok) {
-                                return Promise.resolve();
-                              }
-                              return Promise.reject(new Error('请输入合法 JSON 数组'));
-                            },
-                          },
-                        ]
-                        : undefined}
-                    >
-                      <TextArea
-                        rows={key === 'module_structure' ? 10 : 3}
-                        placeholder={key === 'module_structure'
-                          ? '请输入 JSON 数组，例如：[{"module_name":"用户管理","functions":[{"name":"用户注册","desc":"新用户注册流程"}]}]'
-                          : `请输入${label}`}
-                      />
-                    </Form.Item>
-                    {key === 'module_structure' && canWrite && (
-                      <Space style={{ marginBottom: 12 }}>
-                        <Button size="small" onClick={handleFormatModuleStructure}>
-                          一键格式化
-                        </Button>
+                {Object.entries(TEXT_FIELD_LABELS).map(([key, label]) => (
+                  <Form.Item key={key} name={key} label={label}>
+                    <Input.TextArea rows={3} placeholder={`请输入${label}`} />
+                  </Form.Item>
+                ))}
+
+                <Form.Item label="功能模块结构">
+                  <Form.List name="modules">
+                    {(moduleFields, { add: addModule, remove: removeModule }) => (
+                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                        {moduleFields.map((moduleField) => (
+                          <Card
+                            key={moduleField.key}
+                            size="small"
+                            title={
+                              <Form.Item name={[moduleField.name, 'module_name']} noStyle>
+                                <Input placeholder="模块名称" style={{ width: 200 }} />
+                              </Form.Item>
+                            }
+                            extra={
+                              canWrite && (
+                                <Button type="text" danger icon={<DeleteOutlined />} onClick={() => removeModule(moduleField.name)} />
+                              )
+                            }
+                          >
+                            <Form.List name={[moduleField.name, 'functions']}>
+                              {(funcFields, { add: addFunc, remove: removeFunc }) => (
+                                <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                                  {funcFields.map((funcField) => (
+                                    <Space key={funcField.key} align="baseline" style={{ width: '100%' }}>
+                                      <Form.Item name={[funcField.name, 'name']} noStyle>
+                                        <Input placeholder="功能名称" style={{ width: 160 }} />
+                                      </Form.Item>
+                                      <Form.Item name={[funcField.name, 'desc']} noStyle>
+                                        <Input placeholder="功能描述" style={{ width: 240 }} />
+                                      </Form.Item>
+                                      {canWrite && (
+                                        <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeFunc(funcField.name)} />
+                                      )}
+                                    </Space>
+                                  ))}
+                                  {canWrite && (
+                                    <Button type="dashed" size="small" onClick={() => addFunc({ name: '', desc: '' })} icon={<PlusOutlined />}>
+                                      添加功能
+                                    </Button>
+                                  )}
+                                </Space>
+                              )}
+                            </Form.List>
+                          </Card>
+                        ))}
+                        {canWrite && (
+                          <Button
+                            type="dashed"
+                            onClick={() => addModule({ module_name: '', functions: [{ name: '', desc: '' }] })}
+                            icon={<PlusOutlined />}
+                            style={{ width: '100%' }}
+                          >
+                            添加模块
+                          </Button>
+                        )}
                       </Space>
                     )}
-                  </div>
-                ))}
+                  </Form.List>
+                </Form.Item>
               </Form>
 
               {canWrite && (

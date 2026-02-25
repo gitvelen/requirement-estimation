@@ -374,6 +374,8 @@ def test_dashboard_v21_sample_guard_and_caliber_fallback(client):
     hop_item = next(item for item in pm_items if item.get("system_id") == "sys_hop")
     pay_item = next(item for item in pm_items if item.get("system_id") == "sys_pay")
 
+    assert hop_item.get("system_name") == "HOP"
+    assert pay_item.get("system_name") == "PAY"
     assert hop_item.get("correction_rate") != "N/A"
     assert hop_item.get("caliber") in {"标准", "口径降级"}
     assert pay_item.get("correction_rate") == "N/A"
@@ -381,6 +383,7 @@ def test_dashboard_v21_sample_guard_and_caliber_fallback(client):
     deviation_widget = widgets.get("ai_deviation_monitoring") or {}
     deviation_items = (deviation_widget.get("data") or {}).get("items") or []
     hop_deviation = next(item for item in deviation_items if item.get("system_id") == "sys_hop")
+    assert hop_deviation.get("system_name") == "HOP"
     assert hop_deviation.get("caliber") == "口径降级"
 
 

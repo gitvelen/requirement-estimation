@@ -86,6 +86,7 @@ GWT_DEFERRED: 0
 GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-001-01
+VERIFICATION_COMMANDS: echo phase-exit-incremental-carried
 REVIEW_RESULT: pass
 <!-- REVIEW-SUMMARY-END -->
 EOF
@@ -120,6 +121,7 @@ GWT_DEFERRED: 0
 GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-001-01
+VERIFICATION_COMMANDS: echo phase-exit-incremental-carried
 REVIEW_RESULT: pass
 <!-- REVIEW-SUMMARY-END -->
 EOF
@@ -144,4 +146,3 @@ if ! echo "$INPUT" | CLAUDE_PROJECT_DIR="$tmp_dir" bash "$PHASE_EXIT_SRC"; then
 fi
 
 echo "ok"
-

@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   Checkbox,
-  Collapse,
   Input,
   InputNumber,
   message,
@@ -16,6 +15,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import ExpandableText from '../components/ExpandableText';
 
@@ -53,6 +53,7 @@ const EvaluationPage = () => {
   const [roundNo, setRoundNo] = useState(1);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [highDeviationFeatures, setHighDeviationFeatures] = useState([]);
+  const [cosmicPopoverOpen, setCosmicPopoverOpen] = useState(false);
 
   const [completenessMap, setCompletenessMap] = useState({});
 
@@ -407,27 +408,42 @@ const EvaluationPage = () => {
     <div className="evaluation-page">
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Card title="COSMIC简明规则（只读）" style={{ width: 'min(100%, 520px)' }}>
-            <Collapse
-              defaultActiveKey={[]}
-              items={[
-                {
-                  key: 'rule-guide',
-                  label: '查看业务语言说明与拆分示例',
-                  children: (
-                    <Space direction="vertical" style={{ width: '100%' }}>
-                      <Paragraph>
-                        细粒度：每个按钮/操作可拆分为独立功能点；中等粒度：一个完整交易流程（输入+校验+处理+返回）作为一个功能点；粗粒度：一个业务模块作为一个功能点。
-                      </Paragraph>
-                      <Paragraph type="secondary">
-                        评估时优先保证“功能边界清晰、输入输出明确”，避免过细拆分导致噪声。
-                      </Paragraph>
-                    </Space>
-                  ),
-                },
-              ]}
-            />
-          </Card>
+          <Space size={8} align="center">
+            <Text type="secondary">COSMIC规则</Text>
+            <Popover
+              trigger="click"
+              placement="bottomRight"
+              open={cosmicPopoverOpen}
+              onOpenChange={setCosmicPopoverOpen}
+              title={(
+                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Text strong>COSMIC简明规则</Text>
+                  <Button size="small" type="text" onClick={() => setCosmicPopoverOpen(false)}>
+                    关闭
+                  </Button>
+                </Space>
+              )}
+              content={(
+                <div style={{ width: 'min(86vw, 520px)', maxHeight: 360, overflowY: 'auto' }}>
+                  <Space direction="vertical" size={8}>
+                    <Paragraph style={{ marginBottom: 0 }}>
+                      细粒度：每个按钮/操作可拆分为独立功能点；中等粒度：一个完整交易流程（输入+校验+处理+返回）作为一个功能点；粗粒度：一个业务模块作为一个功能点。
+                    </Paragraph>
+                    <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      评估时优先保证“功能边界清晰、输入输出明确”，避免过细拆分导致噪声。
+                    </Paragraph>
+                  </Space>
+                </div>
+              )}
+            >
+              <Button
+                type="text"
+                shape="circle"
+                icon={<QuestionCircleOutlined />}
+                aria-label="查看COSMIC规则"
+              />
+            </Popover>
+          </Space>
         </div>
 
         <Card loading={loading}>

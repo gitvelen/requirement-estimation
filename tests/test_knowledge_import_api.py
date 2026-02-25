@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -146,6 +147,55 @@ def test_knowledge_import_document_updates_completeness(client):
     assert profile
     assert int(profile.get("document_count") or 0) >= 1
     assert int(profile.get("completeness_score") or 0) >= 10
+
+
+def test_knowledge_import_accepts_doc_type_and_persists_metadata(client):
+    manager = _seed_user("kmgr_doc_type", "pwd123", ["manager"])
+    token = _login(client, "kmgr_doc_type", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    response = client.post(
+        "/api/v1/knowledge/imports",
+        data={
+            "knowledge_type": "document",
+            "level": "normal",
+            "doc_type": "design",
+            "system_id": "sys_hop",
+        },
+        files={"file": ("design.csv", "字段,说明\nA,系统架构设计".encode("utf-8"), "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] >= 1
+    assert payload["failed"] == 0
+
+    store_path = os.path.join(settings.REPORT_DIR, "knowledge_store.json")
+    with open(store_path, "r", encoding="utf-8") as fp:
+        stored_items = json.load(fp)
+
+    assert stored_items
+    assert any((item.get("metadata") or {}).get("doc_type") == "design" for item in stored_items)
+
+
+def test_knowledge_import_rejects_invalid_doc_type(client):
+    manager = _seed_user("kmgr_doc_type_bad", "pwd123", ["manager"])
+    token = _login(client, "kmgr_doc_type_bad", "pwd123")
+
+    response = client.post(
+        "/api/v1/knowledge/imports",
+        data={
+            "knowledge_type": "document",
+            "level": "normal",
+            "doc_type": "invalid_type",
+        },
+        files={"file": ("design.csv", "字段,说明\nA,系统架构设计".encode("utf-8"), "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "KNOW_001"
 
 
 def test_knowledge_import_l0_not_counted_in_completeness(client):

@@ -83,6 +83,7 @@ CARRIED_FROM_COMMIT: N/A
 GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-001-02
+VERIFICATION_COMMANDS: echo spot-check-remark-bound
 REVIEW_RESULT: pass
 <!-- REVIEW-SUMMARY-END -->
 EOF
@@ -106,4 +107,3 @@ if bash scripts/git-hooks/pre-commit; then
 fi
 
 echo "ok"
-

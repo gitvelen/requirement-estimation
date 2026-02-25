@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 
 from backend.api import system_routes
 from backend.api.auth import require_roles
@@ -91,6 +91,32 @@ def _ensure_owner_permission(
         error_code="AUTH_001",
         message="权限不足",
         details={"reason": reason, "system_id": system_id, "system_name": owner_info.get("system_name")},
+    )
+
+
+def _ensure_admin_or_owner_scope(
+    current_user: Dict[str, Any],
+    *,
+    request: Request,
+    system_id: str,
+):
+    normalized_system_id = str(system_id or "").strip()
+    if normalized_system_id:
+        return _ensure_owner_permission(
+            current_user,
+            request=request,
+            system_id=normalized_system_id,
+        )
+
+    roles = current_user.get("roles") or []
+    if "admin" in roles:
+        return None, None
+
+    return None, build_error_response(
+        request=request,
+        status_code=400,
+        error_code="ESB_002",
+        message="非管理员查询需传入 system_id",
     )
 
 
@@ -193,6 +219,7 @@ async def import_esb(
             "imported": imported,
             "skipped": int(result.get("skipped") or 0),
             "errors": result.get("errors") or [],
+            "mapping_resolved": result.get("mapping_resolved") or {},
         }
     except RuntimeError as exc:
         return build_error_response(
@@ -225,5 +252,107 @@ async def import_esb(
             status_code=500,
             error_code="ESB_001",
             message="文件格式不支持，请上传Excel或CSV文件",
+            details={"reason": str(exc)},
+        )
+
+
+@router.get("/search")
+async def search_esb(
+    request: Request,
+    q: str = Query(...),
+    system_id: Optional[str] = Query(None),
+    scope: Optional[str] = Query("both"),
+    include_deprecated: bool = Query(False),
+    top_k: int = Query(8),
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_query = str(q or "").strip()
+    if not normalized_query:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="ESB_002",
+            message="检索关键词不能为空",
+        )
+
+    normalized_scope = str(scope or "both").strip().lower() or "both"
+    if normalized_scope not in {"provider", "consumer", "both"}:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="ESB_002",
+            message="scope 仅支持 provider/consumer/both",
+        )
+
+    normalized_top_k = max(1, min(int(top_k or 8), 100))
+    normalized_system_id = str(system_id or "").strip()
+
+    _, owner_error = _ensure_admin_or_owner_scope(
+        current_user,
+        request=request,
+        system_id=normalized_system_id,
+    )
+    if owner_error:
+        return owner_error
+
+    try:
+        service = get_esb_service()
+        items = service.search_esb(
+            query=normalized_query,
+            system_id=normalized_system_id or None,
+            scope=normalized_scope,
+            include_deprecated=bool(include_deprecated),
+            top_k=normalized_top_k,
+        )
+        return {
+            "total": len(items),
+            "items": items,
+        }
+    except Exception as exc:
+        logger.error("ESB检索失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="ESB_001",
+            message="ESB检索失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.get("/stats")
+async def get_esb_stats(
+    request: Request,
+    system_id: Optional[str] = Query(None),
+    include_system_summary: bool = Query(True),
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+
+    _, owner_error = _ensure_admin_or_owner_scope(
+        current_user,
+        request=request,
+        system_id=normalized_system_id,
+    )
+    if owner_error:
+        return owner_error
+
+    try:
+        service = get_esb_service()
+        stats = service.get_stats(system_id=normalized_system_id or None)
+        if not include_system_summary:
+            stats["system_summary"] = []
+        return {
+            "active_entry_count": int(stats.get("active_entry_count") or 0),
+            "deprecated_entry_count": int(stats.get("deprecated_entry_count") or 0),
+            "active_unique_service_count": int(stats.get("active_unique_service_count") or 0),
+            "system_summary": stats.get("system_summary") or [],
+        }
+    except Exception as exc:
+        logger.error("ESB统计失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="ESB_001",
+            message="ESB统计失败",
             details={"reason": str(exc)},
         )

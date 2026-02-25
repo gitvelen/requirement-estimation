@@ -116,6 +116,7 @@ def test_legacy_and_new_modifications_can_coexist(client):
             'system': 'HOP',
             'operation': 'update',
             'feature_index': 0,
+            'confirm': True,
             'feature_data': {'业务描述': '新描述'},
         },
         headers={'Authorization': f'Bearer {token}'},

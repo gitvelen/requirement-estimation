@@ -34,6 +34,7 @@ class SearchRequest(BaseModel):
 
 
 SUPPORTED_IMPORT_EXTENSIONS = {".docx", ".doc", ".pdf", ".pptx", ".txt", ".xlsx", ".xls", ".csv"}
+SUPPORTED_DOC_TYPES = {"requirements", "design", "tech_solution", "history_report"}
 
 
 def _parsed_to_text(parsed_data: Any) -> str:
@@ -118,6 +119,7 @@ async def import_knowledge_v2(
     file: UploadFile = File(...),
     knowledge_type: str = Form(...),
     level: str = Form("normal"),
+    doc_type: Optional[str] = Form(None),
     system_name: Optional[str] = Form(None),
     system_id: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(require_roles(["manager"])),
@@ -149,6 +151,25 @@ async def import_knowledge_v2(
             error_code="KNOW_001",
             message="知识库文件类型不支持",
             details={"reason": "仅 knowledge_type=document 支持 level=l0"},
+        )
+
+    normalized_doc_type = str(doc_type or "").strip().lower()
+    if normalized_doc_type and normalized_doc_type not in SUPPORTED_DOC_TYPES:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"reason": f"doc_type 仅支持 {', '.join(sorted(SUPPORTED_DOC_TYPES))}"},
+        )
+
+    if normalized_doc_type and normalized_type != "document":
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="KNOW_001",
+            message="知识库文件类型不支持",
+            details={"reason": "仅 knowledge_type=document 支持 doc_type"},
         )
 
     if not file.filename:
@@ -260,6 +281,7 @@ async def import_knowledge_v2(
             embedding = embeddings[idx] if idx < len(embeddings) else []
             metadata = {
                 "level": normalized_level,
+                "doc_type": normalized_doc_type,
                 "chunk_index": idx,
                 "source_filename": file.filename,
                 "bound_system_id": bound_system_id,

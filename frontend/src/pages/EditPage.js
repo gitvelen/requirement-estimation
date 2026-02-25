@@ -4,13 +4,18 @@ import { Tabs, Table, Button, Space, message, Card, Tag, Typography, Popconfirm,
 import { CheckOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined, HistoryOutlined, EditOutlined, DownOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import ExpandableText from '../components/ExpandableText';
+import usePermission from '../hooks/usePermission';
+import { extractErrorMessage } from '../utils/errorMessage';
 
 const { Text } = Typography;
 const { TextArea } = Input;
+const NON_SUBSTANTIVE_FIELDS = new Set(['序号']);
+const REMARK_FIELDS = new Set(['备注', 'remark']);
 
 const EditPage = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
+  const { isManager } = usePermission();
   const [form] = Form.useForm();
 
   const [systemsData, setSystemsData] = useState({});
@@ -113,6 +118,28 @@ const EditPage = () => {
     依赖项: normalizeListField(feature['依赖项'] || feature['dependencies']),
   });
 
+  const isSubstantiveField = (field) => {
+    const normalized = String(field || '').trim();
+    if (!normalized) {
+      return false;
+    }
+    if (REMARK_FIELDS.has(normalized)) {
+      return false;
+    }
+    if (NON_SUBSTANTIVE_FIELDS.has(normalized)) {
+      return false;
+    }
+    return true;
+  };
+
+  const hasSubstantiveChanges = (changes) => (
+    Object.keys(changes || {}).some((field) => isSubstantiveField(field))
+  );
+
+  const triggerReevaluate = useCallback(async () => {
+    await axios.post(`/api/v1/tasks/${taskId}/reevaluate`, { force: false });
+  }, [taskId]);
+
   const renderRemark = (text) => {
     const raw = String(text || '').trim();
     if (!raw) {
@@ -134,9 +161,6 @@ const EditPage = () => {
   const handleEditSave = async () => {
     try {
       const values = await form.validateFields();
-      setSaving(true);
-
-      // 找出变化的字段
       const changes = {};
       Object.keys(values).forEach(key => {
         if (values[key] !== editingFeature[key]) {
@@ -150,36 +174,50 @@ const EditPage = () => {
         return;
       }
 
-      // 保存每个变化
-      for (const [field, newValue] of Object.entries(changes)) {
-        await axios.put(`/api/v1/requirement/features/${taskId}`, {
-          system: currentSystem,
-          operation: 'update',
-          feature_index: editingIndex,
-          feature_data: { [field]: newValue }
+      const isSubstantive = hasSubstantiveChanges(changes);
+
+      const doSave = async (confirm) => {
+        try {
+          setSaving(true);
+          await axios.put(`/api/v1/requirement/features/${taskId}`, {
+            system: currentSystem,
+            operation: 'update',
+            feature_index: editingIndex,
+            feature_data: changes,
+            confirm,
+          });
+          if (isSubstantive) {
+            await triggerReevaluate();
+            message.success('保存成功，已触发AI重评估');
+          } else {
+            message.success('保存成功');
+          }
+          await fetchEvaluationResult(currentSystem);
+          setEditModalVisible(false);
+        } catch (saveError) {
+          message.error(`保存失败: ${extractErrorMessage(saveError, '保存失败')}`);
+          throw saveError;
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      if (isSubstantive) {
+        Modal.confirm({
+          title: '确认保存并触发重评估？',
+          content: '本次修改将触发 AI 重新评估，是否继续？',
+          okText: '确认',
+          cancelText: '取消',
+          onOk: () => doSave(true),
         });
+      } else {
+        await doSave(false);
       }
-
-      // 更新本地状态
-      const updatedFeatures = [...systemsData[currentSystem]];
-      updatedFeatures[editingIndex] = { ...updatedFeatures[editingIndex], ...values };
-      setSystemsData({ ...systemsData, [currentSystem]: updatedFeatures });
-
-      // 刷新修改记录
-      const response = await axios.get(`/api/v1/requirement/modifications/${taskId}`);
-      setModifications(response.data.data.modifications);
-
-      message.success('保存成功');
-      setEditModalVisible(false);
     } catch (error) {
       console.error('保存失败:', error);
       if (error.errorFields) {
         message.error('请检查输入');
-      } else {
-        message.error('保存失败: ' + (error.response?.data?.detail || error.message));
       }
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -190,21 +228,15 @@ const EditPage = () => {
       await axios.put(`/api/v1/requirement/features/${taskId}`, {
         system: currentSystem,
         operation: 'delete',
-        feature_index: index
+        feature_index: index,
+        confirm: true,
       });
-
-      // 更新本地状态
-      const updatedFeatures = systemsData[currentSystem].filter((_, idx) => idx !== index);
-      setSystemsData({ ...systemsData, [currentSystem]: updatedFeatures });
-
-      // 刷新修改记录
-      const response = await axios.get(`/api/v1/requirement/modifications/${taskId}`);
-      setModifications(response.data.data.modifications);
-
-      message.success('删除成功');
+      await triggerReevaluate();
+      await fetchEvaluationResult(currentSystem);
+      message.success('删除成功，已触发AI重评估');
     } catch (error) {
       console.error('删除失败:', error);
-      message.error('删除失败: ' + (error.response?.data?.detail || error.message));
+      message.error(`删除失败: ${extractErrorMessage(error, '删除失败')}`);
     } finally {
       setSaving(false);
     }
@@ -220,12 +252,12 @@ const EditPage = () => {
       输入: '',
       输出: '',
       依赖项: '',
-      预估人天: 1
+      预估人天: null,
     });
     setEditingIndex(null);
     form.resetFields();
     form.setFieldsValue({
-      预估人天: 1
+      预估人天: null,
     });
     setEditModalVisible(true);
   };
@@ -234,40 +266,50 @@ const EditPage = () => {
   const handleAddSave = async () => {
     try {
       const values = await form.validateFields();
-      setSaving(true);
-
       const maxIndex = systemsData[currentSystem].length;
       const newFeature = {
         ...values,
         序号: `1.${maxIndex + 1}`,
-        预估人天: parseFloat(values.预估人天) || 1
+      };
+      if (isManager) {
+        delete newFeature['预估人天'];
+      } else if (values['预估人天'] !== null && values['预估人天'] !== undefined && values['预估人天'] !== '') {
+        newFeature['预估人天'] = parseFloat(values['预估人天']) || 1;
+      }
+
+      const doSave = async () => {
+        try {
+          setSaving(true);
+          await axios.put(`/api/v1/requirement/features/${taskId}`, {
+            system: currentSystem,
+            operation: 'add',
+            feature_data: newFeature,
+            confirm: true,
+          });
+          await triggerReevaluate();
+          await fetchEvaluationResult(currentSystem);
+          message.success('添加成功，已触发AI重评估');
+          setEditModalVisible(false);
+        } catch (saveError) {
+          message.error(`添加失败: ${extractErrorMessage(saveError, '添加失败')}`);
+          throw saveError;
+        } finally {
+          setSaving(false);
+        }
       };
 
-      await axios.put(`/api/v1/requirement/features/${taskId}`, {
-        system: currentSystem,
-        operation: 'add',
-        feature_data: newFeature
+      Modal.confirm({
+        title: '确认保存并触发重评估？',
+        content: '新增功能点将触发 AI 重新评估，是否继续？',
+        okText: '确认',
+        cancelText: '取消',
+        onOk: doSave,
       });
-
-      // 更新本地状态
-      const updatedFeatures = [...systemsData[currentSystem], newFeature];
-      setSystemsData({ ...systemsData, [currentSystem]: updatedFeatures });
-
-      // 刷新修改记录
-      const response = await axios.get(`/api/v1/requirement/modifications/${taskId}`);
-      setModifications(response.data.data.modifications);
-
-      message.success('添加成功');
-      setEditModalVisible(false);
     } catch (error) {
       console.error('添加失败:', error);
       if (error.errorFields) {
         message.error('请检查输入');
-      } else {
-        message.error('添加失败: ' + (error.response?.data?.detail || error.message));
       }
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -358,15 +400,17 @@ const EditPage = () => {
     try {
       setSaving(true);
       await axios.put(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}/rename`, {
-        new_name: nextName
+        new_name: nextName,
+        confirm: true,
       });
+      await triggerReevaluate();
       setRenameVisible(false);
       setNewSystemName('');
       await fetchEvaluationResult(nextName);
-      message.success('系统重命名成功');
+      message.success('系统重命名成功，已触发AI重评估');
     } catch (error) {
       console.error('重命名失败:', error);
-      message.error(error.response?.data?.detail || '重命名失败');
+      message.error(extractErrorMessage(error, '重命名失败'));
     } finally {
       setSaving(false);
     }
@@ -375,12 +419,13 @@ const EditPage = () => {
   const handleDeleteSystem = async () => {
     try {
       setSaving(true);
-      await axios.delete(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}`);
+      await axios.delete(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}?confirm=true`);
+      await triggerReevaluate();
       await fetchEvaluationResult();
-      message.success('系统已删除');
+      message.success('系统已删除，已触发AI重评估');
     } catch (error) {
       console.error('删除系统失败:', error);
-      message.error(error.response?.data?.detail || '删除系统失败');
+      message.error(extractErrorMessage(error, '删除系统失败'));
     } finally {
       setSaving(false);
     }
@@ -426,7 +471,8 @@ const EditPage = () => {
       const response = await axios.post(`/api/v1/requirement/systems/${taskId}`, {
         name,
         type,
-        auto_breakdown: payload?.auto_breakdown !== false
+        auto_breakdown: payload?.auto_breakdown !== false,
+        confirm: true,
       });
       const data = response.data?.data || {};
       const finalName = data.final_system_name || name;
@@ -435,16 +481,17 @@ const EditPage = () => {
       setAddSystemVisible(false);
       addSystemForm.resetFields();
 
+      await triggerReevaluate();
       await fetchEvaluationResult(finalName);
 
       if (breakdownError) {
-        message.warning(`系统已新增，但自动拆分失败：${breakdownError}`);
+        message.warning(`系统已新增，已触发AI重评估，但自动拆分失败：${breakdownError}`);
       } else {
-        message.success(`系统已新增并完成自动拆分（${data.added_features || 0}个功能点）`);
+        message.success(`系统已新增并完成自动拆分（${data.added_features || 0}个功能点），已触发AI重评估`);
       }
     } catch (error) {
       console.error('新增系统失败:', error);
-      message.error(error.response?.data?.detail || '新增系统失败');
+      message.error(extractErrorMessage(error, '新增系统失败'));
     } finally {
       setAddingSystem(false);
     }
@@ -555,7 +602,7 @@ const EditPage = () => {
       dataIndex: '预估人天',
       key: '预估人天',
       width: 100,
-      render: (value) => <Text strong>{value}</Text>,
+      render: (value) => <Text strong>{value ?? '-'}</Text>,
     },
     {
       title: '操作',
@@ -773,12 +820,19 @@ const EditPage = () => {
               <Form.Item
                 label="预估人天"
                 name="预估人天"
-                rules={[
+                rules={isManager ? [] : [
                   { required: true, message: '请输入预估人天' },
                   { type: 'number', min: 0.5, max: 5, message: '人天范围: 0.5-5' }
                 ]}
               >
-                <InputNumber step={0.5} min={0.5} max={5} placeholder="建议范围: 0.5-5" style={{ width: '100%' }} />
+                <InputNumber
+                  step={0.5}
+                  min={0.5}
+                  max={5}
+                  disabled={isManager}
+                  placeholder={isManager ? '项目经理角色只读' : '建议范围: 0.5-5'}
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
             </Col>
           </Row>
@@ -802,33 +856,41 @@ const EditPage = () => {
           layout="vertical"
           initialValues={{ type: '主系统', auto_breakdown: true }}
         >
-          <Form.Item
-            label="系统名称"
-            name="name"
-            rules={[{ required: true, message: '请输入系统名称' }]}
-          >
-            <AutoComplete
-              options={systemSuggestions}
-              placeholder="输入系统名称（可直接输入，也可从候选/系统清单提示中选择）"
-              filterOption={(inputValue, option) =>
-                (option?.value || '').toUpperCase().includes((inputValue || '').toUpperCase())
-              }
-            />
-          </Form.Item>
-          <Form.Item label="系统类型" name="type">
-            <Select
-              options={[
-                { label: '主系统', value: '主系统' },
-                { label: '子系统', value: '子系统' },
-                { label: '上游系统', value: '上游系统' },
-                { label: '下游系统', value: '下游系统' },
-                { label: '配合系统', value: '配合系统' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="auto_breakdown" valuePropName="checked">
-            <Checkbox>新增后自动拆分功能点</Checkbox>
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={24}>
+              <Form.Item
+                label="系统名称"
+                name="name"
+                rules={[{ required: true, message: '请输入系统名称' }]}
+              >
+                <AutoComplete
+                  options={systemSuggestions}
+                  placeholder="输入系统名称（可直接输入，也可从候选/系统清单提示中选择）"
+                  filterOption={(inputValue, option) =>
+                    (option?.value || '').toUpperCase().includes((inputValue || '').toUpperCase())
+                  }
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="系统类型" name="type">
+                <Select
+                  options={[
+                    { label: '主系统', value: '主系统' },
+                    { label: '子系统', value: '子系统' },
+                    { label: '上游系统', value: '上游系统' },
+                    { label: '下游系统', value: '下游系统' },
+                    { label: '配合系统', value: '配合系统' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="拆分方式" name="auto_breakdown" valuePropName="checked">
+                <Checkbox>新增后自动拆分功能点</Checkbox>
+              </Form.Item>
+            </Col>
+          </Row>
           <Text type="secondary">
             提示：即使自动拆分失败，也会保留系统Tab，便于你手工补齐功能点。
           </Text>

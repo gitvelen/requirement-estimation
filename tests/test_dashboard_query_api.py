@@ -217,3 +217,29 @@ def test_dashboard_query_drilldown_filters_include_system_scope(client):
     items = top_widget.get("data", {}).get("items", [])
     assert items
     assert all(item.get("system_id") == "sys_hop" for item in items)
+
+
+def test_dashboard_rankings_system_activity_contains_system_name(client):
+    _seed_user("dash_admin4", "pwd123", ["admin"])
+    manager = _seed_user("dash_mgr4", "pwd123", ["manager"])
+    expert = _seed_user("dash_exp4", "pwd123", ["expert"])
+
+    token = _login(client, "dash_admin4", "pwd123")
+    _seed_dashboard_tasks(manager, expert)
+
+    response = client.post(
+        "/api/v1/efficiency/dashboard/query",
+        json={
+            "page": "rankings",
+            "perspective": "executive",
+            "filters": {"time_range": "last_30d"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    widgets = response.json().get("result", {}).get("widgets", [])
+    activity_widget = next(item for item in widgets if item.get("widget_id") == "system_activity_ranking")
+    items = activity_widget.get("data", {}).get("items", [])
+    assert items
+    assert all(str(item.get("system_name") or "").strip() for item in items)

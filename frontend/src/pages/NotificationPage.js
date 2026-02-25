@@ -4,7 +4,6 @@ import { BellOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icon
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useNotification from '../hooks/useNotification';
-import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import StatusTag from '../components/StatusTag';
 import { formatDateTime } from '../utils/time';
@@ -211,22 +210,19 @@ const NotificationPage = () => {
 
   return (
     <div>
-      <PageHeader
-        title="消息通知"
-        extra={(
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => fetchNotifications(page, pageSize)} loading={loading}>
-              刷新
-            </Button>
-            <Button onClick={markAllRead} disabled={!items.length}>
-              全部已读
-            </Button>
-            <Button onClick={clearRead} disabled={!items.length}>
-              清空已读
-            </Button>
-          </Space>
-        )}
-      />
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchNotifications(page, pageSize)} loading={loading}>
+            刷新
+          </Button>
+          <Button onClick={markAllRead} disabled={!items.length}>
+            全部已读
+          </Button>
+          <Button onClick={clearRead} disabled={!items.length}>
+            清空已读
+          </Button>
+        </Space>
+      </div>
       <Card>
         <DataTable
           rowKey="notification_id"

@@ -20,14 +20,22 @@ import {
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import PageHeader from '../components/PageHeader';
 import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
 
-const { TextArea } = Input;
 const { Text } = Typography;
+
+const DOC_TYPE_ESB = 'esb';
+
+const DOC_TYPE_OPTIONS = [
+  { value: 'requirements', label: '需求文档' },
+  { value: 'design', label: '设计文档' },
+  { value: 'tech_solution', label: '技术方案' },
+  { value: 'history_report', label: '历史评估报告' },
+  { value: DOC_TYPE_ESB, label: 'ESB服务治理文档' },
+];
 
 const parseErrorMessage = (error, fallback) => {
   const responseData = error?.response?.data;
@@ -52,13 +60,11 @@ const SystemProfileImportPage = () => {
   const [scanIngestResult, setScanIngestResult] = useState(null);
   const [storedScanJobId, setStoredScanJobId] = useState('');
 
-  const [esbMappingJson, setEsbMappingJson] = useState('');
   const [esbFiles, setEsbFiles] = useState([]);
   const [esbSubmitting, setEsbSubmitting] = useState(false);
   const [esbLastResult, setEsbLastResult] = useState(null);
 
-  const [knowledgeType, setKnowledgeType] = useState('document');
-  const [knowledgeLevel, setKnowledgeLevel] = useState('normal');
+  const [docType, setDocType] = useState('requirements');
   const [knowledgeFiles, setKnowledgeFiles] = useState([]);
   const [knowledgeSubmitting, setKnowledgeSubmitting] = useState(false);
   const [knowledgeLastResult, setKnowledgeLastResult] = useState(null);
@@ -282,9 +288,6 @@ const SystemProfileImportPage = () => {
       const formData = new FormData();
       formData.append('system_id', systemId);
       formData.append('file', esbFiles[0]);
-      if (esbMappingJson.trim()) {
-        formData.append('mapping_json', esbMappingJson.trim());
-      }
       const response = await axios.post('/api/v1/esb/imports', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -304,15 +307,16 @@ const SystemProfileImportPage = () => {
       return;
     }
     if (!knowledgeFiles.length) {
-      message.warning('请上传知识文件');
+      message.warning('请上传文档文件');
       return;
     }
 
     setKnowledgeSubmitting(true);
     try {
       const formData = new FormData();
-      formData.append('knowledge_type', knowledgeType);
-      formData.append('level', knowledgeLevel);
+      formData.append('knowledge_type', 'document');
+      formData.append('level', 'normal');
+      formData.append('doc_type', docType);
       formData.append('file', knowledgeFiles[0]);
       formData.append('system_name', selectedSystemName);
       if (selectedSystem?.id) {
@@ -323,10 +327,10 @@ const SystemProfileImportPage = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setKnowledgeLastResult(response.data || null);
-      message.success('知识导入完成');
+      message.success('文档导入完成');
       setKnowledgeFiles([]);
     } catch (error) {
-      message.error(parseErrorMessage(error, '知识导入失败'));
+      message.error(parseErrorMessage(error, '文档导入失败'));
     } finally {
       setKnowledgeSubmitting(false);
     }
@@ -343,33 +347,28 @@ const SystemProfileImportPage = () => {
 
   return (
     <div>
-      <PageHeader
-        title="系统画像 / 知识导入"
-      />
-
       {responsibleSystems.length === 0 ? (
         <Card>
           <Text type="secondary">暂无可操作系统（仅展示主责/B角系统）。请联系管理员维护系统负责关系。</Text>
         </Card>
       ) : (
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Card>
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
-              <Tabs
-                activeKey={selectedSystemName || undefined}
-                onChange={handleSystemTabChange}
-                items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            <Tabs
+              size="small"
+              activeKey={selectedSystemName || undefined}
+              onChange={handleSystemTabChange}
+              items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
+            />
+            {!canWrite && (
+              <Alert
+                type="warning"
+                showIcon
+                message="当前系统为只读"
+                description="仅系统主责或B角 PM 可执行导入操作。"
               />
-              {!canWrite && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="当前系统为只读"
-                  description="仅系统主责或B角 PM 可执行导入操作。"
-                />
-              )}
-            </Space>
-          </Card>
+            )}
+          </Space>
 
           <Card
             title="代码扫描"
@@ -463,91 +462,65 @@ const SystemProfileImportPage = () => {
             </Space>
           </Card>
 
-          <Card title="ESB导入">
+          <Card title="文档导入">
             <Space direction="vertical" style={{ width: '100%' }} size={8}>
-              <TextArea
-                rows={2}
-                value={esbMappingJson}
-                onChange={(event) => setEsbMappingJson(event.target.value)}
-                placeholder='可选：mapping_json，例如 {"provider_system":["提供方系统","provider"]}'
-                disabled={!canWrite}
-              />
-              <Space wrap size={8}>
+              <Space wrap size={8} style={{ width: '100%' }}>
+                <Select
+                  style={{ width: 220, maxWidth: '100%' }}
+                  value={docType}
+                  onChange={(value) => { setDocType(value); setEsbLastResult(null); setKnowledgeLastResult(null); }}
+                  options={DOC_TYPE_OPTIONS}
+                  disabled={!canWrite}
+                />
                 <Upload
+                  accept={docType === DOC_TYPE_ESB ? '.xlsx,.csv' : undefined}
                   beforeUpload={(file) => {
-                    setEsbFiles([file]);
+                    if (docType === DOC_TYPE_ESB) {
+                      setEsbFiles([file]);
+                    } else {
+                      setKnowledgeFiles([file]);
+                    }
                     return false;
                   }}
-                  onRemove={() => setEsbFiles([])}
-                  fileList={esbFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
+                  onRemove={() => {
+                    if (docType === DOC_TYPE_ESB) {
+                      setEsbFiles([]);
+                    } else {
+                      setKnowledgeFiles([]);
+                    }
+                  }}
+                  fileList={
+                    (docType === DOC_TYPE_ESB ? esbFiles : knowledgeFiles)
+                      .map((file) => ({ uid: file.uid || file.name, name: file.name }))
+                  }
                   disabled={!canWrite}
                 >
-                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择ESB文件（xlsx/csv）</Button>
+                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>
+                    {docType === DOC_TYPE_ESB ? '选择ESB文件（xlsx/csv）' : '选择文档文件'}
+                  </Button>
                 </Upload>
+
                 {canWrite && (
-                  <Button type="primary" loading={esbSubmitting} onClick={handleImportEsb}>
-                    导入ESB
+                  <Button
+                    type="primary"
+                    loading={docType === DOC_TYPE_ESB ? esbSubmitting : knowledgeSubmitting}
+                    onClick={docType === DOC_TYPE_ESB ? handleImportEsb : handleImportKnowledge}
+                  >
+                    导入
                   </Button>
                 )}
               </Space>
 
-              {esbLastResult && (
+              {docType === DOC_TYPE_ESB && esbLastResult && (
                 <Alert
-                  type="info"
+                  type={((esbLastResult.errors || []).length > 0) ? 'warning' : 'success'}
                   showIcon
                   message="本次导入统计"
-                  description={`总计 ${esbLastResult.total ?? 0}，导入 ${esbLastResult.imported ?? 0}，跳过 ${esbLastResult.skipped ?? 0}`}
+                  description={`总计 ${esbLastResult.total ?? 0}，导入 ${esbLastResult.imported ?? 0}，跳过 ${esbLastResult.skipped ?? 0}${Array.isArray(esbLastResult.errors) && esbLastResult.errors.length > 0 ? `，提示：${esbLastResult.errors.join('；')}` : ''}`}
                 />
               )}
-            </Space>
-          </Card>
 
-          <Card title="知识导入">
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
-              <Space wrap size={8}>
-                <Select
-                  style={{ width: 180, maxWidth: '100%' }}
-                  value={knowledgeType}
-                  onChange={setKnowledgeType}
-                  options={[
-                    { label: '系统文档(document)', value: 'document' },
-                    { label: '代码知识(code)', value: 'code' },
-                  ]}
-                  disabled={!canWrite}
-                />
-                <Select
-                  style={{ width: 180, maxWidth: '100%' }}
-                  value={knowledgeLevel}
-                  onChange={setKnowledgeLevel}
-                  options={[
-                    { label: '正常样本(normal)', value: 'normal' },
-                    { label: '历史样本(L0)', value: 'l0' },
-                  ]}
-                  disabled={!canWrite || knowledgeType !== 'document'}
-                />
-              </Space>
-
-              <Space wrap size={8}>
-                <Upload
-                  beforeUpload={(file) => {
-                    setKnowledgeFiles([file]);
-                    return false;
-                  }}
-                  onRemove={() => setKnowledgeFiles([])}
-                  fileList={knowledgeFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
-                  disabled={!canWrite}
-                >
-                  <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>选择知识文件</Button>
-                </Upload>
-
-                {canWrite && (
-                  <Button type="primary" loading={knowledgeSubmitting} onClick={handleImportKnowledge}>
-                    导入知识
-                  </Button>
-                )}
-              </Space>
-
-              {knowledgeLastResult && (
+              {docType !== DOC_TYPE_ESB && knowledgeLastResult && (
                 <Alert
                   type={(knowledgeLastResult.failed || 0) > 0 ? 'warning' : 'success'}
                   showIcon

@@ -32,7 +32,7 @@
 
 ### 3.3 post-commit（软警告）
 - 风险提示集合：`scripts/git-hooks/warnings/w*.sh`
-- 当前基线约定：`post-commit（软警告，17 个）`
+- 当前基线约定：`post-commit（软警告，21 个）`
 - 逃生通道审计：W24（检测 pre-commit 通过证据缺失）
 
 ### 3.4 CC hooks（流程引导）

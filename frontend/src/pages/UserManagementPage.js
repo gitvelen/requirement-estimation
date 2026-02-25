@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Form, Input, Modal, Space, Tag, Upload, message } from 'antd';
+import { Button, Card, Col, Form, Input, Modal, Row, Space, Tag, Upload, message } from 'antd';
 import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
-import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import StatusTag from '../components/StatusTag';
 import ConfirmModal from '../components/ConfirmModal';
@@ -358,22 +357,19 @@ const UserManagementPage = () => {
 
   return (
     <div>
-      <PageHeader
-        title="用户管理"
-        extra={(
-          <Space>
-            <Button onClick={handleDownloadTemplate}>
-              下载Excel模板
-            </Button>
-            <Button icon={<UploadOutlined />} onClick={() => setImportVisible(true)}>
-              批量导入
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-              创建用户
-            </Button>
-          </Space>
-        )}
-      />
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
+        <Space>
+          <Button onClick={handleDownloadTemplate}>
+            下载Excel模板
+          </Button>
+          <Button icon={<UploadOutlined />} onClick={() => setImportVisible(true)}>
+            批量导入
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+            创建用户
+          </Button>
+        </Space>
+      </div>
       <Card>
         <DataTable
           rowKey="id"
@@ -393,30 +389,48 @@ const UserManagementPage = () => {
         cancelText="取消"
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}>
-            <Input disabled={!!editingUser} />
-          </Form.Item>
-          <Form.Item name="displayName" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="password" label="密码" rules={editingUser ? [] : [{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder={editingUser ? '留空则不修改' : ''} />
-          </Form.Item>
-          <Form.Item name="roles" label="角色">
-            <Input placeholder="admin,manager,expert 或 管理员,项目经理,专家" />
-          </Form.Item>
-          <Form.Item name="email" label="邮箱">
-            <Input />
-          </Form.Item>
-          <Form.Item name="phone" label="手机">
-            <Input />
-          </Form.Item>
-          <Form.Item name="department" label="部门">
-            <Input />
-          </Form.Item>
-          <Form.Item name="expertise" label="专长领域">
-            <Input placeholder="多个用逗号分隔" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}>
+                <Input disabled={!!editingUser} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="displayName" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="password" label="密码" rules={editingUser ? [] : [{ required: true, message: '请输入密码' }]}>
+                <Input.Password placeholder={editingUser ? '留空则不修改' : ''} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="roles" label="角色">
+                <Input placeholder="admin,manager,expert 或 管理员,项目经理,专家" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="email" label="邮箱">
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="phone" label="手机">
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="department" label="部门">
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="expertise" label="专长领域">
+                <Input placeholder="多个用逗号分隔" />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
       </Modal>
 

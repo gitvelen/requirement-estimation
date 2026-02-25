@@ -24,14 +24,14 @@ hotfix_max_diff_files: 3
 
 # 结果门禁（M2，仅在阶段推进 commit 中执行）
 # result_gate_test_command: 阶段推进时强制执行的测试命令。建议填 CI 同款命令。
-result_gate_test_command: "cd frontend && CI=true npx react-scripts test --watchAll=false"
+result_gate_test_command: "/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q --tb=short"
 # result_gate_build_command: 阶段推进时强制执行的构建命令。建议填 CI 同款命令。
-result_gate_build_command: "cd frontend && npx react-scripts build"
+result_gate_build_command: "cd frontend && npm run build"
 # result_gate_typecheck_command: 阶段推进时强制执行的类型检查命令。建议填 CI 同款命令。
-result_gate_typecheck_command: ""
+result_gate_typecheck_command: "/home/admin/Claude/requirement-estimation-system/.venv/bin/python -m compileall -q backend"
 
 # 入口门禁模式（M2）
-# entry_gate_mode: 入口门禁模式（如 warn/strict）。建议先 warn 观测，再逐步收紧。
+# entry_gate_mode: 入口门禁模式（如 warn/block）。建议先 warn 观测，再逐步收紧。
 entry_gate_mode: warn
 
 # 项目级阶段覆盖（未配置默认 false）
@@ -45,3 +45,9 @@ gwt_id_regex: ^GWT-REQ-C?[0-9]+-[0-9]+$
 # P4: 可选框架引用（latest 或 commit-hash）
 # framework_ref: 框架版本引用。建议固定到 commit，避免 latest 带来规则漂移。
 framework_ref: latest
+
+# 高风险审查关键词（语义门禁辅助）
+# 来源：lessons_learned 2026-02-24 — 高风险项不得留到后续阶段
+# 当 design/plan 文档包含这些关键词时，w28 会检查对应 GWT 是否有充分证据
+# high_risk_review_patterns: 逗号分隔的关键词列表。按项目实际风险点调整。
+high_risk_review_patterns: "兼容,回滚,权限,REQ-C,deprecated,confirm,迁移,越权,鉴权,安全"

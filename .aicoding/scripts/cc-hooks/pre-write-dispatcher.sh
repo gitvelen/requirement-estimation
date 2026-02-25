@@ -63,9 +63,19 @@ fi
 # ============================================================
 if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
   if aicoding_is_manual_phase; then
-    if echo "$CC_CONTENT" | grep -qE '^_phase:[[:space:]]*(Design|Planning|Implementation|Testing|Deployment)[[:space:]]*$' || \
-       echo "$CC_CONTENT" | grep -qE '当前阶段.*\| *(Design|Planning|Implementation|Testing|Deployment)'; then
-      aicoding_block "当前处于人工介入期（$AICODING_PHASE），禁止 AI 自行推进阶段。请等待用户明确确认后再更新「当前阶段」。"
+    # wait_confirm 状态下放行：说明 AI 已暂停等待过用户确认，此时代为更新 _phase 是合法的
+    CURRENT_RUN_STATUS=$(aicoding_yaml_value "_run_status")
+    if [ "$CURRENT_RUN_STATUS" != "wait_confirm" ]; then
+      # 提取内容中的 _phase 值（YAML 行）
+      NEW_PHASE_IN_CONTENT=$(echo "$CC_CONTENT" | grep -oE '^_phase:[[:space:]]*[A-Za-z]+' | sed 's/^_phase:[[:space:]]*//' | head -1)
+      if [ -n "$NEW_PHASE_IN_CONTENT" ] && [ "$NEW_PHASE_IN_CONTENT" != "$AICODING_PHASE" ]; then
+        aicoding_block "当前处于人工介入期（$AICODING_PHASE），禁止 AI 自行推进阶段至 ${NEW_PHASE_IN_CONTENT}。请先设置 _run_status: wait_confirm 并等待用户明确确认后再更新。"
+      fi
+      # 同样拦截表格行的阶段变更
+      TABLE_PHASE=$(echo "$CC_CONTENT" | grep -oE '当前阶段.*\|[[:space:]]*[A-Za-z]+' | grep -oE '[A-Za-z]+$' | head -1)
+      if [ -n "$TABLE_PHASE" ] && [ "$TABLE_PHASE" != "$AICODING_PHASE" ]; then
+        aicoding_block "当前处于人工介入期（$AICODING_PHASE），禁止 AI 自行推进阶段至 ${TABLE_PHASE}。请先设置 _run_status: wait_confirm 并等待用户明确确认后再更新。"
+      fi
     fi
   fi
 fi
@@ -156,7 +166,8 @@ if [ "$HAS_PHASE" = true ]; then
 
       if [ "$SHOULD_CHECK" = true ]; then
         VERSION_SLUG=$(echo "$AICODING_VERSION_DIR" | tr '/' '_')
-        GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-$(aicoding_session_key)"
+        SESSION_KEY=$(aicoding_session_key)
+        GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-${SESSION_KEY}"
         if [ ! -f "$GATE_PASSED" ]; then
           case "$AICODING_PHASE" in
             ChangeManagement)
@@ -207,7 +218,8 @@ templates/deployment_template.md" ;;
           esac
 
           if [ -n "$REQUIRED_PATTERNS" ]; then
-            READ_LOG="/tmp/aicoding-reads-$(aicoding_session_key).log"
+            SESSION_KEY=$(aicoding_session_key)
+            READ_LOG="/tmp/aicoding-reads-${SESSION_KEY}.log"
             [ ! -f "$READ_LOG" ] && READ_LOG_CONTENT="" || READ_LOG_CONTENT=$(< "$READ_LOG")
             MISSING=""
             while IFS= read -r pattern; do
@@ -278,7 +290,12 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
         REQ_LABEL="${AICODING_VERSION_DIR}requirements.md"
         case "$AICODING_PHASE" in
           Design)
-            review_gate_validate_design_trace_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" || { aicoding_block "Design 追溯覆盖校验失败"; } ;;
+            review_gate_validate_design_trace_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" || { aicoding_block "Design 追溯覆盖校验失败"; }
+            # 语义门禁（warning）：API 契约完整性检查
+            local api_contract_result
+            api_contract_result=$(review_gate_validate_design_api_contracts "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" 2>&1 || true)
+            [ -z "$api_contract_result" ] || echo "$api_contract_result" >&2
+            ;;
           Planning)
             review_gate_validate_plan_reverse_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}plan.md" "${VERSION_PATH}plan.md" || { aicoding_block "Planning 覆盖校验失败"; } ;;
           Implementation)
@@ -293,3 +310,4 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
 fi
 
 exit 0
+

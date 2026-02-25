@@ -7,8 +7,8 @@
 
 - **R1**（需求）：提案必须包含所有用户确认的决策点，不能遗漏
 - **R2**（流程）：文档更新后必须自查"是否包含所有讨论内容"
-- **R3**（需求）：用户对问题的回答必须逐条体现在输出文档中
-- **R4**（流程）：使用AskUserQuestion等工具交互后，必须将结果结构化写入文档
+- **R3**（需求）：用户对问题的回答必须结构化落盘并逐条体现在输出文档中（含 AskUserQuestion 等工具交互结果）
+- **R4**（审查）：任何阶段宣称“已收敛/P0-P1=0”前，必须通过“三层门禁”（结构门禁 + 语义门禁 + 证据门禁）
 - **R5**（需求）：Requirements 必须覆盖提案 In Scope 清单（每项落到 REQ/API/验收；若 Defer 必须回写提案并重新确认）
 - **R6**（追溯）：任何 REQ 编号调整后，必须同步更新 `plan.md` 的"任务关联 REQ/覆盖矩阵"，并做一次"引用存在性"自检（避免出现 REQ-021 这类漂移）
 - **R7**（实现）：用户指出"文档有提"时，必须先完整阅读相关文档章节，列出原文，再讨论差异；不得凭搜索结果质疑用户
@@ -244,3 +244,75 @@
   - `.venv/bin/pytest -q`（全量通过）
 - **升级（规则/清单/自动化）**：是（建议纳入 Implementation 阶段门禁）
 - **证据/关联**：`docs/v2.1/review_implementation.md` RVW-001、`tests/test_task_modification_compat.py`
+
+---
+
+### 2026-02-24｜Design 自审过度依赖“追溯门禁”导致漏检（审查/文档/验收）
+- **标签**：审查、文档、验收、追溯
+- **触发（事实）**：v2.2 的 Design 第 1 轮自审在 `review_design.md` 中给出“P0/P1 open=0、建议进入 Planning”的结论，但随后独立审查发现 5 个 P1（兼容跳转语义/备注数据模型/REQ-101 统一状态/ESB Search&Stats 契约/confirm 门禁判定），并引发设计文档返工（`design.md` v0.1→v0.2）。
+- **根因**：
+  1. **把“trace 覆盖通过”当成“设计已可落地”**：只验证了 REQ-ID 被提及，但未对照 GWT 的字面验收要求逐条检查“语义是否明确、是否可实现、是否可验证”。
+  2. **自审偏差（自己写自己审）**：更容易用“我的意图”替代“文本是否无歧义”，对“仅提示/可选/二选一”等含糊表述不敏感。
+  3. **缺少契约/存在性核验**：涉及新 API/新行为时，未核对现有代码是否已有对应契约，也未在 design 中补齐路径/参数/返回/权限，导致验收用例无法落地。
+- **影响**：
+  - 设计缺陷被推迟到后续阶段暴露，放大返工成本（plan/implementation/testing 补洞）
+  - 容易造成实现口径漂移与验收争议（“你想的是 A，但文本能解释成 B”）
+- **改进行动（可执行）**：
+  1. Design 审查最小门槛拆成三段并强制落证据：
+     - Trace gate：requirements→design 覆盖脚本通过
+     - GWT 语义审查：重点覆盖 REQ-C / 兼容跳转 / 回滚 / “一次性提示”等高风险语义
+     - Contract/Existence 审查：任何“需要后端支持”的能力必须在 design 写清 API 契约（路径/参数/返回/权限），并在仓库中 `rg` 核对是否已存在或明确为新增
+  2. 审查中出现“可选/二选一/仅提示”等影响验收的表述，默认按 P1 处理，必须在进入 Implementation 前收敛为单一口径。
+  3. 在 `review_design.md` 中声明 P1=0 前，必须列出已执行命令与关键输出（无证据不得宣称收敛）。
+- **验证方式（可复现）**：
+  - Trace：`bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_validate_design_trace_coverage requirements docs/<版本号>/requirements.md design docs/<版本号>/design.md'`
+  - 契约与语义自检（示例）：`rg -n "/reports/|/dashboard\\?page=|replace|一次性提示|confirm=true|include_deprecated|加载|空态|错误态|重试" docs/<版本号>/design.md`
+- **升级（规则/清单/自动化）**：是（建议纳入 Design 阶段自审清单，并逐步脚本化“契约缺失/含糊表述”提示）
+- **证据/关联**：`docs/v2.2/review_design.md` 第 2/3 轮、`docs/v2.2/design.md` v0.2
+
+---
+
+### 2026-02-24｜阶段审查“假收敛”通病：结构通过≠语义闭环≠证据可复现（跨阶段）
+- **标签**：审查、流程、验收、证据
+- **触发（事实）**：
+  - v2.2 Design 自审阶段出现“trace 覆盖通过但语义/契约缺口”导致返工（见上条 Design 具体记录）。
+  - 历史上也出现过“计划/测试证据断链”（如 plan 中引用不存在的测试文件）等同类问题：文档结构完整，但落地不可执行/不可复现。
+- **根因**：
+  1. **结构门禁替代了语义门禁**：文件/ID/矩阵存在 ≠ 验收可判定、契约可实现、失败路径可验证。
+  2. **证据门禁缺失**：review 报告给结论但缺少“命令+关键输出+定位信息”，导致后续无法复盘与复现。
+  3. **阶段间责任转移**：把“本阶段没写清”推给“下阶段实现/测试再补”，会在越往后成本越高的位置爆雷。
+- **影响**：
+  - 返工后移：问题从 Requirements/Design 延迟到 Implementation/Testing 才暴露，修复代价指数上升
+  - 验收争议：同一段文本可解释为多种行为，导致“实现对了但验收不过/验收过了但行为不对”
+- **改进行动（可执行）**：
+  1. **所有阶段 review 统一按“三层门禁”出具证据**：
+     - 结构门禁：产出物齐全、编号与追溯关系成立（例如 trace/引用存在性）
+     - 语义门禁：按该阶段的验收粒度逐条判定“文本是否无歧义、是否可实现、是否可验证”（REQ-C/兼容/回滚/权限默认最高优先级）
+     - 证据门禁：写明“我验证了什么、怎么验证、关键输出是什么”（命令/输出/文件定位）
+  2. **把高风险点前移收敛**：凡涉及“兼容跳转语义 / 权限与越权 / 回滚 / 新增 API 契约 / REQ-C 禁止项”，不得留到后续阶段“再补”。
+  3. **默认从最坏情况出发写清拒绝口径**：例如 confirm 门禁、include_deprecated 过滤、错误码与 HTTP 状态码，必须在设计/接口层写明。
+- **验证方式（可复现）**（示例清单，按阶段选用）：
+  - Trace：`bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_validate_design_trace_coverage requirements docs/<版本号>/requirements.md design docs/<版本号>/design.md'`
+  - 引用存在性（Planning）：`rg -o "REQ-[0-9]+" docs/<版本号>/plan.md | sort -u | wc -l`
+  - 计划命令资产存在性（Implementation 前置）：`rg -o "tests/[^` ]+" docs/<版本号>/plan.md | while read f; do test -f \"$f\" || echo \"MISSING:$f\"; done`
+- **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R4`；建议后续将“证据门禁”固化到各阶段 `review_<stage>.md` 模板必填字段）
+
+---
+
+### 2026-02-25｜收口后新增优化未即时登记 CR，导致追溯风险（变更管理/可追溯）
+- **标签**：变更管理、追溯、收口治理
+- **触发（事实）**：项目进入收口后，用户连续提出“布局紧凑化、文案可读性、去折叠”等新增优化要求并已实现，但 `status.md/plan.md/test_report.md` 仍显示“无 CR”。
+- **根因**：
+  1. 把“收口阶段的小优化”误当成“无需 CR 的临时调整”。
+  2. 代码先行、文档补记滞后，导致短时间内追溯链断档。
+- **影响**：
+  - 难以回答“这批改动是谁提的、范围是什么、怎么验收、如何回滚”。
+  - 后续审查与发布时，diff-only 范围边界不清晰。
+- **改进行动（可执行）**：
+  1. 收口阶段出现新增需求时，先创建 `docs/<版本号>/cr/CR-*.md`，再改代码。
+  2. 同步更新 `status.md` Active CR、`plan.md` 任务映射、`test_report.md` CR 证据（三联更新）。
+  3. 每日结束前执行一次 CR 引用一致性检查。
+- **验证方式（可复现）**：
+  - `rg -n "CR-YYYYMMDD-[0-9]{3}" docs/<版本号>/status.md docs/<版本号>/plan.md docs/<版本号>/test_report.md docs/<版本号>/cr/*.md`
+- **升级（规则/清单/自动化）**：是（建议在 pre-commit 增加“代码变更命中高风险前端页面但无 Active CR”提示）
+- **证据/关联**：`docs/v2.2/cr/CR-20260225-001.md`，`docs/v2.2/status.md`，`docs/v2.2/plan.md`，`docs/v2.2/test_report.md`

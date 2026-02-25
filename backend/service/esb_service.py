@@ -242,6 +242,7 @@ class EsbService:
         entries: List[Dict[str, Any]] = []
         system_summary: List[Dict[str, Any]] = []
         missing_required_headers = False
+        mapping_resolved: Dict[str, str] = {}
 
         for sheet_name, rows in parsed_sheets.items():
             if not rows:
@@ -249,6 +250,13 @@ class EsbService:
             header_map = self._build_header_map(list(rows[0].keys()))
             detail_mapping = self._resolve_mapping(header_map, mapping_json, self.FIELD_ALIASES)
             summary_mapping = self._resolve_mapping(header_map, mapping_json, self.SUMMARY_ALIASES)
+
+            for field, column_name in detail_mapping.items():
+                if field not in mapping_resolved and column_name:
+                    mapping_resolved[field] = column_name
+            for field, column_name in summary_mapping.items():
+                if field not in mapping_resolved and column_name:
+                    mapping_resolved[field] = column_name
 
             is_detail = all(field in detail_mapping for field in self.REQUIRED_FIELDS)
             is_summary = ("system_id" in summary_mapping and "system_name" in summary_mapping and not is_detail)
@@ -343,6 +351,7 @@ class EsbService:
             "imported": imported,
             "skipped": skipped,
             "errors": errors[:50],
+            "mapping_resolved": mapping_resolved,
         }
 
     def _extract_detail_row(self, row: Dict[str, Any], mapping: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], str]:
