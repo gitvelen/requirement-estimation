@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/code-scan", tags=["代码扫描"])
 
+SUPPORTED_REPO_SOURCES = {
+    "local",
+    "archive",
+    "gitlab_archive",
+    "gitlab_compare",
+    "gitlab_raw",
+}
+
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
@@ -47,6 +55,108 @@ def _parse_options_json(value: Optional[str]) -> Dict[str, Any]:
     return parsed
 
 
+def _has_non_empty_option(options: Dict[str, Any], keys: Tuple[str, ...]) -> bool:
+    for key in keys:
+        value = options.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return True
+    return False
+
+
+def _require_option_groups(options: Dict[str, Any], groups: Tuple[Tuple[str, Tuple[str, ...]], ...]) -> Tuple[str, ...]:
+    missing = []
+    for label, keys in groups:
+        if not _has_non_empty_option(options, keys):
+            missing.append(label)
+    return tuple(missing)
+
+
+def _resolve_repo_source(
+    raw_repo_source: str,
+    *,
+    repo_path: str,
+    has_repo_archive: bool,
+    options: Dict[str, Any],
+) -> str:
+    repo_source = str(raw_repo_source or "").strip().lower()
+    has_repo_path = bool(str(repo_path or "").strip())
+
+    if not repo_source:
+        return "archive" if has_repo_archive else "local"
+
+    if repo_source not in SUPPORTED_REPO_SOURCES:
+        raise ValueError(f"repo_source模式参数不匹配: 不支持的repo_source={repo_source}")
+
+    if repo_source == "local":
+        if has_repo_archive:
+            raise ValueError("repo_source模式参数不匹配: local 不允许 repo_archive")
+        if not has_repo_path:
+            raise ValueError("repo_source模式参数不匹配: local 需要 repo_path")
+        return repo_source
+
+    if repo_source in {"archive", "gitlab_archive"}:
+        if not has_repo_archive:
+            raise ValueError(f"repo_source模式参数不匹配: {repo_source} 需要 repo_archive")
+        if has_repo_path:
+            raise ValueError(f"repo_source模式参数不匹配: {repo_source} 不允许 repo_path")
+        if repo_source == "gitlab_archive":
+            missing = _require_option_groups(
+                options,
+                (
+                    ("git_project_id", ("git_project_id", "project_id")),
+                    ("archive_ref", ("archive_ref", "ref", "branch")),
+                ),
+            )
+            if missing:
+                raise ValueError(
+                    "repo_source模式参数不匹配: gitlab_archive 缺少参数 "
+                    + ",".join(missing)
+                )
+        return repo_source
+
+    if repo_source == "gitlab_compare":
+        if has_repo_archive:
+            raise ValueError("repo_source模式参数不匹配: gitlab_compare 不允许 repo_archive")
+        if not has_repo_path:
+            raise ValueError("repo_source模式参数不匹配: gitlab_compare 需要 repo_path")
+        missing = _require_option_groups(
+            options,
+            (
+                ("git_project_id", ("git_project_id", "project_id")),
+                ("compare_from", ("compare_from", "from_ref", "from_sha", "base_ref", "base_sha")),
+                ("compare_to", ("compare_to", "to_ref", "to_sha", "head_ref", "head_sha")),
+            ),
+        )
+        if missing:
+            raise ValueError(
+                "repo_source模式参数不匹配: gitlab_compare 缺少参数 " + ",".join(missing)
+            )
+        return repo_source
+
+    if repo_source == "gitlab_raw":
+        if has_repo_archive:
+            raise ValueError("repo_source模式参数不匹配: gitlab_raw 不允许 repo_archive")
+        if not has_repo_path:
+            raise ValueError("repo_source模式参数不匹配: gitlab_raw 需要 repo_path")
+        missing = _require_option_groups(
+            options,
+            (
+                ("git_project_id", ("git_project_id", "project_id")),
+                ("raw_ref", ("raw_ref", "ref", "branch")),
+            ),
+        )
+        if missing:
+            raise ValueError(
+                "repo_source模式参数不匹配: gitlab_raw 缺少参数 " + ",".join(missing)
+            )
+        return repo_source
+
+    return repo_source
+
+
 def _to_job_payload(job: Dict[str, Any]) -> Dict[str, Any]:
     status = str(job.get("status") or "")
     progress_float = float(job.get("progress") or 0.0)
@@ -57,6 +167,7 @@ def _to_job_payload(job: Dict[str, Any]) -> Dict[str, Any]:
         "status": status,
         "created_at": job.get("created_at") or "",
         "progress": progress,
+        "repo_source": str(job.get("repo_source") or ""),
     }
 
     result_path = str(job.get("result_path") or "").strip()
@@ -83,6 +194,8 @@ def _map_submit_exception(exc: Exception) -> Tuple[int, str, str, Dict[str, Any]
         return 400, "SCAN_004", "本地仓库路径不在允许范围内", {"reason": message}
 
     if isinstance(exc, ValueError):
+        if "repo_source" in message or "模式参数" in message:
+            return 400, "SCAN_007", "repo_source模式参数不合法", {"reason": message}
         if "repo_archive" in message or "压缩包" in message or "不支持的压缩格式" in message:
             return 400, "SCAN_005", "仓库压缩包格式不支持或解压失败", {"reason": message}
         return 400, "SCAN_001", "代码仓库路径不存在或无法访问", {"reason": message}
@@ -178,6 +291,7 @@ async def create_scan_job(
     system_name_form: Optional[str] = Form(None, alias="system_name"),
     system_id_form: Optional[str] = Form(None, alias="system_id"),
     repo_path_form: Optional[str] = Form(None, alias="repo_path"),
+    repo_source_form: Optional[str] = Form(None, alias="repo_source"),
     force_form: Optional[str] = Form(None, alias="force"),
     options_json: Optional[str] = Form(None),
     repo_archive: Optional[UploadFile] = File(None),
@@ -187,6 +301,8 @@ async def create_scan_job(
     system_name = ""
     system_id = ""
     repo_path = ""
+    repo_source_raw = ""
+    repo_source_explicit = False
     force = False
     options: Dict[str, Any] = {}
 
@@ -195,6 +311,8 @@ async def create_scan_job(
             system_name = str(system_name_form or "").strip()
             system_id = str(system_id_form or "").strip()
             repo_path = str(repo_path_form or "").strip()
+            repo_source_raw = str(repo_source_form or "").strip().lower()
+            repo_source_explicit = bool(repo_source_raw)
             force = _parse_bool(force_form, default=False)
             options = _parse_options_json(options_json)
         else:
@@ -204,6 +322,8 @@ async def create_scan_job(
             system_name = str(payload.get("system_name") or "").strip()
             system_id = str(payload.get("system_id") or "").strip()
             repo_path = str(payload.get("repo_path") or "").strip()
+            repo_source_raw = str(payload.get("repo_source") or "").strip().lower()
+            repo_source_explicit = bool(repo_source_raw)
             force = _parse_bool(payload.get("force"), default=False)
             raw_options = payload.get("options")
             if raw_options is None:
@@ -215,6 +335,13 @@ async def create_scan_job(
 
         if not system_name:
             raise ValueError("system_name不能为空")
+
+        repo_source = _resolve_repo_source(
+            repo_source_raw,
+            repo_path=repo_path,
+            has_repo_archive=repo_archive is not None,
+            options=options,
+        )
 
         owner_error = _ensure_owner(
             current_user,
@@ -229,6 +356,8 @@ async def create_scan_job(
         created_by = str(current_user.get("id") or current_user.get("username") or "")
 
         if repo_archive is not None:
+            if repo_source not in {"archive", "gitlab_archive"}:
+                raise ValueError(f"repo_source模式参数不匹配: {repo_source} 不支持 repo_archive")
             archive_content = await repo_archive.read()
             if not archive_content:
                 raise ValueError("repo_archive为空")
@@ -247,11 +376,14 @@ async def create_scan_job(
                     options=options,
                     created_by=created_by,
                     force=force,
+                    repo_source_override=repo_source if repo_source_explicit else None,
                 )
             finally:
                 if os.path.exists(archive_path):
                     os.remove(archive_path)
         else:
+            if repo_source in {"archive", "gitlab_archive"}:
+                raise ValueError(f"repo_source模式参数不匹配: {repo_source} 需要 repo_archive")
             if not repo_path:
                 raise ValueError("repo_path无效或不存在")
             job_id = service.run_scan(
@@ -261,6 +393,7 @@ async def create_scan_job(
                 options=options,
                 created_by=created_by,
                 force=force,
+                repo_source_override=repo_source if repo_source_explicit else None,
             )
 
         job = service.get_status(job_id)

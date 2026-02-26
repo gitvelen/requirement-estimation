@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import zipfile
+import json
 from pathlib import Path
 
 import pytest
@@ -365,3 +366,101 @@ def test_code_scan_owner_and_creator_permission(client):
     )
     assert denied_get.status_code == 403
     assert denied_get.json()["error_code"] == "AUTH_001"
+
+
+def test_code_scan_invalid_gitlab_compare_params_returns_scan007(client):
+    owner = _seed_user("owner9", "owner123", ["manager"])
+    token = _login(client, "owner9", "owner123")
+
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    repo_path = _create_repo(Path(settings.REPORT_DIR), "repo-gitlab-invalid")
+
+    response = client.post(
+        "/api/v1/code-scan/jobs",
+        json={
+            "system_name": "HOP",
+            "system_id": "sys_hop",
+            "repo_source": "gitlab_compare",
+            "repo_path": repo_path,
+            "options": {},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "SCAN_007"
+
+
+def test_code_scan_gitlab_archive_mode_and_repo_source_payload(client):
+    owner = _seed_user("owner10", "owner123", ["manager"])
+    token = _login(client, "owner10", "owner123")
+
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "repo/src/main/java/demo/DemoController.java",
+            (
+                "package demo;\n"
+                "import org.springframework.web.bind.annotation.GetMapping;\n"
+                "import org.springframework.web.bind.annotation.RestController;\n"
+                "@RestController\n"
+                "public class DemoController {\n"
+                "  @GetMapping(\"/api/demo/gitlab\")\n"
+                "  public String query(){return \"ok\";}\n"
+                "}\n"
+            ),
+        )
+
+    response = client.post(
+        "/api/v1/code-scan/jobs",
+        data={
+            "system_name": "HOP",
+            "system_id": "sys_hop",
+            "repo_source": "gitlab_archive",
+            "options_json": json.dumps({"git_project_id": "100", "archive_ref": "main"}),
+        },
+        files={"repo_archive": ("repo.zip", buf.getvalue(), "application/zip")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["repo_source"] == "gitlab_archive"
+
+
+def test_code_scan_result_contains_analysis_and_metrics(client):
+    owner = _seed_user("owner11", "owner123", ["manager"])
+    token = _login(client, "owner11", "owner123")
+
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    repo_path = _create_repo(Path(settings.REPORT_DIR), "repo-analysis")
+
+    create_resp = client.post(
+        "/api/v1/code-scan/jobs",
+        json={"system_name": "HOP", "system_id": "sys_hop", "repo_path": repo_path},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert create_resp.status_code == 200
+    job_id = create_resp.json()["job_id"]
+
+    final_job = _wait_job_completed(client, token, job_id)
+    assert final_job["status"] == "completed"
+
+    result_resp = client.get(
+        f"/api/v1/code-scan/result/{job_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert result_resp.status_code == 200
+    payload = result_resp.json().get("data") or {}
+
+    assert "analysis" in payload
+    assert "metrics" in payload
+    analysis = payload["analysis"]
+    assert "ast_summary" in analysis
+    assert "call_graph" in analysis
+    assert "service_dependencies" in analysis
+    assert "data_flow" in analysis
+    assert "complexity" in analysis
+    assert "impact" in analysis

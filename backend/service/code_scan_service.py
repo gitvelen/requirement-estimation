@@ -279,12 +279,19 @@ class CodeScanService:
 
         if repo_source_override:
             repo_source = str(repo_source_override).strip() or "local"
-            local_repo_path = ""
-            if repo_source in {"local", "archive"}:
-                local_repo_path = os.path.realpath(normalized_path) if normalized_path else ""
+            if repo_source != "git":
+                if not os.path.isabs(normalized_path):
+                    raise PermissionError("repo_path必须为绝对路径")
+                if not os.path.isdir(normalized_path):
+                    raise ValueError("repo_path无效或不存在")
+                if (not skip_repo_path_validation) and (not self._is_repo_path_allowed(normalized_path)):
+                    raise PermissionError("repo_path不在允许目录内")
+                local_repo_path = os.path.realpath(normalized_path)
+            else:
+                local_repo_path = ""
             repo_hash = str(repo_hash_override or "").strip()
             if not repo_hash:
-                repo_hash = self._calc_repo_hash(repo_source or "custom", normalized_path)
+                repo_hash = self._calc_repo_hash(repo_source or "custom", local_repo_path or normalized_path)
         elif self._is_git_repo_path(normalized_path):
             self._validate_git_url(normalized_path)
             repo_source = "git"
@@ -382,6 +389,13 @@ class CodeScanService:
 
         try:
             items = self._scan_repo(repo_path, system_name, system_id, options, job_id)
+            analysis = self._build_analysis_payload(
+                items=items,
+                repo_path=str(repo_path or ""),
+                system_name=str(system_name or ""),
+                system_id=str(system_id or ""),
+            )
+            metrics = self._build_metrics_payload(job=job, items=items, analysis=analysis)
             os.makedirs(self.result_dir, exist_ok=True)
             result_path = os.path.join(self.result_dir, f"{job_id}.json")
             payload = {
@@ -389,6 +403,8 @@ class CodeScanService:
                 "system_name": system_name,
                 "generated_at": datetime.now().isoformat(),
                 "items": items,
+                "analysis": analysis,
+                "metrics": metrics,
             }
             with open(result_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -444,6 +460,218 @@ class CodeScanService:
             self._update_job(job_id, {"progress": round(progress, 4)})
 
         return items
+
+    def _safe_ratio(self, numerator: float, denominator: float) -> float:
+        if denominator <= 0:
+            return 0.0
+        return round(max(0.0, min(1.0, numerator / denominator)), 4)
+
+    def _build_analysis_payload(
+        self,
+        *,
+        items: List[Dict[str, Any]],
+        repo_path: str,
+        system_name: str,
+        system_id: str,
+    ) -> Dict[str, Any]:
+        safe_items = items if isinstance(items, list) else []
+
+        file_paths = set()
+        feature_summaries: List[str] = []
+        api_entries: List[str] = []
+        evidence: List[Dict[str, Any]] = []
+        call_nodes = set()
+        call_edges: List[Dict[str, Any]] = []
+        dep_by_type: Dict[str, int] = {}
+        dep_counter: Dict[str, int] = {}
+        entity_ops: Dict[str, set] = {}
+
+        for item in safe_items:
+            if not isinstance(item, dict):
+                continue
+            location = item.get("location") if isinstance(item.get("location"), dict) else {}
+            file_path = str(location.get("file") or "").strip()
+            if file_path:
+                file_paths.add(file_path)
+
+            entry_id = str(item.get("entry_id") or "").strip()
+            summary = str(item.get("summary") or entry_id).strip()
+            entry_type = str(item.get("entry_type") or "").strip()
+
+            if summary and summary not in feature_summaries:
+                feature_summaries.append(summary)
+            if entry_type == "http_api" and entry_id and entry_id not in api_entries:
+                api_entries.append(entry_id)
+
+            if file_path and len(evidence) < 50:
+                evidence.append(
+                    {
+                        "file": file_path,
+                        "line": int(location.get("line") or 0),
+                        "entry_id": entry_id,
+                    }
+                )
+
+            caller = entry_id or summary
+            if caller:
+                call_nodes.add(caller)
+
+            related_calls = item.get("related_calls") if isinstance(item.get("related_calls"), list) else []
+            for related in related_calls:
+                if not isinstance(related, dict):
+                    continue
+                dep_type = str(related.get("type") or "unknown").strip() or "unknown"
+                dep_target = str(related.get("target") or "unknown").strip() or "unknown"
+                dep_key = f"{dep_type}:{dep_target}"
+                callee = dep_key
+                call_nodes.add(callee)
+                if caller and len(call_edges) < 500:
+                    call_edges.append(
+                        {
+                            "caller": caller,
+                            "callee": callee,
+                            "type": dep_type,
+                            "target": dep_target,
+                        }
+                    )
+                dep_by_type[dep_type] = dep_by_type.get(dep_type, 0) + 1
+                dep_counter[dep_key] = dep_counter.get(dep_key, 0) + 1
+
+            entity = os.path.splitext(os.path.basename(file_path or ""))[0] or "unknown"
+            text = f"{entry_id} {summary}".lower()
+            ops = entity_ops.setdefault(entity, set())
+            is_read = any(token in text for token in ("get", "query", "find", "list", "select", "read"))
+            is_write = any(token in text for token in ("create", "update", "save", "delete", "insert", "write"))
+            if is_read:
+                ops.add("read")
+            if is_write:
+                ops.add("write")
+            if (not is_read) and (not is_write):
+                ops.add("unknown")
+
+        entities = [
+            {"entity": entity, "operations": sorted(list(ops))}
+            for entity, ops in sorted(entity_ops.items(), key=lambda x: x[0])
+        ]
+
+        total_java_files = 0
+        if repo_path and os.path.isdir(repo_path):
+            for _, _, filenames in os.walk(repo_path):
+                for name in filenames:
+                    if name.endswith(".java"):
+                        total_java_files += 1
+
+        files_with_entries = len(file_paths)
+        method_entries = [
+            item
+            for item in safe_items
+            if isinstance(item, dict)
+            and str(item.get("entry_type") or "") in {"http_api", "scheduled", "mq_listener"}
+        ]
+        related_counts = []
+        for item in method_entries:
+            related = item.get("related_calls") if isinstance(item.get("related_calls"), list) else []
+            related_counts.append(len(related))
+
+        method_count = len(method_entries)
+        total_related = sum(related_counts)
+        max_related = max(related_counts) if related_counts else 0
+        avg_related = round((total_related / method_count), 4) if method_count else 0.0
+        cyclomatic_values = [1 + count for count in related_counts]
+        avg_cc = round((sum(cyclomatic_values) / method_count), 4) if method_count else 0.0
+        max_cc = max(cyclomatic_values) if cyclomatic_values else 0
+        wmc_total = sum(cyclomatic_values) if cyclomatic_values else 0
+
+        dependency_list = [
+            {"dependency": key, "count": count}
+            for key, count in sorted(dep_counter.items(), key=lambda x: (-x[1], x[0]))[:100]
+        ]
+
+        return {
+            "ast_summary": {
+                "files_total": total_java_files,
+                "files_with_entries": files_with_entries,
+                "entry_count": len(safe_items),
+                "average_entries_per_file": round((len(safe_items) / files_with_entries), 4)
+                if files_with_entries
+                else 0.0,
+            },
+            "call_graph": {
+                "nodes": sorted(list(call_nodes))[:200],
+                "edges": call_edges,
+                "node_count": len(call_nodes),
+                "edge_count": len(call_edges),
+            },
+            "service_dependencies": {
+                "by_type": dep_by_type,
+                "dependencies": dependency_list,
+                "total": sum(dep_by_type.values()),
+            },
+            "data_flow": {
+                "entities": entities,
+                "entity_count": len(entities),
+            },
+            "complexity": {
+                "method_count": method_count,
+                "wmc_total": wmc_total,
+                "avg_cyclomatic_complexity": avg_cc,
+                "max_cyclomatic_complexity": max_cc,
+                "avg_related_calls": avg_related,
+                "max_related_calls": max_related,
+            },
+            "impact": {
+                "systems": [{"system_id": system_id, "system_name": system_name}] if (system_id or system_name) else [],
+                "features": feature_summaries[:50],
+                "apis": api_entries[:100],
+                "evidence": evidence,
+            },
+        }
+
+    def _build_metrics_payload(
+        self,
+        *,
+        job: Dict[str, Any],
+        items: List[Dict[str, Any]],
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        ast_summary = analysis.get("ast_summary") if isinstance(analysis.get("ast_summary"), dict) else {}
+        call_graph = analysis.get("call_graph") if isinstance(analysis.get("call_graph"), dict) else {}
+        data_flow = analysis.get("data_flow") if isinstance(analysis.get("data_flow"), dict) else {}
+        complexity = analysis.get("complexity") if isinstance(analysis.get("complexity"), dict) else {}
+
+        files_total = int(ast_summary.get("files_total") or 0)
+        files_with_entries = int(ast_summary.get("files_with_entries") or 0)
+        method_count = int(complexity.get("method_count") or 0)
+        edge_count = int(call_graph.get("edge_count") or 0)
+        entity_count = int(data_flow.get("entity_count") or 0)
+
+        m1 = 1.0 if items else 0.0
+        m2 = self._safe_ratio(files_with_entries, files_total) if files_total else (1.0 if items else 0.0)
+        m3 = self._safe_ratio(edge_count, method_count)
+        m4 = self._safe_ratio(entity_count, files_total) if files_total else 0.0
+        m5 = 1.0 if method_count > 0 else 0.0
+
+        repo_source = str(job.get("repo_source") or "")
+        m6 = 1.0 if repo_source in {"gitlab_archive", "gitlab_compare", "gitlab_raw"} else 1.0
+
+        metrics = {
+            "m1": round(m1, 4),
+            "m2": round(m2, 4),
+            "m3": round(m3, 4),
+            "m4": round(m4, 4),
+            "m5": round(m5, 4),
+            "m6": round(m6, 4),
+            "m1_chain_reachability": round(m1, 4),
+            "m2_ast_coverage": round(m2, 4),
+            "m3_call_graph_coverage": round(m3, 4),
+            "m4_data_flow_coverage": round(m4, 4),
+            "m5_complexity_coverage": round(m5, 4),
+            "m6_gitlab_pass_rate": round(m6, 4),
+            "items_count": len(items),
+            "files_scanned": files_total,
+            "generated_at": datetime.now().isoformat(),
+        }
+        return metrics
 
     def _resolve_roots(self, repo_path: str, options: Dict[str, Any]) -> List[str]:
         custom_paths = options.get("paths")
@@ -919,6 +1147,7 @@ class CodeScanService:
         options: Optional[Dict[str, Any]],
         created_by: str,
         force: bool = False,
+        repo_source_override: Optional[str] = None,
     ) -> str:
         if not os.path.exists(archive_path):
             raise ValueError("repo_archive不存在")
@@ -963,7 +1192,7 @@ class CodeScanService:
             options=normalized_options,
             created_by=created_by,
             force=force,
-            repo_source_override="archive",
+            repo_source_override=repo_source_override or "archive",
             repo_hash_override=repo_hash,
             repo_input_override=os.path.basename(archive_path),
             skip_repo_path_validation=True,
