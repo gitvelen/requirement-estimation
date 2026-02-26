@@ -94,8 +94,17 @@ rg -n -e "V23_DEEP_SCAN_ENABLED" -e "V23_GITLAB_SOURCE_ENABLED" -e "git checkout
 ## 部署记录
 - 本文档结果已同步到 `docs/部署记录.md`（2026-02-26）。
 
+## 逃生通道审计说明
+- 触发时间：2026-02-26
+- 触发场景：提交 `docs/v2.3/status.md` 时，仓库 pre-commit 规则要求“新建 status.md 首次提交 `_phase` 必须为 `ChangeManagement`”，与本次“一次性交付完成态落盘”冲突。
+- 用户授权：已明确授权继续并使用 `--no-verify`。
+- 实际操作：仅对 `docs/v2.3/status.md` 执行 `git commit --no-verify`，未扩大到代码与测试文件。
+- 风险评估：低（文档状态收口，不涉及运行时代码路径变更）。
+- 补偿控制：本轮已保留并复核回归证据（`pytest` + health check + review gate），并在 `status.md` 阶段转换记录中追加审计轨迹。
+
 ## 变更记录
 | 版本 | 日期 | 说明 | 作者 |
 |---|---|---|---|
 | v0.1 | 2026-02-26 | 初始化 v2.3 部署指南与 STAGING 验证证据 | AI |
 | v0.2 | 2026-02-26 | 验收收口：状态改为 Approved，观察结论与主文档同步结论落盘 | AI |
+| v0.3 | 2026-02-26 | 追加 `--no-verify` 使用审计说明（触发原因、授权、风险与补偿控制） | AI |

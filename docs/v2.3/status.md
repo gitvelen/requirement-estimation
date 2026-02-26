@@ -17,7 +17,7 @@ _phase: Deployment
 | 变更状态 | Done |
 | 变更分级 | major |
 | 基线版本（对比口径） | v2.2 |
-| 当前代码版本 | HEAD（7db0a4b） |
+| 当前代码版本 | HEAD（d9b9284） |
 | 本次复查口径 | full |
 | 当前执行 AI | Codex |
 | 人类决策人 |  |
@@ -90,6 +90,7 @@ _phase: Deployment
 | Implementation | Testing | 2026-02-26 | Implementation 自审收敛（P0/P1=0）自动推进 | Codex | `review_implementation.md` 审查通过；T001~T007 完成 |
 | Testing | Deployment | 2026-02-26 | Testing 自审收敛（P0/P1=0）自动推进 | Codex | `test_report.md` + `review_testing.md` 通过；已生成 `deployment.md`，等待人工验收 |
 | Deployment | Deployment | 2026-02-26 | 用户确认继续全自动推进，完成主文档同步与验收收口 | User+Codex | `deployment.md` 置 Approved；`_run_status=completed`、`_change_status=done` |
+| Deployment | Deployment | 2026-02-26 | 文档收口提交触发门禁冲突，按用户授权使用 `--no-verify` 完成 `status.md` 提交并补审计说明 | User+Codex | 见 `deployment.md`「逃生通道审计说明」 |
 
 ## CR状态更新记录（部署后填写）
 | CR-ID | 之前状态 | 之后状态 | 上线日期 | 备注 |
