@@ -123,6 +123,73 @@ hotfix_reqc_boundary_check() {
   return 0
 }
 
+hotfix_sensitive_boundary_check() {
+  local status_file="$1"
+  local changed_file base_name
+  while IFS= read -r changed_file; do
+    [ -z "$changed_file" ] && continue
+    base_name=$(basename "$changed_file")
+    # 文件路径启发式：migration/schema/auth/permission 相关
+    if echo "$changed_file" | grep -qiE '(migration|migrate|schema|auth|permission|acl|rbac|security)'; then
+      echo "❌ ${status_file}: hotfix 不得涉及 API/DB schema/权限安全变更（文件路径命中：${changed_file}）"
+      return 1
+    fi
+    # diff 内容关键词匹配
+    if git diff --cached -- "$changed_file" | grep -qiE '^\+.*(CREATE TABLE|ALTER TABLE|DROP TABLE|ADD COLUMN|DROP COLUMN|CREATE INDEX|api\.route|@app\.(get|post|put|delete|patch)|router\.(get|post|put|delete|patch)|@(Requires?Permission|login_required|auth_required|permission_required))'; then
+      echo "❌ ${status_file}: hotfix 不得涉及 API/DB schema/权限安全变更（diff 内容命中：${changed_file}）"
+      return 1
+    fi
+  done <<< "$STAGED"
+  return 0
+}
+
+minor_diff_count_check() {
+  local status_file="$1"
+  local staged_count
+  staged_count=$(printf '%s\n' "$STAGED" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$staged_count" -gt "${AICODING_MINOR_MAX_DIFF_FILES}" ]; then
+    echo "❌ ${status_file}: minor staged 文件数为 ${staged_count}，超过 minor_max_diff_files=${AICODING_MINOR_MAX_DIFF_FILES}。请升级为 major 或拆分提交。"
+    return 1
+  fi
+  return 0
+}
+
+minor_new_gwt_count_check() {
+  local status_file="$1"
+  local version_dir requirements_path added_count
+  version_dir=$(echo "$status_file" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
+  [ -n "$version_dir" ] || return 0
+  requirements_path="${version_dir}requirements.md"
+  aicoding_staged_exists "$requirements_path" || return 0
+
+  added_count=$(
+    git diff --cached -- "$requirements_path" \
+      | grep -E '^\+.*GWT-REQ-C?[0-9]+-[0-9]+' \
+      | grep -oE 'GWT-REQ-C?[0-9]+-[0-9]+' \
+      | LC_ALL=C sort -u \
+      | sed '/^$/d' \
+      | wc -l | tr -d ' '
+  )
+  if [ "$added_count" -gt "${AICODING_MINOR_MAX_NEW_GWTS}" ]; then
+    echo "❌ ${status_file}: minor 新增 GWT 数为 ${added_count}，超过 minor_max_new_gwts=${AICODING_MINOR_MAX_NEW_GWTS}。请升级为 major。"
+    return 1
+  fi
+  return 0
+}
+
+minor_reqc_boundary_check() {
+  local status_file="$1"
+  local changed_file
+  while IFS= read -r changed_file; do
+    [ -z "$changed_file" ] && continue
+    if git diff --cached -- "$changed_file" | grep -qE '^[+-].*(REQ-C[0-9]+|GWT-REQ-C[0-9]+-[0-9]+)'; then
+      echo "❌ ${status_file}: minor 不得触碰 REQ-C/禁止项边界（文件：${changed_file}）。请升级为 major 并执行人类 spotcheck。"
+      return 1
+    fi
+  done <<< "$STAGED"
+  return 0
+}
+
 run_result_gate_command() {
   local gate_name="$1" command="$2"
   if [ -z "$command" ]; then
@@ -187,35 +254,66 @@ validate_minor_test_evidence() {
   return 1
 }
 
-validate_human_spotcheck() {
-  local review_path="$1" requirements_path="$2" status_current_ref="$3" change_level="$4"
-  local review_content spot_file summary tmp_dir tmp_review tmp_req tmp_spot rc req_content spot_content
+validate_minor_testing_review_freshness() {
+  local review_minor_path="$1"
+  if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    if ! git diff --cached --name-only -- "$review_minor_path" | grep -q .; then
+      echo "❌ ${review_minor_path} 在 Testing 阶段推进时必须更新（需追加本轮测试结论，避免沿用实现阶段结论）"
+      return 1
+    fi
+  fi
+  return 0
+}
 
-  [ "$change_level" = "major" ] || return 0
+validate_minor_testing_round() {
+  local review_minor_path="$1"
+  local content block phase result round_at phase_norm result_norm
+  content=$(aicoding_staged_content "$review_minor_path")
+  [ -n "$content" ] || { echo "❌ ${review_minor_path} 不存在或为空"; return 1; }
 
-  review_content=$(aicoding_staged_content "$review_path")
-  req_content=$(aicoding_staged_content "$requirements_path")
-  [ -n "$review_content" ] || { echo "❌ ${review_path} 不存在或为空（spotcheck 校验依赖）"; return 1; }
-  [ -n "$req_content" ] || { echo "❌ ${requirements_path} 不存在或为空（spotcheck 校验依赖）"; return 1; }
+  block=$(
+    printf '%s\n' "$content" | awk '
+      /MINOR-TESTING-ROUND-BEGIN/ {in_block=1; buf=""; next}
+      /MINOR-TESTING-ROUND-END/ {
+        if (in_block) {last=buf}
+        in_block=0
+        next
+      }
+      in_block {buf = buf $0 "\n"}
+      END {printf "%s", last}
+    '
+  )
+  [ -n "$block" ] || {
+    echo "❌ ${review_minor_path} 缺少 Testing 轮次机器可读块（MINOR-TESTING-ROUND-BEGIN/END）"
+    return 1
+  }
 
-  summary=$(printf '%s\n' "$review_content" | sed -n '/REVIEW-SUMMARY-BEGIN/,/REVIEW-SUMMARY-END/p')
-  spot_file=$(printf '%s\n' "$summary" | sed -n 's/^SPOTCHECK_FILE:[[:space:]]*//p' | tail -1)
-  [ -n "$spot_file" ] || { echo "❌ ${review_path} 摘要块缺少 SPOTCHECK_FILE（major 交付必须提供）"; return 1; }
+  phase=$(printf '%s\n' "$block" | sed -n 's/^ROUND_PHASE:[[:space:]]*//p' | tail -1)
+  result=$(printf '%s\n' "$block" | sed -n 's/^ROUND_RESULT:[[:space:]]*//p' | tail -1)
+  round_at=$(printf '%s\n' "$block" | sed -n 's/^ROUND_AT:[[:space:]]*//p' | tail -1)
+  phase_norm=$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  result_norm=$(printf '%s' "$result" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
 
-  spot_content=$(aicoding_staged_content "$spot_file")
-  [ -n "$spot_content" ] || { echo "❌ 缺少 ${spot_file}（major 交付必须提供 human spotcheck）"; return 1; }
+  [ "$phase_norm" = "testing" ] || {
+    echo "❌ ${review_minor_path} Testing 轮次块 ROUND_PHASE 非 testing（当前：${phase:-<empty>}）"
+    return 1
+  }
+  [ "$result_norm" = "pass" ] || {
+    echo "❌ ${review_minor_path} Testing 轮次块 ROUND_RESULT 非 pass（当前：${result:-<empty>}）"
+    return 1
+  }
+  echo "$round_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || {
+    echo "❌ ${review_minor_path} Testing 轮次块 ROUND_AT 非法（期望 YYYY-MM-DD，当前：${round_at:-<empty>}）"
+    return 1
+  }
+  return 0
+}
 
-  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-spotcheck) || { echo "❌ mktemp 失败"; return 1; }
-  tmp_review="${tmp_dir}/review.md"
-  tmp_req="${tmp_dir}/requirements.md"
-  tmp_spot="${tmp_dir}/spotcheck.md"
-  printf '%s\n' "$review_content" > "$tmp_review"
-  printf '%s\n' "$req_content" > "$tmp_req"
-  printf '%s\n' "$spot_content" > "$tmp_spot"
-  review_gate_validate_human_spotcheck "$review_path" "$tmp_review" "$requirements_path" "$tmp_req" "$spot_file" "$tmp_spot" "$status_current_ref" "$change_level"
-  rc=$?
-  rm -rf "$tmp_dir"
-  return "$rc"
+validate_hotfix_test_evidence() {
+  local status_content="$1"
+  printf '%s\n' "$status_content" | grep -q 'TEST-RESULT-BEGIN' && return 0
+  echo "❌ hotfix 交付缺少测试证据（status.md 必须包含 TEST-RESULT-BEGIN 结果块）"
+  return 1
 }
 
 validate_cr_impact_matrix() {
@@ -458,6 +556,20 @@ validate_design_trace_coverage() {
   _staged_validate review_gate_validate_design_trace_coverage "$1" "$1" "$2" "$2"
 }
 
+validate_lightweight_review() {
+  local review_path="$1"
+  local review_content tmp_dir tmp_review rc
+  review_content=$(aicoding_staged_content "$review_path")
+  [ -n "$review_content" ] || { echo "❌ $review_path 不存在或为空"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_review="${tmp_dir}/review.md"
+  printf '%s\n' "$review_content" > "$tmp_review"
+  review_gate_validate_lightweight_review "$review_path" "$tmp_review"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
 validate_plan_reverse_coverage() {
   _staged_validate review_gate_validate_plan_reverse_coverage "$1" "$1" "$2" "$2"
 }
@@ -492,6 +604,40 @@ validate_review_summary_and_coverage() {
   printf '%s\n' "$review_content" > "$tmp_review"
   printf '%s\n' "$req_content" > "$tmp_req"
   review_gate_validate_review_summary_and_coverage "$review_path" "$tmp_review" "$requirements_path" "$tmp_req" "$status_current_ref" "$review_path"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
+validate_proposal_coverage() {
+  local proposal_path="$1" requirements_path="$2"
+  local proposal_content req_content tmp_dir tmp_proposal tmp_req rc
+  proposal_content=$(aicoding_staged_content "$proposal_path")
+  [ -n "$proposal_content" ] || return 0  # No proposal file = skip
+  req_content=$(aicoding_staged_content "$requirements_path")
+  [ -n "$req_content" ] || { echo "❌ $requirements_path 不存在或为空"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_proposal="${tmp_dir}/proposal.md"; tmp_req="${tmp_dir}/requirements.md"
+  printf '%s\n' "$proposal_content" > "$tmp_proposal"
+  printf '%s\n' "$req_content" > "$tmp_req"
+  review_gate_validate_proposal_coverage "$proposal_path" "$tmp_proposal" "$requirements_path" "$tmp_req"
+  rc=$?
+  rm -rf "$tmp_dir"
+  return $rc
+}
+
+validate_task_completion() {
+  local plan_path="$1" review_path="$2"
+  local plan_content review_content tmp_dir tmp_plan tmp_review rc
+  plan_content=$(aicoding_staged_content "$plan_path")
+  [ -n "$plan_content" ] || return 0  # No plan file = skip (file existence enforced by phase exit gate)
+  review_content=$(aicoding_staged_content "$review_path")
+  [ -n "$review_content" ] || { echo "❌ $review_path 不存在或为空"; return 1; }
+  tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t aicoding-review-gate) || { echo "❌ mktemp 失败"; return 1; }
+  tmp_plan="${tmp_dir}/plan.md"; tmp_review="${tmp_dir}/review.md"
+  printf '%s\n' "$plan_content" > "$tmp_plan"
+  printf '%s\n' "$review_content" > "$tmp_review"
+  review_gate_validate_task_completion "$plan_path" "$tmp_plan" "$review_path" "$tmp_review"
   rc=$?
   rm -rf "$tmp_dir"
   return $rc
@@ -573,7 +719,7 @@ if [ -n "$STATUS_FILES" ]; then
     WORKFLOW_MODE=$(yaml_value_from_block "$FRONT_MATTER" "_workflow_mode")
     RUN_STATUS=$(yaml_value_from_block "$FRONT_MATTER" "_run_status")
     CHANGE_STATUS=$(yaml_value_from_block "$FRONT_MATTER" "_change_status")
-    CURRENT_PHASE=$(yaml_value_from_block "$FRONT_MATTER" "_phase")
+    CURRENT_PHASE=$(aicoding_normalize_phase "$(yaml_value_from_block "$FRONT_MATTER" "_phase")")
     CHANGE_LEVEL=$(yaml_value_from_block "$FRONT_MATTER" "_change_level")
     REVIEW_ROUND=$(yaml_value_from_block "$FRONT_MATTER" "_review_round")
     [ -z "$REVIEW_ROUND" ] && REVIEW_ROUND=0
@@ -607,6 +753,27 @@ if [ -n "$STATUS_FILES" ]; then
 
     validate_status_table_consistency "$f" "$CONTENT" "$CURRENT_PHASE" "$CHANGE_STATUS" "$WORKFLOW_MODE" "$RUN_STATUS" "$CHANGE_LEVEL" || exit 1
 
+    # --- _workflow_mode 与 _phase 映射一致性校验 ---
+    EXPECTED_WF_MODE=""
+    case "$CURRENT_PHASE" in
+      ChangeManagement|Proposal|Requirements) EXPECTED_WF_MODE="manual" ;;
+      Design|Planning|Implementation|Testing) EXPECTED_WF_MODE="auto" ;;
+      Deployment) EXPECTED_WF_MODE="semi-auto" ;;
+    esac
+    if [ -n "$EXPECTED_WF_MODE" ] && [ "$WORKFLOW_MODE" != "$EXPECTED_WF_MODE" ]; then
+      echo "❌ $f: _phase=$CURRENT_PHASE 要求 _workflow_mode=$EXPECTED_WF_MODE，但实际为 ${WORKFLOW_MODE}（参见 ai_workflow.md 映射规则）"
+      exit 1
+    fi
+
+    if [ "$CHANGE_STATUS" = "done" ] && [ "$RUN_STATUS" != "completed" ]; then
+      echo "❌ $f: _change_status=done 时要求 _run_status=completed（当前：${RUN_STATUS}）"
+      exit 1
+    fi
+    if [ "$RUN_STATUS" = "completed" ] && [ "$CHANGE_STATUS" != "done" ]; then
+      echo "❌ $f: _run_status=completed 时要求 _change_status=done（当前：${CHANGE_STATUS}）"
+      exit 1
+    fi
+
     if [ "$CHANGE_LEVEL" = "hotfix" ]; then
       aicoding_bool_is_true "$AICODING_ENABLE_HOTFIX" || {
         echo "❌ $f: _change_level=hotfix 但配置 enable_hotfix=false"
@@ -614,6 +781,11 @@ if [ -n "$STATUS_FILES" ]; then
       }
       hotfix_diff_count_check "$f" || exit 1
       hotfix_reqc_boundary_check "$f" || exit 1
+      hotfix_sensitive_boundary_check "$f" || exit 1
+    elif [ "$CHANGE_LEVEL" = "minor" ]; then
+      minor_diff_count_check "$f" || exit 1
+      minor_new_gwt_count_check "$f" || exit 1
+      minor_reqc_boundary_check "$f" || exit 1
     fi
 
     echo "$REVIEW_ROUND" | grep -qE '^[0-9]+$' || {
@@ -631,12 +803,12 @@ if [ -n "$STATUS_FILES" ]; then
     [ -z "$CURRENT_PHASE" ] && continue
 
     # 检查是否有阶段推进（对比暂存区 vs HEAD）
-    OLD_PHASE=$(git show "HEAD:$f" 2>/dev/null | awk '
+    OLD_PHASE=$(aicoding_normalize_phase "$(git show "HEAD:$f" 2>/dev/null | awk '
       NR==1 && $0!="---" {exit}
       NR==1 {in_front=1; next}
       in_front && $0=="---" {exit}
       in_front && /^_phase:/ {sub(/^_phase:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}
-    ')
+    ')")
     if [ -z "$OLD_PHASE" ]; then
       # 新建 status.md：只允许从 ChangeManagement 开始，禁止跳到高阶段
       NEW_RANK=$(aicoding_phase_rank "$CURRENT_PHASE")
@@ -647,6 +819,11 @@ if [ -n "$STATUS_FILES" ]; then
       continue
     fi
     [ "$OLD_PHASE" = "$CURRENT_PHASE" ] && continue
+
+    if [ "$REVIEW_ROUND" -ne 0 ]; then
+      echo "❌ $f: 检测到阶段切换（${OLD_PHASE} → ${CURRENT_PHASE}），_review_round 必须重置为 0（当前：${REVIEW_ROUND}）"
+      exit 1
+    fi
 
     OLD_RANK=$(aicoding_phase_rank "$OLD_PHASE")
     NEW_RANK=$(aicoding_phase_rank "$CURRENT_PHASE")
@@ -662,11 +839,22 @@ if [ -n "$STATUS_FILES" ]; then
     fi
     [ "$NEW_RANK" -eq "$OLD_RANK" ] && continue
 
+    # 相邻阶段校验：前进跨度 >1 硬拦截
+    FORWARD_JUMP=$((NEW_RANK - OLD_RANK))
+    if [ "$FORWARD_JUMP" -gt 1 ]; then
+      echo "❌ 阶段跳跃（${OLD_PHASE} → ${CURRENT_PHASE}，跨度 ${FORWARD_JUMP}）：只允许推进到相邻的下一阶段，不允许跳跃。"
+      exit 1
+    fi
+
     STATUS_CURRENT_REF=$(echo "$FRONT_MATTER" | grep '^_current:' | sed 's/^_current:[[:space:]]*//' | tr -d '[:space:]')
 
     run_result_gates_for_transition "$OLD_PHASE" "$CURRENT_PHASE" "$f" || exit 1
 
     if [ "$CHANGE_LEVEL" = "hotfix" ]; then
+      if [ "$OLD_PHASE" != "$CURRENT_PHASE" ]; then
+        echo "❌ ${f}: hotfix 不允许推进阶段（${OLD_PHASE} → ${CURRENT_PHASE}）"
+        exit 1
+      fi
       continue
     fi
 
@@ -684,29 +872,34 @@ if [ -n "$STATUS_FILES" ]; then
     case "$OLD_PHASE" in
       Requirements)
         aicoding_run_gate critical "phase-exit:requirements" validate_constraints_confirmation "${VERSION_DIR}review_requirements.md" "${VERSION_DIR}requirements.md" "${VERSION_DIR}proposal.md" || exit 1
+        aicoding_run_gate critical "phase-exit:proposal-coverage" validate_proposal_coverage "${VERSION_DIR}proposal.md" "${VERSION_DIR}requirements.md" || exit 1
         ;;
       Design)
         aicoding_run_gate critical "phase-exit:design-trace" validate_design_trace_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}design.md" || exit 1
+        aicoding_run_gate critical "phase-exit:design-review" validate_lightweight_review "${VERSION_DIR}review_design.md" || exit 1
         ;;
       Planning)
         aicoding_run_gate critical "phase-exit:planning-coverage" validate_plan_reverse_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}plan.md" || exit 1
+        aicoding_run_gate critical "phase-exit:planning-review" validate_lightweight_review "${VERSION_DIR}review_planning.md" || exit 1
         ;;
       Implementation)
         if [ "$CHANGE_LEVEL" = "minor" ]; then
           aicoding_run_gate critical "phase-exit:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
-          aicoding_run_gate critical "phase-exit:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
         else
           aicoding_run_gate critical "phase-exit:implementation-review" validate_review_summary_and_coverage "${VERSION_DIR}review_implementation.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
+          aicoding_run_gate critical "phase-exit:task-completion" validate_task_completion "${VERSION_DIR}plan.md" "${VERSION_DIR}review_implementation.md" || exit 1
         fi
         ;;
       Testing)
         if [ "$CHANGE_LEVEL" = "minor" ]; then
           aicoding_run_gate critical "phase-exit:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
           aicoding_run_gate critical "phase-exit:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
+          aicoding_run_gate critical "phase-exit:minor-testing-fresh-review" validate_minor_testing_review_freshness "${VERSION_DIR}review_minor.md" || exit 1
+          aicoding_run_gate critical "phase-exit:minor-testing-round" validate_minor_testing_round "${VERSION_DIR}review_minor.md" || exit 1
         else
           aicoding_run_gate critical "phase-exit:testing-review" validate_review_summary_and_coverage "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
           aicoding_run_gate critical "phase-exit:test-coverage" validate_test_report_gwt_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}test_report.md" || exit 1
-          aicoding_run_gate critical "phase-exit:human-spotcheck" validate_human_spotcheck "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" "$CHANGE_LEVEL" || exit 1
+          aicoding_run_gate critical "phase-exit:task-completion-testing" validate_task_completion "${VERSION_DIR}plan.md" "${VERSION_DIR}review_testing.md" || exit 1
         fi
         ;;
     esac
@@ -727,8 +920,16 @@ while IFS= read -r f; do
   FRONT_MATTER=$(echo "$CONTENT" | awk 'NR==1{next} /^---$/{exit} {print}')
   NEW_CHANGE_STATUS=$(echo "$FRONT_MATTER" | grep '^_change_status:' | sed 's/^_change_status:[[:space:]]*//' | tr -d '[:space:]')
   NEW_RUN_STATUS=$(echo "$FRONT_MATTER" | grep '^_run_status:' | sed 's/^_run_status:[[:space:]]*//' | tr -d '[:space:]')
-  NEW_PHASE=$(echo "$FRONT_MATTER" | grep '^_phase:' | sed 's/^_phase:[[:space:]]*//' | tr -d '[:space:]')
-  [ "$NEW_CHANGE_STATUS" = "done" ] || [ "$NEW_RUN_STATUS" = "wait_confirm" ] || continue
+  NEW_PHASE=$(aicoding_normalize_phase "$(echo "$FRONT_MATTER" | grep '^_phase:' | sed 's/^_phase:[[:space:]]*//' | tr -d '[:space:]')")
+  [ "$NEW_CHANGE_STATUS" = "done" ] || [ "$NEW_RUN_STATUS" = "wait_confirm" ] || [ "$NEW_RUN_STATUS" = "completed" ] || continue
+  CHANGE_LEVEL=$(echo "$FRONT_MATTER" | grep '^_change_level:' | sed 's/^_change_level:[[:space:]]*//' | tr -d '[:space:]')
+  [ -z "$CHANGE_LEVEL" ] && CHANGE_LEVEL="major"
+  if [ "$CHANGE_LEVEL" = "hotfix" ]; then
+    if [ "$NEW_CHANGE_STATUS" = "done" ] || [ "$NEW_RUN_STATUS" = "completed" ]; then
+      aicoding_run_gate critical "delivery:hotfix-test-evidence" validate_hotfix_test_evidence "$CONTENT" || exit 1
+    fi
+    continue
+  fi
   case "$NEW_PHASE" in
     Testing|Deployment) ;;
     *) continue ;;
@@ -737,14 +938,24 @@ while IFS= read -r f; do
   VERSION_DIR=$(echo "$f" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
   [ -z "$VERSION_DIR" ] && continue
 
-  CHANGE_LEVEL=$(echo "$FRONT_MATTER" | grep '^_change_level:' | sed 's/^_change_level:[[:space:]]*//' | tr -d '[:space:]')
-  [ -z "$CHANGE_LEVEL" ] && CHANGE_LEVEL="major"
-  [ "$CHANGE_LEVEL" = "hotfix" ] && continue
+  if [ "$NEW_PHASE" = "Deployment" ]; then
+    # 复用单源函数检查 Deployment 出口产出物（当前为 deployment.md）
+    while IFS= read -r deploy_doc; do
+      [ -z "$deploy_doc" ] && continue
+      aicoding_staged_exists "${VERSION_DIR}${deploy_doc}" || {
+        echo "❌ 交付关口（wait_confirm/done/completed）：缺少 ${deploy_doc}"
+        exit 1
+      }
+    done < <(aicoding_phase_exit_required "Deployment" "$CHANGE_LEVEL")
+  fi
 
   STATUS_CURRENT_REF=$(echo "$FRONT_MATTER" | grep '^_current:' | sed 's/^_current:[[:space:]]*//' | tr -d '[:space:]')
   if [ "$CHANGE_LEVEL" = "minor" ]; then
     aicoding_run_gate critical "delivery:minor-review" validate_minor_review "${VERSION_DIR}review_minor.md" || exit 1
     aicoding_run_gate critical "delivery:minor-test-evidence" validate_minor_test_evidence "$VERSION_DIR" "$CONTENT" || exit 1
+    if [ "$NEW_PHASE" = "Deployment" ]; then
+      aicoding_run_gate critical "delivery:minor-testing-round" validate_minor_testing_round "${VERSION_DIR}review_minor.md" || exit 1
+    fi
     if aicoding_staged_exists "${VERSION_DIR}requirements.md"; then
       if aicoding_staged_content "${VERSION_DIR}requirements.md" | grep -q 'GWT-REQ-C'; then
         aicoding_gate_log_warning "${f}: _change_level=minor 但 requirements 存在 REQ-C，建议升级为 major 并执行 spotcheck"
@@ -763,7 +974,6 @@ while IFS= read -r f; do
 
     aicoding_run_gate critical "delivery:review-testing" validate_review_summary_and_coverage "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" || exit 1
     aicoding_run_gate critical "delivery:test-report" validate_test_report_gwt_coverage "${VERSION_DIR}requirements.md" "${VERSION_DIR}test_report.md" || exit 1
-    aicoding_run_gate critical "delivery:human-spotcheck" validate_human_spotcheck "${VERSION_DIR}review_testing.md" "${VERSION_DIR}requirements.md" "$STATUS_CURRENT_REF" "$CHANGE_LEVEL" || exit 1
   fi
 done <<< "$STATUS_FILES"
 
@@ -819,22 +1029,22 @@ if [ -n "$DOC_FILES" ]; then
     DF_VERSION_DIR=$(echo "$df" | grep -oE 'docs/v[0-9]+\.[0-9]+/')
     [ -z "$DF_VERSION_DIR" ] && continue
     DF_STATUS="${DF_VERSION_DIR}status.md"
-    DF_PHASE=$(aicoding_staged_content "$DF_STATUS" | awk '
+    DF_PHASE=$(aicoding_normalize_phase "$(aicoding_staged_content "$DF_STATUS" | awk '
       NR==1 && $0!="---" {exit}
       NR==1 {next}
       /^---$/ {exit}
       /^_phase:/ {sub(/^_phase:[[:space:]]*/, ""); gsub(/[[:space:]]+$/, ""); print; exit}
-    ')
+    ')")
     [ -z "$DF_PHASE" ] && continue
     case "$DF_PHASE" in
-      "Change Management"|ChangeManagement) DF_ALLOWED="status.md|review_|cr/" ;;
+      ChangeManagement) DF_ALLOWED="status.md|review_|cr/" ;;
       Proposal)       DF_ALLOWED="status.md|proposal.md|review_|cr/" ;;
       Requirements)   DF_ALLOWED="status.md|requirements.md|proposal.md|review_|cr/" ;;
       Design)         DF_ALLOWED="status.md|design.md|review_|cr/" ;;
       Planning)       DF_ALLOWED="status.md|plan.md|review_|cr/" ;;
-      Implementation) DF_ALLOWED="status.md|review_|cr/|plan.md|tasks/|design.md|requirements.md" ;;
-      Testing)        DF_ALLOWED="status.md|test_report.md|review_|cr/|design.md|requirements.md|spotcheck_" ;;
-      Deployment)     DF_ALLOWED="status.md|deployment.md|test_report.md|review_|cr/|spotcheck_" ;;
+      Implementation) DF_ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md" ;;
+      Testing)        DF_ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
+      Deployment)     DF_ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
       *) continue ;;
     esac
     DF_BASENAME=$(basename "$df")

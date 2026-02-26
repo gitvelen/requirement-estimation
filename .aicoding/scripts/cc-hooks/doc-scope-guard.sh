@@ -19,7 +19,7 @@ aicoding_get_phase || exit 0
 # review_*.md 在任何阶段都允许（审查可随时发起）
 # status.md 在任何阶段都允许（状态更新）
 case "$AICODING_PHASE" in
-  "Change Management"|ChangeManagement)
+  ChangeManagement)
     ALLOWED="status.md|review_|cr/" ;;
   Proposal)
     ALLOWED="status.md|proposal.md|review_|cr/" ;;
@@ -30,9 +30,9 @@ case "$AICODING_PHASE" in
   Planning)
     ALLOWED="status.md|plan.md|review_|cr/" ;;
   Implementation)
-    ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md" ;;
+    ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md" ;;
   Testing)
-    ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md" ;;
+    ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
   Deployment)
     ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
   *) exit 0 ;;

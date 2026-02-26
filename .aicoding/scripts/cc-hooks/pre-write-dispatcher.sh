@@ -7,6 +7,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../lib/review_gate_common.sh
 source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
 source "${SCRIPT_DIR}/../lib/common.sh"
+aicoding_load_config
 
 aicoding_parse_cc_input
 [ -z "$CC_FILE_PATH" ] && exit 0
@@ -87,7 +88,7 @@ fi
 if [ "$HAS_PHASE" = true ]; then
   if echo "$CC_FILE_PATH" | grep -qE 'docs/v[0-9]+\.[0-9]+/'; then
     case "$AICODING_PHASE" in
-      "Change Management"|ChangeManagement)
+      ChangeManagement)
         ALLOWED="status.md|review_|cr/" ;;
       Proposal)
         ALLOWED="status.md|proposal.md|review_|cr/" ;;
@@ -98,11 +99,11 @@ if [ "$HAS_PHASE" = true ]; then
       Planning)
         ALLOWED="status.md|plan.md|review_|cr/" ;;
       Implementation)
-        ALLOWED="status.md|review_|cr/|plan.md|tasks/|design.md|requirements.md" ;;
+        ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md" ;;
       Testing)
-        ALLOWED="status.md|test_report.md|review_|cr/|design.md|requirements.md" ;;
+        ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
       Deployment)
-        ALLOWED="status.md|deployment.md|test_report.md|review_|cr/" ;;
+        ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
       *) ALLOWED="" ;;
     esac
 
@@ -143,79 +144,37 @@ if [ "$HAS_PHASE" = true ]; then
   case "$BASENAME" in
     review_*|status.md) ;; # 跳过
     *)
+      CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
+      [ "$CHANGE_LEVEL" = "hotfix" ] && SHOULD_CHECK=false
       IS_VERSIONED_DOC=false
       echo "$CC_FILE_PATH" | grep -qE 'docs/v[0-9]+\.[0-9]+/' && IS_VERSIONED_DOC=true
 
-      SHOULD_CHECK=false
-      case "$AICODING_PHASE" in
-        Implementation)
-          if [ "$IS_VERSIONED_DOC" = true ]; then
-            SHOULD_CHECK=true
-          elif ! echo "$CC_FILE_PATH" | grep -q 'docs/'; then
-            SHOULD_CHECK=true
-          fi ;;
-        Deployment)
-          if [ "$IS_VERSIONED_DOC" = true ]; then
-            SHOULD_CHECK=true
-          elif echo "$CC_FILE_PATH" | grep -q 'docs/'; then
-            SHOULD_CHECK=true
-          fi ;;
-        *)
-          [ "$IS_VERSIONED_DOC" = true ] && SHOULD_CHECK=true ;;
-      esac
+      if [ "$CHANGE_LEVEL" != "hotfix" ]; then
+        SHOULD_CHECK=false
+        case "$AICODING_PHASE" in
+          Implementation)
+            if [ "$IS_VERSIONED_DOC" = true ]; then
+              SHOULD_CHECK=true
+            elif ! echo "$CC_FILE_PATH" | grep -q 'docs/'; then
+              SHOULD_CHECK=true
+            fi ;;
+          Deployment)
+            if [ "$IS_VERSIONED_DOC" = true ]; then
+              SHOULD_CHECK=true
+            elif echo "$CC_FILE_PATH" | grep -q 'docs/'; then
+              SHOULD_CHECK=true
+            fi ;;
+          *)
+            [ "$IS_VERSIONED_DOC" = true ] && SHOULD_CHECK=true ;;
+        esac
+      fi
 
       if [ "$SHOULD_CHECK" = true ]; then
         VERSION_SLUG=$(echo "$AICODING_VERSION_DIR" | tr '/' '_')
         SESSION_KEY=$(aicoding_session_key)
         GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-${SESSION_KEY}"
         if [ ! -f "$GATE_PASSED" ]; then
-          case "$AICODING_PHASE" in
-            ChangeManagement)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-phases/00-change-management.md
-templates/cr_template.md" ;;
-            Proposal)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-phases/01-proposal.md
-templates/proposal_template.md" ;;
-            Requirements)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}proposal.md
-phases/02-requirements.md
-templates/requirements_template.md" ;;
-            Design)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}requirements.md
-phases/03-design.md
-templates/design_template.md" ;;
-            Planning)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}design.md
-${AICODING_VERSION_DIR}requirements.md
-phases/04-planning.md
-templates/plan_template.md" ;;
-            Implementation)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}plan.md
-${AICODING_VERSION_DIR}design.md
-${AICODING_VERSION_DIR}requirements.md
-phases/05-implementation.md
-templates/implementation_checklist_template.md" ;;
-            Testing)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}requirements.md
-${AICODING_VERSION_DIR}plan.md
-phases/06-testing.md
-templates/test_report_template.md" ;;
-            Deployment)
-              REQUIRED_PATTERNS="${AICODING_VERSION_DIR}status.md
-${AICODING_VERSION_DIR}test_report.md
-${AICODING_VERSION_DIR}design.md
-${AICODING_VERSION_DIR}requirements.md
-phases/07-deployment.md
-templates/deployment_template.md" ;;
-            *) REQUIRED_PATTERNS="" ;;
-          esac
+          REQUIRED_PATTERNS=$(aicoding_phase_entry_required "$AICODING_PHASE" "$AICODING_VERSION_DIR")
 
           if [ -n "$REQUIRED_PATTERNS" ]; then
             SESSION_KEY=$(aicoding_session_key)
@@ -231,7 +190,14 @@ templates/deployment_template.md" ;;
 
             if [ -n "$MISSING" ]; then
               ESCAPED=$(echo -e "$MISSING" | tr '\n' ' ')
-              aicoding_block "阶段入口门禁（${AICODING_PHASE}）：写入产出物前必须先读取以下文件：${ESCAPED}请先 Read 上述文件，再继续写入。"
+              WARN_MSG="阶段入口门禁（${AICODING_PHASE}）：写入产出物前必须先读取以下文件：${ESCAPED}请先 Read 上述文件，再继续写入。"
+              aicoding_load_config
+              if [ "$AICODING_ENTRY_GATE_MODE" = "block" ]; then
+                aicoding_block "${WARN_MSG}"
+              else
+                echo "⚠️  [CC-7] ${WARN_MSG}" >&2
+                aicoding_gate_log_warning "${WARN_MSG}"
+              fi
             fi
             touch "$GATE_PASSED"
           fi
@@ -243,18 +209,82 @@ fi
 
 # ============================================================
 # Gate 5: 阶段出口门禁（原 phase-exit-gate.sh）
-# 仅 status.md + AI 自动期（Design/Planning/Implementation/Testing）
+# 仅 status.md + Requirements/AI 自动期（Requirements/Design/Planning/Implementation/Testing）
 # ============================================================
+
+_validate_minor_review_file() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  grep -q 'REVIEW-SUMMARY-BEGIN' "$file" || return 1
+  grep -q 'REVIEW_RESULT:[[:space:]]*pass' "$file" || return 1
+  grep -q 'REQ_BASELINE_HASH:' "$file" || return 1
+}
+_has_minor_test_evidence() {
+  local status_file="$1"
+  [ -f "${VERSION_PATH}test_report.md" ] && return 0
+  grep -q 'TEST-RESULT-BEGIN' "$status_file" 2>/dev/null && return 0
+  return 1
+}
+_validate_minor_testing_round_file() {
+  local review_file="$1"
+  local block phase result round_at phase_norm result_norm
+  [ -f "$review_file" ] || return 1
+  block=$(
+    awk '
+      /MINOR-TESTING-ROUND-BEGIN/ {in_block=1; buf=""; next}
+      /MINOR-TESTING-ROUND-END/ {
+        if (in_block) {last=buf}
+        in_block=0
+        next
+      }
+      in_block {buf = buf $0 "\n"}
+      END {printf "%s", last}
+    ' "$review_file"
+  )
+  [ -n "$block" ] || return 1
+
+  phase=$(printf '%s\n' "$block" | sed -n 's/^ROUND_PHASE:[[:space:]]*//p' | tail -1)
+  result=$(printf '%s\n' "$block" | sed -n 's/^ROUND_RESULT:[[:space:]]*//p' | tail -1)
+  round_at=$(printf '%s\n' "$block" | sed -n 's/^ROUND_AT:[[:space:]]*//p' | tail -1)
+  phase_norm=$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  result_norm=$(printf '%s' "$result" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+  [ "$phase_norm" = "testing" ] || return 1
+  [ "$result_norm" = "pass" ] || return 1
+  echo "$round_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || return 1
+  return 0
+}
+_validate_constraints_confirmation_file() {
+  local review_label="$1" review_file="$2" req_label="$3" req_file="$4" proposal_label="$5" proposal_file="$6"
+  review_gate_validate_constraints_confirmation \
+    "$review_label" "$review_file" "$req_label" "$req_file" "$proposal_label" "$proposal_file"
+}
+_validate_proposal_coverage_file() {
+  local proposal_label="$1" proposal_file="$2" req_label="$3" req_file="$4"
+  [ -f "$proposal_file" ] || return 0
+  review_gate_validate_proposal_coverage "$proposal_label" "$proposal_file" "$req_label" "$req_file"
+}
+
 if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
   NEW_PHASE=$(echo "$CC_CONTENT" | grep -oE '_phase:[[:space:]]*(ChangeManagement|Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment)' \
     | sed 's/_phase:[[:space:]]*//' | head -1)
 
   if [ -n "$NEW_PHASE" ] && [ "$AICODING_PHASE" != "$NEW_PHASE" ]; then
     case "$AICODING_PHASE" in
-      Design|Planning|Implementation|Testing)
+      Requirements|Design|Planning|Implementation|Testing)
         NEW_CURRENT=$(echo "$CC_CONTENT" | awk '/^_current:/{sub(/^_current:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}')
         STATUS_CURRENT=$(aicoding_yaml_value "_current")
         STATUS_CURRENT_REF="${NEW_CURRENT:-$STATUS_CURRENT}"
+
+        CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
+        [ -z "$CHANGE_LEVEL" ] && CHANGE_LEVEL="major"
+
+        OLD_RANK=$(aicoding_phase_rank "$AICODING_PHASE")
+        NEW_RANK=$(aicoding_phase_rank "$NEW_PHASE")
+        FORWARD_JUMP=$((NEW_RANK - OLD_RANK))
+        if [ "$FORWARD_JUMP" -gt 1 ]; then
+          aicoding_block "阶段跳跃（${AICODING_PHASE} → ${NEW_PHASE}，跨度 ${FORWARD_JUMP}）：只允许推进到相邻的下一阶段，不允许跳跃。"
+        fi
 
         VERSION_PATH="${CLAUDE_PROJECT_DIR}/${AICODING_VERSION_DIR}"
         if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "$CLAUDE_PROJECT_DIR" ]; then
@@ -266,19 +296,16 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
           [ ! -f "${VERSION_PATH}$1" ] && EXIT_MISSING="${EXIT_MISSING}\n  - $1"
         }
 
-        case "$AICODING_PHASE" in
-          Design)
-            _check_exit_file "design.md"
-            _check_exit_file "review_design.md" ;;
-          Planning)
-            _check_exit_file "plan.md"
-            _check_exit_file "review_planning.md" ;;
-          Implementation)
-            _check_exit_file "review_implementation.md" ;;
-          Testing)
-            _check_exit_file "test_report.md"
-            _check_exit_file "review_testing.md" ;;
-        esac
+        while IFS= read -r required_doc; do
+          [ -z "$required_doc" ] && continue
+          _check_exit_file "$required_doc"
+        done < <(aicoding_phase_exit_required "$AICODING_PHASE" "$CHANGE_LEVEL")
+
+        if [ "$AICODING_PHASE" = "Testing" ] && [ "$CHANGE_LEVEL" = "minor" ]; then
+          [ -f "${VERSION_PATH}test_report.md" ] || \
+            [ -n "$(grep -n 'TEST-RESULT-BEGIN' "${VERSION_PATH}status.md" 2>/dev/null || true)" ] || \
+            EXIT_MISSING="${EXIT_MISSING}\n  - test_report.md 或 status.md 内联 TEST-RESULT 块"
+        fi
 
         if [ -n "$EXIT_MISSING" ]; then
           ESCAPED=$(echo -e "$EXIT_MISSING" | tr '\n' ' ')
@@ -289,20 +316,58 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
         REQ_FILE="${VERSION_PATH}requirements.md"
         REQ_LABEL="${AICODING_VERSION_DIR}requirements.md"
         case "$AICODING_PHASE" in
+          Requirements)
+            _validate_constraints_confirmation_file \
+              "${AICODING_VERSION_DIR}review_requirements.md" "${VERSION_PATH}review_requirements.md" \
+              "$REQ_LABEL" "$REQ_FILE" \
+              "${AICODING_VERSION_DIR}proposal.md" "${VERSION_PATH}proposal.md" \
+              || { aicoding_block "Requirements 禁止项确认校验失败"; }
+            _validate_proposal_coverage_file \
+              "${AICODING_VERSION_DIR}proposal.md" "${VERSION_PATH}proposal.md" \
+              "$REQ_LABEL" "$REQ_FILE" \
+              || { aicoding_block "Requirements Proposal 覆盖校验失败"; }
+            ;;
           Design)
-            review_gate_validate_design_trace_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" || { aicoding_block "Design 追溯覆盖校验失败"; }
-            # 语义门禁（warning）：API 契约完整性检查
-            local api_contract_result
-            api_contract_result=$(review_gate_validate_design_api_contracts "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" 2>&1 || true)
-            [ -z "$api_contract_result" ] || echo "$api_contract_result" >&2
+            review_gate_validate_design_trace_coverage "$REQ_LABEL" "$REQ_FILE" \
+              "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" \
+              || { aicoding_block "Design 追溯覆盖校验失败"; }
+            api_result=$(review_gate_validate_design_api_contracts \
+              "${AICODING_VERSION_DIR}design.md" "${VERSION_PATH}design.md" 2>&1 || true)
+            [ -z "$api_result" ] || echo "$api_result" >&2
             ;;
           Planning)
-            review_gate_validate_plan_reverse_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}plan.md" "${VERSION_PATH}plan.md" || { aicoding_block "Planning 覆盖校验失败"; } ;;
+            review_gate_validate_plan_reverse_coverage "$REQ_LABEL" "$REQ_FILE" \
+              "${AICODING_VERSION_DIR}plan.md" "${VERSION_PATH}plan.md" \
+              || { aicoding_block "Planning 覆盖校验失败"; } ;;
           Implementation)
-            review_gate_validate_review_summary_and_coverage "${AICODING_VERSION_DIR}review_implementation.md" "${VERSION_PATH}review_implementation.md" "$REQ_LABEL" "$REQ_FILE" "$STATUS_CURRENT_REF" "${AICODING_VERSION_DIR}review_implementation.md" || { aicoding_block "Implementation 审查摘要校验失败"; } ;;
+            if [ "$CHANGE_LEVEL" = "minor" ]; then
+              _validate_minor_review_file "${VERSION_PATH}review_minor.md" \
+                || { aicoding_block "Implementation minor 审查校验失败（review_minor.md 不完整）"; }
+            else
+              review_gate_validate_review_summary_and_coverage \
+                "${AICODING_VERSION_DIR}review_implementation.md" \
+                "${VERSION_PATH}review_implementation.md" "$REQ_LABEL" "$REQ_FILE" \
+                "$STATUS_CURRENT_REF" "${AICODING_VERSION_DIR}review_implementation.md" \
+                || { aicoding_block "Implementation 审查摘要校验失败"; }
+            fi ;;
           Testing)
-            review_gate_validate_review_summary_and_coverage "${AICODING_VERSION_DIR}review_testing.md" "${VERSION_PATH}review_testing.md" "$REQ_LABEL" "$REQ_FILE" "$STATUS_CURRENT_REF" "${AICODING_VERSION_DIR}review_testing.md" || { aicoding_block "Testing 审查摘要校验失败"; }
-            review_gate_validate_test_report_gwt_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}test_report.md" "${VERSION_PATH}test_report.md" || { aicoding_block "Testing GWT 覆盖校验失败"; } ;;
+            if [ "$CHANGE_LEVEL" = "minor" ]; then
+              _validate_minor_review_file "${VERSION_PATH}review_minor.md" \
+                || { aicoding_block "Testing minor 审查校验失败（review_minor.md 不完整）"; }
+              _has_minor_test_evidence "${VERSION_PATH}status.md" \
+                || { aicoding_block "Testing minor 缺少测试证据"; }
+              _validate_minor_testing_round_file "${VERSION_PATH}review_minor.md" \
+                || { aicoding_block "Testing minor 缺少 Testing 轮次机器可读结论（MINOR-TESTING-ROUND）"; }
+            else
+              review_gate_validate_review_summary_and_coverage \
+                "${AICODING_VERSION_DIR}review_testing.md" \
+                "${VERSION_PATH}review_testing.md" "$REQ_LABEL" "$REQ_FILE" \
+                "$STATUS_CURRENT_REF" "${AICODING_VERSION_DIR}review_testing.md" \
+                || { aicoding_block "Testing 审查摘要校验失败"; }
+              review_gate_validate_test_report_gwt_coverage "$REQ_LABEL" "$REQ_FILE" \
+                "${AICODING_VERSION_DIR}test_report.md" "${VERSION_PATH}test_report.md" \
+                || { aicoding_block "Testing GWT 覆盖校验失败"; }
+            fi ;;
         esac
       ;;
     esac
@@ -310,4 +375,3 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
 fi
 
 exit 0
-

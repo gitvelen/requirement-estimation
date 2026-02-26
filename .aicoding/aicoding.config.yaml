@@ -12,8 +12,10 @@ deferred_limit_percent: 10
 
 # Minor 误标启发式阈值（warning）
 # minor_max_diff_files: 仍可视为 Minor 的最大改动文件数。建议用日常小改动 80 分位校准。
+# 已被 pre-commit 消费：超过阈值会硬拦截并要求升级为 major 或拆分提交。
 minor_max_diff_files: 10
 # minor_max_new_gwts: 仍可视为 Minor 的新增 GWT 数上限。建议从 3-5 起步再校准。
+# 已被 pre-commit 消费：超过阈值会硬拦截并要求升级为 major。
 minor_max_new_gwts: 5
 
 # Hotfix 轨道（M1）
@@ -24,18 +26,21 @@ hotfix_max_diff_files: 3
 
 # 结果门禁（M2，仅在阶段推进 commit 中执行）
 # result_gate_test_command: 阶段推进时强制执行的测试命令。建议填 CI 同款命令。
-result_gate_test_command: "/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q --tb=short"
+result_gate_test_command: "uv run pytest -q --tb=short"
 # result_gate_build_command: 阶段推进时强制执行的构建命令。建议填 CI 同款命令。
 result_gate_build_command: "cd frontend && npm run build"
 # result_gate_typecheck_command: 阶段推进时强制执行的类型检查命令。建议填 CI 同款命令。
-result_gate_typecheck_command: "/home/admin/Claude/requirement-estimation-system/.venv/bin/python -m compileall -q backend"
+result_gate_typecheck_command: "uv run python scripts/incremental_static_gate.py"
 
 # 入口门禁模式（M2）
 # entry_gate_mode: 入口门禁模式（如 warn/block）。建议先 warn 观测，再逐步收紧。
 entry_gate_mode: warn
 
-# 项目级阶段覆盖（未配置默认 false）
-# phase_skip_proposal: 是否跳过提案阶段。建议默认 false，仅在成熟流程下启用。
+# Requirements 入口读取覆盖（未配置默认 false）
+# requirements_entry_skip_proposal: 是否在 Requirements 阶段跳过 proposal.md 的“入口必读”检查。
+# 仅影响入口必读，不改变 _phase 顺序推进规则（仍禁止跳阶段）。
+requirements_entry_skip_proposal: false
+# phase_skip_proposal: 兼容旧键（已弃用），语义同 requirements_entry_skip_proposal。
 phase_skip_proposal: false
 
 # GWT-ID 格式（用于未来扩展）
@@ -44,6 +49,7 @@ gwt_id_regex: ^GWT-REQ-C?[0-9]+-[0-9]+$
 
 # P4: 可选框架引用（latest 或 commit-hash）
 # framework_ref: 框架版本引用。建议固定到 commit，避免 latest 带来规则漂移。
+# ⚠️ 尚未被门禁消费，仅预留
 framework_ref: latest
 
 # 高风险审查关键词（语义门禁辅助）

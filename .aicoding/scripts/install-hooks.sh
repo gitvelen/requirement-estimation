@@ -12,7 +12,7 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 HOOK_DIR="${REPO_ROOT}/.git/hooks"
-SCRIPT_DIR="${REPO_ROOT}/.aicoding/scripts/git-hooks"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/git-hooks"
 BACKUP_DIR="${HOOK_DIR}/backup-$(date +%Y%m%d%H%M%S)"
 
 # 依赖检查
@@ -48,3 +48,4 @@ done
 echo ""
 echo "✅ Git hooks 安装完成"
 [ "$BACKED_UP" = true ] && echo "📦 原有 hooks 已备份至 ${BACKUP_DIR}/"
+exit 0

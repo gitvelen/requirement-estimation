@@ -10,10 +10,24 @@
 - `docs/<版本号>/requirements.md`
 - `docs/<版本号>/status.md`
 - `templates/plan_template.md`
+- `templates/review_planning_template.md`
 
 ## 本阶段输出
 - `docs/<版本号>/plan.md`
 - `docs/<版本号>/review_planning.md`
+
+## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
+
+> 脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required`。以下表格为人类可读视图，以脚本为准。
+
+| 必读文件 | 用途 | 强制级别 |
+|---------|------|---------|
+| `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
+| `docs/<版本号>/design.md` | 本阶段核心输入 | 🔴 CC-7 强制 |
+| `docs/<版本号>/requirements.md` | 反向覆盖与约束依据 | 🔴 CC-7 强制 |
+| `.aicoding/phases/04-planning.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
+| `.aicoding/templates/plan_template.md` | 产出物模板 | 🔴 CC-7 强制 |
+| `.aicoding/templates/review_planning_template.md` | 审查模板 | 🔴 CC-7 强制 |
 
 ## 本阶段特有规则
 1. 每个任务必须声明 `related_reqs`，确保需求反向覆盖。

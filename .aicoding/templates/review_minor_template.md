@@ -15,3 +15,13 @@ REVIEW_AT: YYYY-MM-DD
 
 ## 备注（可选）
 - ...
+
+## Testing 轮次结论（Testing 阶段推进时 🔴 MUST）
+
+> Implementation 阶段可先不填；在 Testing → Deployment 推进前，必须追加/更新本块。
+
+<!-- MINOR-TESTING-ROUND-BEGIN -->
+ROUND_PHASE: testing
+ROUND_RESULT: pass|fail
+ROUND_AT: YYYY-MM-DD
+<!-- MINOR-TESTING-ROUND-END -->

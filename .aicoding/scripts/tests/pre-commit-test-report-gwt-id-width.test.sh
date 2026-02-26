@@ -38,7 +38,7 @@ cat > docs/v1.0/status.md <<'EOF'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _change_level: major
@@ -117,12 +117,15 @@ cat > docs/v1.0/test_report.md <<'EOF'
 - 整体结论：通过
 EOF
 
+git add docs/v1.0/review_testing.md docs/v1.0/spotcheck_testing_main.md
+git commit -q -m "test: add review and spotcheck"
+
 # 推进阶段：Testing → Deployment（应允许 variable-width GWT-ID）
 cat > docs/v1.0/status.md <<EOF
 ---
 _baseline: v0.9
 _current: ${BASE_SHA}
-_workflow_mode: manual
+_workflow_mode: semi-auto
 _run_status: running
 _change_status: in_progress
 _change_level: major
@@ -130,7 +133,7 @@ _phase: Deployment
 ---
 EOF
 
-git add docs/v1.0/status.md docs/v1.0/review_testing.md docs/v1.0/test_report.md docs/v1.0/spotcheck_testing_main.md
+git add docs/v1.0/status.md docs/v1.0/test_report.md
 
 if ! bash scripts/git-hooks/pre-commit; then
   fail "expected pre-commit to allow test_report coverage with variable-width GWT-ID like GWT-REQ-1000-01"

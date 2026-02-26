@@ -20,7 +20,7 @@ cat > "$tmp_dir/docs/v1.0/status.md" <<'EOF'
 ---
 _baseline: v0.9
 _current: abc1234
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _phase: Implementation
@@ -69,6 +69,17 @@ r=$(aicoding_phase_rank "Deployment")
 
 r=$(aicoding_phase_rank "Unknown")
 [ "$r" -eq 999 ] && pass "Unknown = 999" || fail "Unknown expected 999, got: $r"
+
+# ============================================================
+# Test: aicoding_normalize_phase
+# ============================================================
+echo "--- aicoding_normalize_phase ---"
+
+norm=$(aicoding_normalize_phase "Change Management")
+[ "$norm" = "ChangeManagement" ] && pass "Change Management normalized to ChangeManagement" || fail "normalize failed, got: $norm"
+
+norm=$(aicoding_normalize_phase "Implementation")
+[ "$norm" = "Implementation" ] && pass "Implementation unchanged" || fail "normalize should keep Implementation, got: $norm"
 
 # ============================================================
 # Test: aicoding_is_commit_sha
@@ -164,7 +175,7 @@ cat > "$tmp_dir/docs/v1.0/status.md" <<'EOF'
 ---
 _baseline: v0.9
 _current: abc1234
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _phase: Implementation

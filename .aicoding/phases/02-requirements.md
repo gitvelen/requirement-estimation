@@ -11,6 +11,8 @@
 
 ## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
 
+> 脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required`。以下表格为人类可读视图，以脚本为准。
+
 > AI 进入本阶段后、开始产出前，**必须先读取**以下文件。CC-7 hook 会在 AI 首次写入产出物时检查是否已读取。
 
 | 必读文件 | 用途 | 强制级别 |
@@ -48,6 +50,27 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## 分段走查协议（🔴 MUST）
+
+> 来源：lessons_learned R1(遗漏用户反馈), R9(差异未确认)。
+> Requirements 写完再一次性确认，用户面对 200+ 行文档难以逐条审。分段产出、逐段确认。
+
+AI 编写 requirements 时，按以下顺序分段产出并逐段与用户确认：
+1. §1（概述 + 术语 + 覆盖映射表）→ 用户确认
+2. §2（业务场景）→ 用户确认
+3. §3（功能性需求 + GWT）→ 用户确认
+4. §4 + §4A（非功能 + 禁止项）→ 用户确认
+5. §5-6（权限 + 数据接口）→ 用户确认
+
+每段确认后才继续下一段。用户可以在任何一段要求修改。
+
+## 覆盖映射强制要求（🔴 MUST，R5）
+
+> Proposal → Requirements 的覆盖映射表（§1.4）为必填项，不再是"可选"。
+
+- 每个 P-DO/P-DONT/P-METRIC 必须映射到至少一个 REQ-ID，或标注"defer + 原因"并回写 proposal Non-goals
+- 门禁验证：已映射 + defer = proposal 锚点总数（无遗漏）
+
 ## 读取模板
 编写需求时读取 `.aicoding/templates/requirements_template.md`。
 
@@ -74,7 +97,7 @@
 3. 未覆盖的项需要回写 `proposal.md` 的 Non-goals 或补充需求
 
 ### 一致性检查（R10）
-**验证命令**（见 `.aicoding/templates/review_template.md` 附录 AC-02）：
+**验证命令**：
 ```bash
 rg -n "关键词1|关键词2" docs/<版本号>/requirements.md
 ```

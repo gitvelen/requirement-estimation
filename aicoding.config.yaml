@@ -1,0 +1,25 @@
+# aicoding runtime config for requirement-estimation-system
+
+spotcheck_ratio_percent: 10
+spotcheck_min: 1
+spotcheck_max: 5
+deferred_limit_percent: 10
+
+minor_max_diff_files: 10
+minor_max_new_gwts: 5
+
+enable_hotfix: true
+hotfix_max_diff_files: 3
+
+result_gate_test_command: ".venv/bin/python -m pytest -q --tb=short"
+result_gate_build_command: "cd frontend && npm run build"
+result_gate_typecheck_command: ".venv/bin/python -m compileall -q backend"
+
+entry_gate_mode: warn
+
+requirements_entry_skip_proposal: false
+phase_skip_proposal: false
+
+gwt_id_regex: ^GWT-REQ-C?[0-9]+-[0-9]+$
+framework_ref: latest
+high_risk_review_patterns: "兼容,回滚,权限,REQ-C,deprecated,confirm,迁移,越权,鉴权,安全"

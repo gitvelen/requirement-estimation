@@ -31,6 +31,22 @@ case "$BASENAME" in
     check_section "## 范围界定"
     check_section "## 风险与依赖"
     check_section "## 变更记录"
+    # P-DO/P-DONT/P-METRIC 完整性检查
+    if ! grep -qE 'P-DO-[0-9]+' "$CC_FILE_PATH" 2>/dev/null; then
+      MISSING="${MISSING}\n  - 至少 1 条 P-DO（关键验收锚点 > 必须做到）"
+    fi
+    if ! grep -qE 'P-DONT-[0-9]+' "$CC_FILE_PATH" 2>/dev/null && ! grep -qE '无禁止项' "$CC_FILE_PATH" 2>/dev/null; then
+      MISSING="${MISSING}\n  - 至少 1 条 P-DONT 或明确写\"无禁止项\"（关键验收锚点 > 绝对不能出现）"
+    fi
+    if ! grep -qE 'P-METRIC-[0-9]+' "$CC_FILE_PATH" 2>/dev/null && ! grep -qE '无量化指标' "$CC_FILE_PATH" 2>/dev/null; then
+      MISSING="${MISSING}\n  - 至少 1 条 P-METRIC 或明确写\"无量化指标\"（关键验收锚点 > 成功指标）"
+    fi
+    # 开放问题状态检查：不允许无状态标记的条目
+    if grep -q '## 开放问题' "$CC_FILE_PATH" 2>/dev/null; then
+      if grep -A 100 '## 开放问题' "$CC_FILE_PATH" | grep -E '^\|[[:space:]]*[0-9]+' | grep -vE '已关闭|defer' | grep -qv '^$' 2>/dev/null; then
+        MISSING="${MISSING}\n  - 开放问题中存在未标记状态的条目（需标记为\"已关闭\"或\"defer 到 Requirements\"）"
+      fi
+    fi
     ;;
   requirements.md)
     check_section "## 1."

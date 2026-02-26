@@ -53,26 +53,6 @@ git commit -q -m "base"
 
 BASE_SHA=$(git rev-parse HEAD)
 
-cat > docs/v1.0/status.md <<EOF_STATUS
----
-_baseline: v0.9
-_current: ${BASE_SHA}
-_workflow_mode: auto
-_run_status: running
-_change_status: in_progress
-_change_level: minor
-_phase: Testing
----
-
-## 变更摘要
-- 修复文案
-EOF_STATUS
-
-git add docs/v1.0/status.md
-if bash scripts/git-hooks/pre-commit; then
-  fail "expected minor gate to require review_minor/test evidence before phase advance"
-fi
-
 cat > docs/v1.0/review_minor.md <<'EOF_REVIEW'
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_RESULT: pass
@@ -88,6 +68,48 @@ REVIEW_AT: 2026-02-16
 | GWT-REQ-001-01 | PASS | CODE_REF | docs/v1.0/requirements.md:4 |
 EOF_REVIEW
 
+cat > docs/v1.0/status.md <<EOF_STATUS
+---
+_baseline: v0.9
+_current: ${BASE_SHA}
+_workflow_mode: auto
+_run_status: running
+_change_status: in_progress
+_change_level: minor
+_phase: Testing
+---
+
+## 变更摘要
+- 修复文案
+EOF_STATUS
+
+git add docs/v1.0/status.md docs/v1.0/review_minor.md
+if ! bash scripts/git-hooks/pre-commit; then
+  fail "expected Implementation->Testing (minor) to pass with review_minor only"
+fi
+
+git commit -q -m "move to testing"
+
+cat > docs/v1.0/status.md <<EOF_STATUS
+---
+_baseline: v0.9
+_current: ${BASE_SHA}
+_workflow_mode: semi-auto
+_run_status: running
+_change_status: in_progress
+_change_level: minor
+_phase: Deployment
+---
+
+## 变更摘要
+- 修复文案
+EOF_STATUS
+
+git add docs/v1.0/status.md
+if bash scripts/git-hooks/pre-commit; then
+  fail "expected Testing->Deployment (minor) to require test evidence"
+fi
+
 cat > docs/v1.0/test_report.md <<'EOF_REPORT'
 ## 需求覆盖矩阵（GWT 粒度追溯）
 | GWT-ID | REQ-ID | 需求摘要 | 对应测试(TEST-ID) | 证据类型 | 证据 | 结果 |
@@ -98,9 +120,61 @@ cat > docs/v1.0/test_report.md <<'EOF_REPORT'
 - 整体结论：通过
 EOF_REPORT
 
-git add docs/v1.0/review_minor.md docs/v1.0/test_report.md
+git add docs/v1.0/status.md docs/v1.0/test_report.md
+if bash scripts/git-hooks/pre-commit; then
+  fail "expected Testing->Deployment (minor) to require fresh review_minor update for testing conclusion"
+fi
+
+cat >> docs/v1.0/review_minor.md <<'EOF_REVIEW_APPEND'
+
+## 2026-02-26 第2轮（Testing）
+- 测试阶段结论：test_report 已补充并通过
+EOF_REVIEW_APPEND
+
+git add docs/v1.0/status.md docs/v1.0/test_report.md docs/v1.0/review_minor.md
+if bash scripts/git-hooks/pre-commit; then
+  fail "expected Testing->Deployment (minor) to require machine-readable testing round conclusion in review_minor"
+fi
+
+cat >> docs/v1.0/review_minor.md <<'EOF_REVIEW_APPEND'
+
+<!-- MINOR-TESTING-ROUND-BEGIN -->
+ROUND_PHASE: testing
+ROUND_RESULT: pass
+ROUND_AT: 2026-02-26
+<!-- MINOR-TESTING-ROUND-END -->
+EOF_REVIEW_APPEND
+
+git add docs/v1.0/status.md docs/v1.0/test_report.md docs/v1.0/review_minor.md
 if ! bash scripts/git-hooks/pre-commit; then
-  fail "expected minor gate to allow phase advance with review_minor + test evidence"
+  fail "expected Testing->Deployment (minor) to pass after testing round marker + test evidence"
+fi
+
+# minor 触碰 REQ-C：必须升级为 major，pre-commit 应拦截
+cat >> docs/v1.0/requirements.md <<'EOF_REQC'
+
+#### REQ-C001：禁止暴露内部字段
+- [ ] GWT-REQ-C001-01: Given 用户打开页面，When 页面渲染，Then 不显示 internal_id
+EOF_REQC
+
+cat > docs/v1.0/status.md <<EOF_STATUS
+---
+_baseline: v0.9
+_current: ${BASE_SHA}
+_workflow_mode: auto
+_run_status: running
+_change_status: in_progress
+_change_level: minor
+_phase: Testing
+---
+
+## 变更摘要
+- 增补禁止项
+EOF_STATUS
+
+git add docs/v1.0/status.md docs/v1.0/requirements.md
+if bash scripts/git-hooks/pre-commit; then
+  fail "expected minor change touching REQ-C to be blocked and require upgrade to major"
 fi
 
 echo "ok"

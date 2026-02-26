@@ -27,7 +27,7 @@ cat > "$tmp_dir/docs/v1.0/status.md" <<'EOF'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _phase: Implementation

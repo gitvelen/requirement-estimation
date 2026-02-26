@@ -9,10 +9,23 @@
 - `docs/<版本号>/requirements.md`
 - `docs/<版本号>/status.md`
 - `templates/design_template.md`
+- `templates/review_design_template.md`
 
 ## 本阶段输出
 - `docs/<版本号>/design.md`
 - `docs/<版本号>/review_design.md`
+
+## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
+
+> 脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required`。以下表格为人类可读视图，以脚本为准。
+
+| 必读文件 | 用途 | 强制级别 |
+|---------|------|---------|
+| `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
+| `docs/<版本号>/requirements.md` | 本阶段核心输入 | 🔴 CC-7 强制 |
+| `.aicoding/phases/03-design.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
+| `.aicoding/templates/design_template.md` | 产出物模板 | 🔴 CC-7 强制 |
+| `.aicoding/templates/review_design_template.md` | 审查模板 | 🔴 CC-7 强制 |
 
 ## 本阶段特有规则
 1. 先补齐设计决策：技术栈、关键依赖、部署形态、风险与回滚。

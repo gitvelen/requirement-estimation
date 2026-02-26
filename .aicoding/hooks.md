@@ -21,6 +21,7 @@
 ### 3.1 pre-commit（硬门禁）
 - status front matter 枚举与关键字段校验
 - 阶段推进出口门禁（含 major/minor 分支）
+- minor Testing 轮次结论门禁（`review_minor.md` 的 `MINOR-TESTING-ROUND` 块）
 - hotfix 边界检查（文件数、REQ-C）
 - 结果门禁（`result_gate_test/build/typecheck`，仅阶段推进 commit）
 - requirements 结构完整性与引用一致性
@@ -32,14 +33,15 @@
 
 ### 3.3 post-commit（软警告）
 - 风险提示集合：`scripts/git-hooks/warnings/w*.sh`
-- 当前基线约定：`post-commit（软警告，21 个）`
+- 当前基线约定：`post-commit（软警告脚本 21 个：W6–W22 + W25–W28；内置检查 W23/W24）`
 - 逃生通道审计：W24（检测 pre-commit 通过证据缺失）
 
 ### 3.4 CC hooks（流程引导）
 - `inject-phase-context.sh`：会话开始上下文注入
-- `phase-entry-gate.sh`：阶段入口必读校验（默认 warn）
-- `phase-exit-gate.sh`：阶段推进前出口校验
+- `pre-write-dispatcher.sh`：PreToolUse 统一入口（合并 phase-gate / doc-scope-guard / phase-entry-gate / phase-exit-gate / review-append-guard）
+- `doc-structure-check.sh`：PostToolUse（Write）文档结构校验
 - `read-tracker.sh`：Read 路径追踪
+- `stop-gate.sh`：Stop 时人工介入期收口校验
 
 ## 4. 单源定义
 - `scripts/lib/common.sh`

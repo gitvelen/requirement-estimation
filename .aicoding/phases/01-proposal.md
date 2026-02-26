@@ -12,6 +12,8 @@
 
 ## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
 
+> 脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required`。以下表格为人类可读视图，以脚本为准。
+
 > AI 进入本阶段后、开始产出前，**必须先读取**以下文件。CC-7 hook 会在 AI 首次写入产出物时检查是否已读取。
 
 | 必读文件 | 用途 | 强制级别 |
@@ -46,6 +48,34 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## 结构化讨论协议（🔴 MUST）
+
+> 来源：lessons_learned R1(遗漏用户反馈), R3(回答未结构化落盘), R5(proposal覆盖缺失)。
+> "充分讨论"不是行为准则，是可执行协议。
+
+### 1. 讨论覆盖要求
+
+AI 在写 proposal 前，必须与用户就以下维度至少各有一轮 Q&A：
+- 核心价值与成功标准（"做成什么样算成功？"）
+- 范围边界（"哪些明确不做？"）
+- 关键验收预期（"你最在意哪几个点？"）
+- 已知约束与风险（"有什么限制条件？"）
+
+### 2. 用户回答结构化落盘（R3）
+
+AI 使用 AskUserQuestion 或对话获得的每个决策性回答，必须在 proposal 对应章节中体现。写完 proposal 后，必须回查本次会话中用户的所有回答，逐条确认已落盘。
+
+### 3. 开放问题关闭门禁
+
+proposal.md 的"开放问题"章节中，所有条目必须在提交前标记为"已关闭"或"defer 到 Requirements"。不得带未决问题进入下一阶段。
+
+### 4. P-DO/P-DONT/P-METRIC 完整性
+
+proposal 的"关键验收锚点"章节必须非空：
+- 至少 1 条 P-DO（必须做到）
+- 至少 1 条 P-DONT（绝对不能出现）或明确写"无禁止项"
+- 至少 1 条 P-METRIC（成功指标）或明确写"无量化指标"
+
 ## 读取模板
 编写提案时读取 `.aicoding/templates/proposal_template.md`。
 
@@ -59,6 +89,7 @@
 ### 审查要求
 - 人工指定审查者：`@review Claude` 或 `@review Codex`
 - 审查结果追加到 `review_proposal.md` 文件末尾
+- Proposal 审查为自由格式；建议参考 `.aicoding/templates/review_template.md` 中 Proposal 口径（至少写明问题清单、结论、审查者、时间）
 - 可多次指定不同审查者，直至问题收敛
 
 ### 人工确认
@@ -66,6 +97,8 @@
 - [ ] 人工确认问题可接受
 - [ ] 人工确认进入 Requirements 阶段
 - [ ] 更新 `status.md`：`_phase: Requirements`（并同步表格展示行"当前阶段"）
+
+> 提交期硬门禁：`pre-commit` 在 `Proposal -> Requirements` 转换时会强制检查 `review_proposal.md` 存在。
 
 ## 完成后
 1. 确认质量门禁通过

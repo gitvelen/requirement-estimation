@@ -29,7 +29,7 @@ fi
 
 # 检查 2：当前阶段的 review 文件是否存在
 case "$AICODING_PHASE" in
-  "Change Management"|ChangeManagement) REVIEW_FILE="review_change_management.md" ;;
+  ChangeManagement) REVIEW_FILE="review_change_management.md" ;;
   Proposal) REVIEW_FILE="review_proposal.md" ;;
   Requirements) REVIEW_FILE="review_requirements.md" ;;
 esac

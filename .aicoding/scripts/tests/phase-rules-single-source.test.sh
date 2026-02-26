@@ -23,4 +23,8 @@ grep -q 'aicoding_detect_version_dir ""' "$INJECT" && fail "inject-phase-context
 grep -q "aicoding_phase_exit_required" "$EXIT_GATE" || fail "phase-exit-gate.sh does not use common phase-exit single source"
 grep -q "aicoding_phase_exit_required" "$PRE_COMMIT" || fail "pre-commit does not use common phase-exit single source"
 
+DISPATCHER="${ROOT_DIR}/scripts/cc-hooks/pre-write-dispatcher.sh"
+grep -q "aicoding_phase_entry_required" "$DISPATCHER" || fail "pre-write-dispatcher.sh Gate 4 does not use common phase-entry single source"
+grep -q "aicoding_phase_exit_required" "$DISPATCHER" || fail "pre-write-dispatcher.sh Gate 5 does not use common phase-exit single source"
+
 echo "ok"

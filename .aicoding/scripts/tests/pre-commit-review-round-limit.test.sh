@@ -30,12 +30,12 @@ cat > docs/v1.0/status.md <<'EOF_STATUS'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: auto
+_workflow_mode: manual
 _run_status: running
 _change_status: in_progress
 _change_level: major
-_review_round: 0
-_phase: Implementation
+_review_round: 2
+_phase: Proposal
 ---
 EOF_STATUS
 
@@ -46,12 +46,55 @@ cat > docs/v1.0/status.md <<'EOF_STATUS'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: auto
+_workflow_mode: manual
+_run_status: running
+_change_status: in_progress
+_change_level: major
+_review_round: 2
+_phase: Requirements
+---
+EOF_STATUS
+
+git add docs/v1.0/status.md
+if bash scripts/git-hooks/pre-commit; then
+  fail "expected pre-commit to block phase transition when _review_round is not reset to 0"
+fi
+
+cat > docs/v1.0/status.md <<'EOF_STATUS'
+---
+_baseline: v0.9
+_current: 0000000
+_workflow_mode: manual
+_run_status: running
+_change_status: in_progress
+_change_level: major
+_review_round: 0
+_phase: Requirements
+---
+EOF_STATUS
+
+cat > docs/v1.0/review_proposal.md <<'EOF_REVIEW'
+## review proposal
+- ok
+EOF_REVIEW
+
+git add docs/v1.0/status.md docs/v1.0/review_proposal.md
+if ! bash scripts/git-hooks/pre-commit; then
+  fail "expected pre-commit to allow phase transition when _review_round=0"
+fi
+
+git commit -q -m "move to requirements"
+
+cat > docs/v1.0/status.md <<'EOF_STATUS'
+---
+_baseline: v0.9
+_current: 0000000
+_workflow_mode: manual
 _run_status: running
 _change_status: in_progress
 _change_level: major
 _review_round: 6
-_phase: Implementation
+_phase: Requirements
 ---
 EOF_STATUS
 
@@ -64,12 +107,12 @@ cat > docs/v1.0/status.md <<'EOF_STATUS'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: auto
+_workflow_mode: manual
 _run_status: wait_confirm
 _change_status: in_progress
 _change_level: major
 _review_round: 6
-_phase: Implementation
+_phase: Requirements
 ---
 EOF_STATUS
 

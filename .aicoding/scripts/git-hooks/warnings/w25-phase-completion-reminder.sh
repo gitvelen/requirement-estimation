@@ -11,7 +11,7 @@ W25_RUN_STATUS=$(aicoding_yaml_value "_run_status" "$STATUS_FILE")
 
 # 仅手动期阶段触发
 case "$W25_PHASE" in
-  ChangeManagement|"Change Management"|Proposal|Requirements) ;;
+  ChangeManagement|Proposal|Requirements) ;;
   *) return 0 ;;
 esac
 
@@ -20,7 +20,7 @@ esac
 
 W25_COMPLETE=false
 case "$W25_PHASE" in
-  ChangeManagement|"Change Management")
+  ChangeManagement)
     [ -f "${VERSION_DIR}review_change_management.md" ] && W25_COMPLETE=true ;;
   Proposal)
     [ -f "${VERSION_DIR}proposal.md" ] && [ -f "${VERSION_DIR}review_proposal.md" ] && W25_COMPLETE=true ;;

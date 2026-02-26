@@ -21,6 +21,30 @@ else
   exit 1
 fi
 
+# --- Hotfix 场景强制 fix: 前缀 ---
+STAGED=$(git diff --cached --name-only)
+HOTFIX_VERSION_DIR=$(echo "$STAGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+if [ -n "$HOTFIX_VERSION_DIR" ]; then
+  HOTFIX_STATUS_FILE="${HOTFIX_VERSION_DIR}status.md"
+  HOTFIX_CHANGE_LEVEL=""
+  if [ -f "$HOTFIX_STATUS_FILE" ]; then
+    HOTFIX_CHANGE_LEVEL=$(git show ":$HOTFIX_STATUS_FILE" 2>/dev/null | awk '
+      NR==1 && $0!="---" {exit}
+      NR==1 {next}
+      /^---$/ {exit}
+      /^_change_level:/ {sub(/^_change_level:[[:space:]]*/, ""); gsub(/[[:space:]]+$/, ""); print; exit}
+    ')
+  fi
+  if [ "$HOTFIX_CHANGE_LEVEL" = "hotfix" ]; then
+    if ! echo "$MSG" | grep -qE '^\[CR-[0-9]{8}-[0-9]{3}\] ' && \
+       ! echo "$MSG" | grep -qE '^fix(\([^)]+\))?: ' && \
+       ! echo "$MSG" | grep -qE '^(Merge|Revert|fixup!|squash!) '; then
+      echo "❌ hotfix 提交的 commit message 前缀必须为 fix: 或 fix(scope):（当前：$(echo "$MSG" | head -c 40)…）"
+      exit 1
+    fi
+  fi
+fi
+
 # 判断 staged 文件是否命中 CR 影响范围
 cr_scope_matches_file() {
   local staged_file="$1"
@@ -50,19 +74,17 @@ cr_scope_matches_file() {
 }
 
 # --- Git-Hook 2: commit-msg CR-ID 校验（条件触发） ---
-# 仅当暂存文件涉及 docs/vX.Y/ 时才校验 CR-ID，避免误杀无关提交
+# 优先使用本次暂存命中的 docs/vX.Y/；若未命中（常见于纯代码提交），
+# 回退到最新版本目录的 status.md 作为 Active CR 真相源，避免 code-only 提交漏校验。
 STAGED=$(git diff --cached --name-only)
 VERSION_DIR=$(echo "$STAGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
 if [ -z "$VERSION_DIR" ]; then
-  STATUS_CANDIDATE=$(find docs -path '*/v*/status.md' -type f 2>/dev/null | LC_ALL=C sort | head -1 || true)
-  if [ -n "$STATUS_CANDIDATE" ]; then
-    VERSION_DIR=$(echo "$STATUS_CANDIDATE" | sed 's#status\.md$##')
-  fi
+  VERSION_DIR=$(aicoding_latest_version_dir "$(aicoding_repo_root)" || true)
 fi
 if [ -n "$VERSION_DIR" ]; then
   STATUS_FILE="${VERSION_DIR}status.md"
 else
-  # 不涉及版本目录的提交，跳过 CR-ID 校验（避免 fallback 到错误版本）
+  # 无可用版本目录时，跳过 CR-ID 校验
   STATUS_FILE=""
 fi
 if [ -n "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ]; then

@@ -38,7 +38,7 @@ cat > docs/v1.0/status.md <<'EOF'
 ---
 _baseline: v0.9
 _current: 0000000
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _change_level: minor
@@ -68,7 +68,7 @@ cat > docs/v1.0/status.md <<'EOF'
 ---
 _baseline: v0.9
 _current: 1111111
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _change_level: minor
@@ -90,7 +90,7 @@ cat > docs/v1.0/status.md <<'EOF'
 ---
 _baseline: v0.9
 _current: 2222222
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _change_level: minor
