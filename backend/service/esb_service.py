@@ -29,17 +29,19 @@ logger = logging.getLogger(__name__)
 class EsbService:
     DEFAULT_VALID_STATUSES = ["正常使用"]
     DEFAULT_SCOPE = "both"
+    DEFAULT_STATUS_VALUE = "正常使用"
+    DEFAULT_STATUS_SENTINEL = "__DEFAULT_STATUS__"
 
     REQUIRED_FIELDS = ("provider_system_id", "consumer_system_id", "service_name", "status")
 
     FIELD_ALIASES = {
         "service_code": ["交易码", "交易代码", "服务码", "服务代码"],
         "scenario_code": ["服务场景码", "场景码", "场景代码", "服务场景代码"],
-        "provider_system_id": ["提供方系统简称", "提供方系统标识", "提供方系统编号", "提供方系统代码", "提供方系统ID", "提供方系统"],
-        "provider_system_name": ["提供方中文名称", "提供方系统名称", "提供方系统中文名", "提供方名称"],
+        "provider_system_id": ["提供方系统简称", "提供方系统标识", "提供方系统编号", "提供方系统代码", "提供方系统ID", "提供方系统", "系统标识"],
+        "provider_system_name": ["提供方中文名称", "提供方系统名称", "提供方系统中文名", "提供方名称", "系统名称"],
         "service_name": ["交易名称", "服务名称", "服务名", "交易名"],
-        "consumer_system_id": ["调用方系统简称", "调用方系统标识", "调用方系统编号", "调用方系统代码", "调用方系统ID", "调用方系统"],
-        "consumer_system_name": ["调用方中文名称", "调用方系统名称", "调用方系统中文名", "调用方名称"],
+        "consumer_system_id": ["调用方系统简称", "调用方系统标识", "调用方系统编号", "调用方系统代码", "调用方系统ID", "调用方系统", "系统标识#2"],
+        "consumer_system_name": ["调用方中文名称", "调用方系统名称", "调用方系统中文名", "调用方名称", "系统名称#2"],
         "status": ["状态", "使用状态", "生效状态"],
         "remark": ["备注", "说明", "备注信息"],
     }
@@ -137,11 +139,48 @@ class EsbService:
 
     def _build_header_map(self, header_row: List[Any]) -> Dict[str, int]:
         header_map: Dict[str, int] = {}
+        duplicate_counter: Dict[str, int] = {}
         for idx, cell in enumerate(header_row or []):
             key = self._normalize_header(cell)
-            if key and key not in header_map:
-                header_map[key] = idx
+            if not key or key.startswith("__"):
+                continue
+            duplicate_counter[key] = duplicate_counter.get(key, 0) + 1
+            dedup_key = key if duplicate_counter[key] == 1 else f"{key}#{duplicate_counter[key]}"
+            header_map[dedup_key] = idx
         return header_map
+
+    def _count_alias_hits(self, header_map: Dict[str, int], aliases: Dict[str, List[str]]) -> int:
+        hit_count = 0
+        for candidates in aliases.values():
+            if any(candidate in header_map for candidate in candidates):
+                hit_count += 1
+        return hit_count
+
+    def _select_header_row_index(self, rows: List[List[Any]]) -> int:
+        max_scan = min(len(rows), 5)
+        best_index = 0
+        best_score = (-1, -1, -1, -1)
+
+        for idx in range(max_scan):
+            header_map = self._build_header_map(rows[idx])
+            required_hits = sum(
+                1
+                for field in ("provider_system_id", "consumer_system_id", "service_name")
+                if any(candidate in header_map for candidate in self.FIELD_ALIASES.get(field, []))
+            )
+            detail_hits = self._count_alias_hits(header_map, self.FIELD_ALIASES)
+            summary_hits = self._count_alias_hits(header_map, self.SUMMARY_ALIASES)
+            score = (required_hits, detail_hits, summary_hits, len(header_map))
+            if score > best_score:
+                best_index = idx
+                best_score = score
+
+        return best_index
+
+    def _is_interface_template_header(self, header_map: Dict[str, int]) -> bool:
+        if "系统标识" not in header_map or "系统标识#2" not in header_map:
+            return False
+        return any(name in header_map for name in ("服务名称", "交易名称", "服务名", "交易名"))
 
     def _resolve_mapping(self, header_map: Dict[str, int], mapping_override: Dict[str, Any], aliases: Dict[str, List[str]]) -> Dict[str, str]:
         resolved: Dict[str, str] = {}
@@ -173,19 +212,21 @@ class EsbService:
     def _rows_to_dicts(self, rows: List[List[Any]]) -> List[Dict[str, Any]]:
         if not rows:
             return []
-        header_row = rows[0]
+        header_row_index = self._select_header_row_index(rows)
+        header_row = rows[header_row_index]
         header_map = self._build_header_map(header_row)
         if not header_map:
             return []
-        data_rows = rows[1:]
+        data_rows = rows[header_row_index + 1:]
         result = []
-        for row in data_rows:
+        for row_no, row in enumerate(data_rows, start=header_row_index + 2):
             if not row or not any(cell is not None and str(cell).strip() != "" for cell in row):
                 continue
             row_dict = {}
             for key, idx in header_map.items():
                 if idx < len(row):
                     row_dict[key] = row[idx]
+            row_dict["__source_row_no"] = row_no
             result.append(row_dict)
         return result
 
@@ -249,13 +290,15 @@ class EsbService:
                 continue
             header_map = self._build_header_map(list(rows[0].keys()))
             detail_mapping = self._resolve_mapping(header_map, mapping_json, self.FIELD_ALIASES)
+            if "status" not in detail_mapping and self._is_interface_template_header(header_map):
+                detail_mapping["status"] = self.DEFAULT_STATUS_SENTINEL
             summary_mapping = self._resolve_mapping(header_map, mapping_json, self.SUMMARY_ALIASES)
 
             for field, column_name in detail_mapping.items():
-                if field not in mapping_resolved and column_name:
+                if field not in mapping_resolved and column_name and not str(column_name).startswith("__"):
                     mapping_resolved[field] = column_name
             for field, column_name in summary_mapping.items():
-                if field not in mapping_resolved and column_name:
+                if field not in mapping_resolved and column_name and not str(column_name).startswith("__"):
                     mapping_resolved[field] = column_name
 
             is_detail = all(field in detail_mapping for field in self.REQUIRED_FIELDS)
@@ -268,6 +311,7 @@ class EsbService:
 
             if is_summary:
                 for idx, row in enumerate(rows, start=2):
+                    row_no = int(row.get("__source_row_no") or idx)
                     item = self._extract_summary_row(row, summary_mapping)
                     if not item.get("system_id") or not item.get("system_name"):
                         skipped += 1
@@ -277,16 +321,17 @@ class EsbService:
                         continue
                     item["source_file"] = filename
                     item["sheet"] = sheet_name
-                    item["row_no"] = idx
+                    item["row_no"] = row_no
                     system_summary.append(item)
                 continue
 
             for idx, row in enumerate(rows, start=2):
+                row_no = int(row.get("__source_row_no") or idx)
                 entry, reason = self._extract_detail_row(row, detail_mapping)
                 if not entry:
                     skipped += 1
                     if reason:
-                        errors.append(f"Sheet {sheet_name} row {idx}: {reason}")
+                        errors.append(f"Sheet {sheet_name} row {row_no}: {reason}")
                     continue
 
                 if normalized_target_system_id and not self._entry_matches_system_id(entry, normalized_target_system_id):
@@ -297,7 +342,7 @@ class EsbService:
                     {
                         "source_file": filename,
                         "sheet": sheet_name,
-                        "row_no": idx,
+                        "row_no": row_no,
                         "imported_at": datetime.now().isoformat(),
                     }
                 )
@@ -357,6 +402,9 @@ class EsbService:
     def _extract_detail_row(self, row: Dict[str, Any], mapping: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], str]:
         data: Dict[str, Any] = {}
         for field, col_name in mapping.items():
+            if col_name == self.DEFAULT_STATUS_SENTINEL and field == "status":
+                data[field] = self.DEFAULT_STATUS_VALUE
+                continue
             value = row.get(col_name)
             data[field] = str(value).strip() if value is not None else ""
         for field in self.REQUIRED_FIELDS:

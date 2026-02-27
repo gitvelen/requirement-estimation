@@ -7,11 +7,11 @@
 | 作者 | AI |
 | 评审/验收 | AI 自审 |
 | 日期 | 2026-02-26 |
-| 版本 | v0.1 |
+| 版本 | v0.2 |
 | 关联需求 | `docs/v2.3/requirements.md` |
 | 关联计划 | `docs/v2.3/plan.md` |
 | 基线版本（对比口径） | `v2.2` |
-| 包含 CR（如有） | 无 |
+| 包含 CR（如有） | `CR-20260227-001` |
 | 代码版本 | `HEAD` |
 
 ## 测试范围与环境
@@ -75,18 +75,29 @@
 - `/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_code_scan_api.py -k "scan007 or gitlab_archive_mode or analysis_and_metrics"` -> `3 passed`
 - `/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_code_scan_api.py` -> `11 passed`
 - `/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_internal_retrieve_complexity_api.py` -> `2 passed`
+- `/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_esb_service.py::test_import_xlsx_with_two_row_header_and_duplicate_system_id_columns` -> `1 passed`
+- `/home/admin/Claude/requirement-estimation-system/.venv/bin/pytest -q tests/test_esb_service.py tests/test_esb_import_api.py` -> `8 passed`
 - `curl -fsS http://127.0.0.1/api/v1/health` -> `status=healthy`
 - `git diff --name-only -- frontend` -> 空输出
+
+## 增量 CR 回归（2026-02-27）
+- 目标 CR：`CR-20260227-001`
+- 场景：修复 ESB“接口申请模板.xlsx”导入时报缺失必填字段的问题
+- 结果：
+  - 新增用例通过：双层表头 + 重复 `系统标识` + 缺失 `状态` 列场景导入成功
+  - 回归通过：ESB service + ESB import API 测试全部通过
+  - 实模板复现验证通过：`data/接口申请模板.xlsx` 导入返回 `imported=1, skipped=0`
 
 ## CR验证证据（🔴 MUST，Deployment门禁依赖）
 | CR-ID | 验收标准 | 证据类型 | 证据链接/说明 | 验证结论 |
 |-------|---------|---------|--------------|---------|
-| 无 | - | RUN_OUTPUT | 本版本无 Active CR | 通过 |
+| CR-20260227-001 | 接口申请模板导入不再误报缺少 `provider_system_id/consumer_system_id/service_name/status`，并保持 ESB 既有能力回归通过 | RUN_OUTPUT | `pytest -q tests/test_esb_service.py::test_import_xlsx_with_two_row_header_and_duplicate_system_id_columns` + `pytest -q tests/test_esb_service.py tests/test_esb_import_api.py` + 实模板导入复现 | 通过 |
 
 ## 回滚验证（🔴 MUST）
 | CR-ID | 回滚条件/步骤 | 证据类型 | 证据链接/说明 | 回滚可执行性 |
 |-------|-------------|---------|--------------|-------------|
-| 无 | L1: `V23_DEEP_SCAN_ENABLED=false` + `V23_GITLAB_SOURCE_ENABLED=false`；L2: `git checkout v2.2 && bash deploy-all.sh` | RUN_OUTPUT | `rg -n -e "V23_DEEP_SCAN_ENABLED" -e "V23_GITLAB_SOURCE_ENABLED" -e "git checkout v2.2 && bash deploy-all.sh" docs/v2.3/status.md` + `curl -fsS http://127.0.0.1/api/v1/health` | ✅ 可执行 |
+| CR-20260227-001 | 回退 `backend/service/esb_service.py` 与 `tests/test_esb_service.py` 到 CR 前版本，重新执行 ESB 回归测试 | RUN_OUTPUT | `pytest -q tests/test_esb_service.py tests/test_esb_import_api.py` 作为回退后回归检查命令 | ✅ 可执行 |
+| 基线回滚 | L1: `V23_DEEP_SCAN_ENABLED=false` + `V23_GITLAB_SOURCE_ENABLED=false`；L2: `git checkout v2.2 && bash deploy-all.sh` | RUN_OUTPUT | `rg -n -e "V23_DEEP_SCAN_ENABLED" -e "V23_GITLAB_SOURCE_ENABLED" -e "git checkout v2.2 && bash deploy-all.sh" docs/v2.3/status.md` + `curl -fsS http://127.0.0.1/api/v1/health` | ✅ 可执行 |
 
 ## 缺陷与处理
 | BUG-ID | 问题描述 | 严重程度 | 状态 | 关联REQ | 修复版本 |
@@ -103,3 +114,4 @@
 | 版本 | 日期 | 说明 | 作者 |
 |---|---|---|---|
 | v0.1 | 2026-02-26 | 初始化 v2.3 Testing 报告，补齐 37 条 GWT 覆盖矩阵与命令证据 | AI |
+| v0.2 | 2026-02-27 | 增补 CR-20260227-001 证据：ESB 模板导入缺字段误报修复回归与实模板复现结果 | Codex |

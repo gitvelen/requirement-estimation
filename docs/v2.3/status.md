@@ -2,8 +2,8 @@
 _baseline: v2.2
 _current: HEAD
 _workflow_mode: semi-auto
-_run_status: completed
-_change_status: done
+_run_status: running
+_change_status: in_progress
 _change_level: major
 _review_round: 0
 _phase: Deployment
@@ -14,18 +14,19 @@ _phase: Deployment
 | 版本号 | v2.3 |
 | 变更目录 | `docs/v2.3/` |
 | 当前阶段 | Deployment |
-| 变更状态 | Done |
+| 变更状态 | In Progress |
 | 变更分级 | major |
 | 基线版本（对比口径） | v2.2 |
-| 当前代码版本 | HEAD（d9b9284） |
+| 当前代码版本 | HEAD（local CR） |
 | 本次复查口径 | full |
 | 当前执行 AI | Codex |
 | 人类决策人 |  |
-| 最后更新 | 2026-02-26 |
-| 完成日期 | 2026-02-26 |
+| 最后更新 | 2026-02-27 |
+| 完成日期 | - |
 
 ## 变更摘要
 - v2.3 深度代码扫描增强：接通现有扫描断路（capability_item → Agent 流水线）、AST 解析替换正则、调用链分析与服务依赖图、数据流分析、代码复杂度度量、变更影响面分析、GitLab 仓库集成
+- 增量 CR：修复 ESB 接口申请模板导入“缺少必填字段”误报（`CR-20260227-001`）
 
 ## 目标与成功指标
 | ID | 指标定义（可判定） | 基线（v2.2） | 目标（v2.3） | 统计窗口 | 数据源 |
@@ -50,6 +51,7 @@ _phase: Deployment
 ## Active CR 列表（🔴 MUST，CR场景）
 | CR-ID | 状态 | 标题 | 影响面（文档/模块/ID） | 链接 |
 |---|---|---|---|---|
+| CR-20260227-001 | In Progress | ESB接口申请模板导入缺字段误报修复 | plan/test_report/esb_service/tests | `cr/CR-20260227-001.md` |
 
 ## Idea池（可选，非Active）
 | CR-ID | 状态 | 标题 | 提出日期 | 优先级 | 链接 |
@@ -91,6 +93,7 @@ _phase: Deployment
 | Testing | Deployment | 2026-02-26 | Testing 自审收敛（P0/P1=0）自动推进 | Codex | `test_report.md` + `review_testing.md` 通过；已生成 `deployment.md`，等待人工验收 |
 | Deployment | Deployment | 2026-02-26 | 用户确认继续全自动推进，完成主文档同步与验收收口 | User+Codex | `deployment.md` 置 Approved；`_run_status=completed`、`_change_status=done` |
 | Deployment | Deployment | 2026-02-26 | 文档收口提交触发门禁冲突，按用户授权使用 `--no-verify` 完成 `status.md` 提交并补审计说明 | User+Codex | 见 `deployment.md`「逃生通道审计说明」 |
+| Deployment | Deployment | 2026-02-27 | 收口后发现 ESB 模板导入缺字段误报，按用户要求走 CR 修复 | User+Codex | 新增 `CR-20260227-001`，运行状态切回 in_progress/running |
 
 ## CR状态更新记录（部署后填写）
 | CR-ID | 之前状态 | 之后状态 | 上线日期 | 备注 |
