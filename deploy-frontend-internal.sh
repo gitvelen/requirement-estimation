@@ -4,7 +4,7 @@
 #
 # 服务器：10.62.16.251:8000
 # 工作目录：/home/admin/requirement-estimation
-# 功能：自动构建并启动前端服务
+# 功能：使用已构建前端产物启动前端服务
 ###############################################################################
 
 set -e
@@ -52,39 +52,36 @@ check_prerequisites() {
 }
 
 ###############################################################################
-# 解压前端构建文件
+# 准备前端构建文件（优先使用仓库内 frontend/build）
 ###############################################################################
 
-extract_build_files() {
-    echo_info "检查并解压前端构建文件..."
+prepare_build_files() {
+    echo_info "检查前端构建文件..."
 
     local BUILD_TAR="/home/admin/frontend-build.tar.gz"
     local BUILD_DIR="/home/admin/requirement-estimation/frontend/build"
 
-    # 检查 frontend-build.tar.gz 是否存在
+    # 优先使用项目内已存在的构建产物
+    if [ -f "$BUILD_DIR/index.html" ]; then
+        echo_info "检测到现成构建产物：$BUILD_DIR/index.html"
+        return 0
+    fi
+
+    # 兜底：使用独立构建包
     if [ ! -f "$BUILD_TAR" ]; then
-        echo_error "前端构建包不存在：$BUILD_TAR"
-        echo_info "请先将 frontend-build.tar.gz 上传到 /home/admin/ 目录"
+        echo_error "未找到可用构建产物："
+        echo_error "1) $BUILD_DIR/index.html"
+        echo_error "2) $BUILD_TAR"
+        echo_info "请先同步 frontend/build 或上传 frontend-build.tar.gz"
         exit 1
     fi
 
-    # 删除旧的 build 目录（如果存在）
-    if [ -d "$BUILD_DIR" ]; then
-        echo_info "删除旧的构建文件..."
-        rm -rf "$BUILD_DIR"
-    fi
-
-    # 创建 build 目录
     mkdir -p "$BUILD_DIR"
-
-    # 解压构建文件
     echo_info "解压前端构建文件..."
     tar xzf "$BUILD_TAR" -C "$BUILD_DIR"
 
-    # 验证关键文件是否存在
     if [ ! -f "$BUILD_DIR/index.html" ]; then
         echo_error "前端构建文件不完整（缺少 index.html）"
-        echo_info "请检查 frontend-build.tar.gz 是否正确"
         exit 1
     fi
 
@@ -98,8 +95,8 @@ extract_build_files() {
 check_nginx_config() {
     echo_info "检查 nginx 配置..."
 
-    if [ ! -f "/home/admin/requirement-estimation/frontend/nginx.conf" ]; then
-        echo_error "nginx 配置文件不存在"
+    if [ ! -f "/home/admin/requirement-estimation/frontend/nginx.internal.conf" ]; then
+        echo_error "nginx 内网配置文件不存在: frontend/nginx.internal.conf"
         exit 1
     fi
 
@@ -128,32 +125,21 @@ stop_old_service() {
 }
 
 ###############################################################################
-# 构建镜像
+# 检查 nginx 镜像
 ###############################################################################
 
-build_image() {
-    echo_info "开始构建前端镜像..."
+check_nginx_image() {
+    echo_info "检查 nginx 镜像..."
 
     cd /home/admin/requirement-estimation
 
-    # 删除旧镜像
-    if docker images | grep -q requirement-frontend; then
-        echo_info "删除旧镜像..."
-        docker rmi requirement-frontend:latest 2>/dev/null || true
-    fi
-
-    # 构建新镜像
-    if ! docker-compose -f docker-compose.frontend.internal.yml build; then
-        echo_warn "BuildKit 构建失败，回退到经典构建模式（DOCKER_BUILDKIT=0）..."
-        DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose -f docker-compose.frontend.internal.yml build
-    fi
-
-    if [ $? -eq 0 ]; then
-        echo_info "镜像构建成功"
-    else
-        echo_error "镜像构建失败"
+    if ! docker image inspect nginx:latest >/dev/null 2>&1; then
+        echo_error "本地不存在 nginx:latest，请先离线导入镜像"
+        echo_info "示例：docker load -i nginx_latest.tar"
         exit 1
     fi
+
+    echo_info "nginx 镜像检查通过"
 }
 
 ###############################################################################
@@ -165,7 +151,7 @@ start_service() {
 
     cd /home/admin/requirement-estimation
 
-    # 启动服务
+    # 直接启动服务（不构建，使用已构建前端产物）
     docker-compose -f docker-compose.frontend.internal.yml up -d
 
     if [ $? -eq 0 ]; then
@@ -228,10 +214,10 @@ show_result() {
 
 main() {
     check_prerequisites
-    extract_build_files
+    prepare_build_files
     check_nginx_config
+    check_nginx_image
     stop_old_service
-    build_image
     start_service
     verify_service
     show_result

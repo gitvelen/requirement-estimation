@@ -89,18 +89,18 @@ configure_env() {
 
     cd /home/admin/requirement-estimation
 
-    # 如果环境变量文件不存在，从示例复制
-    if [ ! -f .env.backend ]; then
-        if [ -f .env.backend.internal ]; then
-            cp .env.backend.internal .env.backend
-            echo_info "已从 .env.backend.internal 创建 .env.backend"
-        else
-            echo_error ".env.backend.internal 文件不存在"
-            exit 1
-        fi
-    else
-        echo_info ".env.backend 已存在，跳过配置"
+    if [ ! -f .env.backend.internal ]; then
+        echo_error ".env.backend.internal 文件不存在"
+        exit 1
     fi
+
+    if [ -f .env.backend ]; then
+        cp .env.backend ".env.backend.bak.$(date +%Y%m%d_%H%M%S)"
+        echo_warn "检测到已有 .env.backend，已自动备份"
+    fi
+
+    cp .env.backend.internal .env.backend
+    echo_info "已从 .env.backend.internal 同步 .env.backend"
 }
 
 ###############################################################################

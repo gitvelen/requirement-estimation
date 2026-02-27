@@ -1,20 +1,19 @@
-version: '3.8'
-
 services:
   # 前端服务
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.internal
-    image: requirement-frontend:latest
+    image: nginx:latest
     container_name: requirement-frontend
     ports:
       - "8000:80"
+    volumes:
+      - ./frontend/nginx.internal.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend/build:/usr/share/nginx/html:ro
     restart: unless-stopped
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      # Avoid depending on extra tools (curl/wget) in offline environments.
+      test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3
