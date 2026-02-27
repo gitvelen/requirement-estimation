@@ -55,6 +55,29 @@ check_prerequisites() {
 # 准备前端构建文件（优先使用仓库内 frontend/build）
 ###############################################################################
 
+normalize_build_layout() {
+    local BUILD_DIR="$1"
+    local NESTED_INDEX
+
+    # Some tar packages include an extra directory level (e.g. build/index.html).
+    NESTED_INDEX=$(find "$BUILD_DIR" -mindepth 2 -maxdepth 5 -type f -name index.html | head -n 1 || true)
+
+    if [ -z "$NESTED_INDEX" ]; then
+        return 1
+    fi
+
+    local NESTED_DIR
+    local TMP_DIR
+    NESTED_DIR=$(dirname "$NESTED_INDEX")
+    TMP_DIR=$(mktemp -d)
+
+    echo_warn "检测到嵌套构建目录：$NESTED_DIR，自动展开到 $BUILD_DIR"
+    cp -a "$NESTED_DIR"/. "$TMP_DIR"/
+    find "$BUILD_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    cp -a "$TMP_DIR"/. "$BUILD_DIR"/
+    rm -rf "$TMP_DIR"
+}
+
 prepare_build_files() {
     echo_info "检查前端构建文件..."
 
@@ -76,12 +99,18 @@ prepare_build_files() {
         exit 1
     fi
 
+    rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
     echo_info "解压前端构建文件..."
     tar xzf "$BUILD_TAR" -C "$BUILD_DIR"
 
     if [ ! -f "$BUILD_DIR/index.html" ]; then
+        normalize_build_layout "$BUILD_DIR" || true
+    fi
+
+    if [ ! -f "$BUILD_DIR/index.html" ]; then
         echo_error "前端构建文件不完整（缺少 index.html）"
+        echo_info "请检查压缩包目录，推荐结构：index.html 与 static/ 在压缩包根目录"
         exit 1
     fi
 
