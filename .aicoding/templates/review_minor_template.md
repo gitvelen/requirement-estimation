@@ -1,5 +1,7 @@
 # Minor 审查报告（`review_minor.md`）
 
+> Minor 审查建议参照 REP 协议（cr-rules.md）执行事实核实和概念交叉引用，但不强制输出格式化表格。
+
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_RESULT: pass|fail
 REQ_BASELINE_HASH: <hash>

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -39,6 +40,9 @@ DEFAULT_RULES = {
     "updated_by": None,
 }
 
+SUPPORTED_EVIDENCE_SOURCES = ("evidence", "profile", "code", "esb")
+SUPPORTED_EVIDENCE_LEVELS = ("E0", "E1", "E2", "E3")
+
 
 class EvidenceLevelService:
     def __init__(self, rule_path: Optional[str] = None) -> None:
@@ -67,7 +71,10 @@ class EvidenceLevelService:
             with open(self.rule_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and data.get("levels"):
-                return data
+                normalized = self._normalize_rules_payload(data)
+                normalized["updated_at"] = data.get("updated_at")
+                normalized["updated_by"] = data.get("updated_by")
+                return normalized
         except Exception as exc:
             logger.warning(f"读取证据等级规则失败: {exc}")
         return DEFAULT_RULES.copy()
@@ -83,16 +90,99 @@ class EvidenceLevelService:
         with self._lock():
             return self._load_rules_unlocked()
 
-    def update_rules(self, rules: Dict[str, Any], actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        if not isinstance(rules, dict) or not rules.get("levels"):
+    def _normalize_source_list(self, value: Any) -> List[str]:
+        allowed = set(SUPPORTED_EVIDENCE_SOURCES)
+
+        if isinstance(value, list):
+            normalized = []
+            for item in value:
+                candidate = str(item or "").strip().lower()
+                if candidate and candidate in allowed and candidate not in normalized:
+                    normalized.append(candidate)
+            return normalized
+
+        if isinstance(value, str):
+            normalized = []
+            text = value.replace("，", ",").replace("、", ",").replace("；", ",")
+            for part in re.split(r"[,;\n]+", text):
+                candidate = str(part or "").strip().lower()
+                if candidate and candidate in allowed and candidate not in normalized:
+                    normalized.append(candidate)
+            return normalized
+
+        return []
+
+    def _normalize_any_groups(self, value: Any) -> List[List[str]]:
+        if isinstance(value, list):
+            groups: List[List[str]] = []
+            for item in value:
+                group = self._normalize_source_list(item)
+                if group:
+                    groups.append(group)
+            return groups
+
+        if isinstance(value, str):
+            groups = []
+            for part in re.split(r"[|\n]+", value):
+                group = self._normalize_source_list(part)
+                if group:
+                    groups.append(group)
+            return groups
+
+        return []
+
+    def _normalize_level_item(self, item: Any) -> Dict[str, Any]:
+        if isinstance(item, str):
+            level = str(item or "").strip().upper()
+            if level not in SUPPORTED_EVIDENCE_LEVELS:
+                raise ValueError(f"不支持的证据等级: {item}")
+            return {"level": level}
+
+        if not isinstance(item, dict):
+            raise ValueError("规则项格式不正确")
+
+        level = str(item.get("level") or "").strip().upper()
+        if level not in SUPPORTED_EVIDENCE_LEVELS:
+            raise ValueError(f"不支持的证据等级: {item.get('level')}")
+
+        normalized = {"level": level}
+        all_of = self._normalize_source_list(item.get("all_of"))
+        any_of = self._normalize_source_list(item.get("any_of"))
+        none_of = self._normalize_source_list(item.get("none_of"))
+        any_groups = self._normalize_any_groups(item.get("any_groups"))
+
+        if all_of:
+            normalized["all_of"] = all_of
+        if any_of:
+            normalized["any_of"] = any_of
+        if none_of:
+            normalized["none_of"] = none_of
+        if any_groups:
+            normalized["any_groups"] = any_groups
+
+        return normalized
+
+    def _normalize_rules_payload(self, rules: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(rules, dict):
             raise ValueError("规则格式不正确")
 
-        payload = {
-            "version": int(rules.get("version") or DEFAULT_RULES["version"]),
-            "levels": rules.get("levels"),
-            "updated_at": datetime.now().isoformat(),
-            "updated_by": (actor or {}).get("id") or (actor or {}).get("username") or "unknown",
+        raw_levels = rules.get("levels")
+        if not isinstance(raw_levels, list) or not raw_levels:
+            raise ValueError("规则格式不正确")
+
+        normalized_levels = [self._normalize_level_item(item) for item in raw_levels]
+        version = int(rules.get("version") or DEFAULT_RULES["version"])
+
+        return {
+            "version": version if version > 0 else DEFAULT_RULES["version"],
+            "levels": normalized_levels,
         }
+
+    def update_rules(self, rules: Dict[str, Any], actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        normalized = self._normalize_rules_payload(rules)
+        payload = dict(normalized)
+        payload["updated_at"] = datetime.now().isoformat()
+        payload["updated_by"] = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         with self._lock():
             self._save_rules_unlocked(payload)
         return payload

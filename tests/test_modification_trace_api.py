@@ -103,10 +103,17 @@ class DummyOrchestrator:
     def process_with_retry(self, task_id, requirement_data, max_retry, progress_callback=None):
         if progress_callback:
             progress_callback(80, "dummy")
+        # 【v2.4】返回 4 个值：report_path, systems_data, ai_system_analysis, ai_original_output
+        ai_original_output = {
+            "system_recognition": {"systems": [{"name": "HOP"}], "system_count": 1, "timestamp": 0},
+            "feature_split": {"systems_data": self._systems_data, "total_features": 1, "timestamp": 0},
+            "work_estimation": {"estimation_details": {}, "total_workload": 0, "timestamp": 0}
+        }
         return (
             os.path.join(settings.REPORT_DIR, f"{task_id}.xlsx"),
             self._systems_data,
             {"selected_systems": [{"name": "HOP"}]},
+            ai_original_output,
         )
 
 

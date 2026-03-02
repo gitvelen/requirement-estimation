@@ -11,6 +11,7 @@ if ROOT_DIR not in sys.path:
 
 from backend.app import app
 from backend.api import routes as task_routes
+from backend.agent.work_estimation_agent import work_estimation_agent
 from backend.config.config import settings
 from backend.service import user_service
 
@@ -67,6 +68,7 @@ def _seed_task(task_id: str, creator_id: str):
                     "id": "feat_1",
                     "功能点": "开户",
                     "备注": "旧备注",
+                    "预估人天": 2.0,
                 }
             ]
         },
@@ -188,3 +190,85 @@ def test_reevaluate_accepts_missing_body(client, monkeypatch):
     payload = response.json()
     assert payload.get("job_id") is None
     assert payload.get("status") == "skipped"
+
+
+def test_task_estimate_returns_three_point_fields_and_persists_baseline(client, monkeypatch):
+    manager = _seed_user("estimate_mgr_ok", "pwd123", ["manager"])
+    token = _login(client, "estimate_mgr_ok", "pwd123")
+
+    task_id = "task_estimate_ok"
+    _seed_task(task_id, manager["id"])
+
+    monkeypatch.setattr(
+        work_estimation_agent,
+        "estimate_three_point_for_feature",
+        lambda *args, **kwargs: {
+            "optimistic": 1.5,
+            "most_likely": 2.5,
+            "pessimistic": 4.0,
+            "expected": 2.58,
+            "reasoning": "规则复杂且涉及跨系统接口",
+        },
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/v1/tasks/{task_id}/estimate",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("degraded") is False
+    features = payload.get("features") or []
+    assert len(features) == 1
+    first = features[0]
+    assert first.get("name") == "开户"
+    assert first.get("optimistic") == 1.5
+    assert first.get("most_likely") == 2.5
+    assert first.get("pessimistic") == 4.0
+    assert first.get("expected") == 2.58
+    assert first.get("reasoning")
+    assert first.get("original_estimate") == 2.0
+
+    with task_routes._task_storage_context() as data:
+        feature = data[task_id]["systems_data"]["HOP"][0]
+        assert feature.get("original_estimate") == 2.0
+        assert feature.get("预估人天") == 2.58
+
+
+def test_task_estimate_degrades_to_original_estimate_on_llm_failure(client, monkeypatch):
+    manager = _seed_user("estimate_mgr_degraded", "pwd123", ["manager"])
+    token = _login(client, "estimate_mgr_degraded", "pwd123")
+
+    task_id = "task_estimate_degraded"
+    _seed_task(task_id, manager["id"])
+
+    def _raise_llm_error(*args, **kwargs):
+        raise RuntimeError("llm unavailable")
+
+    monkeypatch.setattr(
+        work_estimation_agent,
+        "estimate_three_point_for_feature",
+        _raise_llm_error,
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/v1/tasks/{task_id}/estimate",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("degraded") is True
+    assert payload.get("code") == "LLM_ESTIMATION_DEGRADED"
+    features = payload.get("features") or []
+    assert len(features) == 1
+    first = features[0]
+    assert first.get("optimistic") is None
+    assert first.get("most_likely") is None
+    assert first.get("pessimistic") is None
+    assert first.get("reasoning") is None
+    assert first.get("expected") == 2.0
+    assert first.get("original_estimate") == 2.0

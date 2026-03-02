@@ -83,9 +83,11 @@ class AgentOrchestrator:
             progress_callback: 进度回调函数 (progress, message) => None
 
         Returns:
-            tuple: (report_path, systems_data)
+            tuple: (report_path, systems_data, ai_system_analysis, ai_original_output)
                 - report_path: 生成的Excel报告文件路径
                 - systems_data: 所有系统的功能点数据
+                - ai_system_analysis: 系统校准分析
+                - ai_original_output: AI 原始输出快照
         """
         start_time = time.time()
         requirement_name = requirement_data.get("requirement_name", "未知需求")
@@ -138,6 +140,13 @@ class AgentOrchestrator:
             logger.info(f"[系统列表] {', '.join(system_names)}")
             logger.info(f"[耗时] {step_time:.2f}秒")
 
+            # 【v2.4】保存 Step 1 快照
+            ai_original_output_step1 = {
+                "systems": [{"name": s["name"], "type": s.get("type"), "is_standard": s.get("is_standard", False)} for s in systems],
+                "system_count": len(systems),
+                "timestamp": time.time()
+            }
+
             self._update_progress(progress_callback, 35, f"系统识别完成：{len(systems)}个系统")
 
             # 步骤2：功能点拆分
@@ -183,6 +192,22 @@ class AgentOrchestrator:
             logger.info(f"[完成] 共拆分 {total_features} 个功能点")
             logger.info(f"[耗时] {step_time:.2f}秒")
 
+            # 【v2.4】保存 Step 2 快照
+            ai_original_output_step2 = {
+                "systems_data": {
+                    sys_name: [
+                        {
+                            "id": f.get("id"),
+                            "功能点": f.get("功能点"),
+                            "业务描述": f.get("业务描述"),
+                            "功能模块": f.get("功能模块")
+                        } for f in features
+                    ] for sys_name, features in systems_data.items()
+                },
+                "total_features": total_features,
+                "timestamp": time.time()
+            }
+
             self._update_progress(progress_callback, 60, f"功能点拆分完成：{total_features}个功能点")
 
             # 步骤3：工作量估算
@@ -218,6 +243,23 @@ class AgentOrchestrator:
             step_time = time.time() - step_start
             logger.info(f"[完成] 总工作量估算: {total_workload:.1f} 人天")
             logger.info(f"[耗时] {step_time:.2f}秒")
+
+            # 【v2.4】保存 Step 3 快照（从 work_estimation_agent 获取详细估算数据）
+            estimation_details = work_estimation_agent._latest_estimation_details or {}
+            ai_original_output_step3 = {
+                "estimation_details": {
+                    fid: {
+                        "optimistic": detail.get("optimistic"),
+                        "most_likely": detail.get("most_likely"),
+                        "pessimistic": detail.get("pessimistic"),
+                        "expected": detail.get("expected"),
+                        "reasoning": detail.get("reasoning"),
+                        "original_estimate": detail.get("original_estimate")
+                    } for fid, detail in estimation_details.items()
+                },
+                "total_workload": total_workload,
+                "timestamp": time.time()
+            }
 
             self._update_progress(progress_callback, 85, f"工作量估算完成：{total_workload:.1f}人天")
 
@@ -260,8 +302,15 @@ class AgentOrchestrator:
             logger.info("=" * 80)
             logger.info("")
 
-            # 【新增】返回report_path、systems_data与ai_system_analysis，用于人机协作修正
-            return report_path, systems_data, ai_system_analysis
+            # 【v2.4】汇总三步快照并返回
+            ai_original_output = {
+                "system_recognition": ai_original_output_step1,
+                "feature_split": ai_original_output_step2,
+                "work_estimation": ai_original_output_step3
+            }
+
+            # 【新增】返回report_path、systems_data、ai_system_analysis与ai_original_output，用于人机协作修正
+            return report_path, systems_data, ai_system_analysis, ai_original_output
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -291,10 +340,11 @@ class AgentOrchestrator:
             progress_callback: 进度回调函数
 
         Returns:
-            tuple: (report_path, systems_data, ai_system_analysis)
+            tuple: (report_path, systems_data, ai_system_analysis, ai_original_output)
                 - report_path: Excel报告文件路径
                 - systems_data: 所有系统的功能点数据
                 - ai_system_analysis: 系统校准分析（候选系统/置信度/疑问清单）
+                - ai_original_output: AI 原始输出快照（三步）
         """
         for attempt in range(max_retry):
             try:

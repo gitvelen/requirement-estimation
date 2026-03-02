@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -13,6 +14,7 @@ from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import system_profile_service
 from backend.service import user_service
+from backend.service.system_profile_service import SystemProfileService
 
 
 @pytest.fixture()
@@ -160,3 +162,77 @@ def test_system_profile_unknown_system_returns_system_not_found(client, monkeypa
     assert payload.get("error_code") == "system_not_found"
     assert payload.get("request_id") == "req_unknown_system"
 
+
+def test_system_profile_service_startup_migrates_legacy_fields_to_profile_data(tmp_path):
+    store_path = tmp_path / "system_profiles.json"
+    legacy_profile = {
+        "system_id": "sys_hop",
+        "system_name": "HOP",
+        "status": "draft",
+        "fields": {
+            "system_scope": "账户系统",
+            "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
+            "integration_points": "核心账务",
+            "key_constraints": "高可用",
+        },
+        "created_at": "2026-02-28T00:00:00",
+    }
+    store_path.write_text(json.dumps([legacy_profile], ensure_ascii=False), encoding="utf-8")
+
+    service = SystemProfileService(store_path=str(store_path))
+    migrated = service.get_profile("HOP")
+
+    assert migrated is not None
+    assert migrated.get("_migrated") is True
+    assert isinstance(migrated.get("_migrated_at"), str) and migrated.get("_migrated_at")
+
+    profile_data = migrated.get("profile_data") or {}
+    assert set(profile_data.keys()) == {
+        "system_positioning",
+        "business_capabilities",
+        "integration_interfaces",
+        "technical_architecture",
+        "constraints_risks",
+    }
+    assert profile_data["system_positioning"]["system_description"] == "账户系统"
+    module_structure = profile_data["business_capabilities"]["module_structure"]
+    assert isinstance(module_structure, list) and len(module_structure) == 1
+    assert module_structure[0]["module_name"] == "账户"
+    assert module_structure[0]["functions"] == [{"name": "开户", "desc": ""}]
+    assert isinstance(module_structure[0].get("last_updated"), str) and module_structure[0]["last_updated"]
+    assert profile_data["integration_interfaces"]["integration_points"] == [{"description": "核心账务"}]
+    assert profile_data["constraints_risks"]["key_constraints"] == [{"category": "通用", "description": "高可用"}]
+
+    fields = migrated.get("fields") or {}
+    assert fields["system_scope"] == "账户系统"
+    assert fields["integration_points"] == "核心账务"
+    assert fields["key_constraints"] == "高可用"
+
+
+def test_system_profile_service_startup_migration_is_idempotent(tmp_path):
+    store_path = tmp_path / "system_profiles.json"
+    legacy_profile = {
+        "system_id": "sys_hop",
+        "system_name": "HOP",
+        "status": "draft",
+        "fields": {
+            "system_scope": "账户系统",
+            "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
+            "integration_points": "核心账务",
+            "key_constraints": "高可用",
+        },
+        "created_at": "2026-02-28T00:00:00",
+    }
+    store_path.write_text(json.dumps([legacy_profile], ensure_ascii=False), encoding="utf-8")
+
+    SystemProfileService(store_path=str(store_path))
+    first_data = json.loads(store_path.read_text(encoding="utf-8"))[0]
+    first_migrated_at = first_data.get("_migrated_at")
+    first_profile_data = first_data.get("profile_data")
+
+    SystemProfileService(store_path=str(store_path))
+    second_data = json.loads(store_path.read_text(encoding="utf-8"))[0]
+
+    assert second_data.get("_migrated") is True
+    assert second_data.get("_migrated_at") == first_migrated_at
+    assert second_data.get("profile_data") == first_profile_data

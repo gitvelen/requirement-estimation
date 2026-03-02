@@ -13,31 +13,38 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service.code_scan_service import get_code_scan_service
 from backend.service.esb_service import get_esb_service
-from backend.service.system_profile_service import get_system_profile_service
+from backend.service.system_profile_service import PROFILE_V24_DOMAIN_KEYS, get_system_profile_service
 from backend.utils.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
 
 
-PROFILE_FIELDS = [
-    "system_scope",
-    "module_structure",
-    "integration_points",
-    "key_constraints",
-]
+PROFILE_DOMAIN_KEYS = tuple(PROFILE_V24_DOMAIN_KEYS)
 
 
 class ProfileSummaryService:
     def __init__(self) -> None:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="profile_summary")
+        self._system_lock_guard = threading.Lock()
+        self._system_locks: Dict[str, threading.Lock] = {}
+
+    def _get_system_lock(self, system_id: str) -> threading.Lock:
+        key = str(system_id or "").strip() or "__unknown__"
+        with self._system_lock_guard:
+            lock = self._system_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._system_locks[key] = lock
+            return lock
 
     def trigger_summary(
         self,
@@ -46,6 +53,8 @@ class ProfileSummaryService:
         system_name: str,
         actor: Optional[Dict[str, Any]] = None,
         reason: str = "import",
+        source_file: str = "",
+        trigger: str = "document_import",
     ) -> Dict[str, Any]:
         normalized_system_id = str(system_id or "").strip()
         normalized_system_name = str(system_name or "").strip()
@@ -53,17 +62,14 @@ class ProfileSummaryService:
             raise ValueError("system_id/system_name不能为空")
 
         profile_service = get_system_profile_service()
-        job = profile_service.get_or_create_ai_suggestions_job(
-            normalized_system_name,
+        job_id = f"summary_{uuid.uuid4().hex}"
+        profile_service.upsert_extraction_task(
             normalized_system_id,
-            actor=actor,
+            task_id=job_id,
+            status="pending",
+            trigger=str(trigger or "").strip() or "document_import",
+            source_file=source_file,
         )
-        if not job.get("created_new"):
-            return job
-
-        job_id = str(job.get("job_id") or "").strip()
-        if not job_id:
-            return job
 
         self.executor.submit(
             self._run_job,
@@ -71,54 +77,87 @@ class ProfileSummaryService:
             system_name=normalized_system_name,
             job_id=job_id,
             reason=str(reason or "").strip() or "import",
+            trigger=str(trigger or "").strip() or "document_import",
+            source_file=str(source_file or "").strip(),
+            actor=actor or {},
         )
-        return job
+        return {"job_id": job_id, "status": "pending", "created_new": True}
 
-    def _run_job(self, *, system_id: str, system_name: str, job_id: str, reason: str) -> None:
+    def _run_job(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        job_id: str,
+        reason: str,
+        trigger: str,
+        source_file: str,
+        actor: Dict[str, Any],
+    ) -> None:
         profile_service = get_system_profile_service()
-        profile_service.update_ai_suggestions_job(system_name, job_id=job_id, status="running")
 
         owner_info = system_routes.resolve_system_owner(system_id=system_id)
         owner_user_id = str(owner_info.get("resolved_owner_id") or "").strip()
 
-        try:
-            context = self._build_context(system_id=system_id, system_name=system_name)
-            suggestions = self._call_llm(system_id=system_id, system_name=system_name, context=context)
+        with self._get_system_lock(system_id):
+            profile_service.update_extraction_task_status(system_id, task_id=job_id, status="processing")
 
-            profile_service.set_ai_suggestions(system_name, suggestions=suggestions)
-            profile_service.update_ai_suggestions_job(system_name, job_id=job_id, status="completed")
+            try:
+                context = self._build_context(system_id=system_id, system_name=system_name)
+                llm_result = self._call_llm(system_id=system_id, system_name=system_name, context=context)
+                suggestions = llm_result.get("suggestions") if isinstance(llm_result, dict) else {}
+                relevant_domains = llm_result.get("relevant_domains") if isinstance(llm_result, dict) else []
+                related_systems = llm_result.get("related_systems") if isinstance(llm_result, dict) else []
 
-            self._notify(
-                user_id=owner_user_id,
-                notify_type="system_profile_summary_ready",
-                system_id=system_id,
-                system_name=system_name,
-                payload={
-                    "job_id": job_id,
-                    "reason": reason,
-                },
-            )
-        except Exception as exc:
-            reason_text = str(exc or "").strip() or "画像AI总结失败"
-            profile_service.update_ai_suggestions_job(
-                system_name,
-                job_id=job_id,
-                status="failed",
-                error_code="SUMMARY_001",
-                error_reason=reason_text,
-            )
-            self._notify(
-                user_id=owner_user_id,
-                notify_type="system_profile_summary_failed",
-                system_id=system_id,
-                system_name=system_name,
-                payload={
-                    "job_id": job_id,
-                    "error_code": "SUMMARY_001",
-                    "error_reason": reason_text[:500],
-                    "reason": reason,
-                },
-            )
+                profile_service.set_ai_suggestions(
+                    system_name,
+                    suggestions=suggestions if isinstance(suggestions, dict) else {},
+                    relevant_domains=relevant_domains if isinstance(relevant_domains, list) else [],
+                    trigger=trigger,
+                    source=source_file,
+                    actor=actor,
+                )
+                notifications = self._build_multi_system_notifications(
+                    system_name=system_name,
+                    related_systems=related_systems if isinstance(related_systems, list) else [],
+                )
+                profile_service.update_extraction_task_status(
+                    system_id,
+                    task_id=job_id,
+                    status="completed",
+                    notifications=notifications,
+                )
+
+                self._notify(
+                    user_id=owner_user_id,
+                    notify_type="system_profile_summary_ready",
+                    system_id=system_id,
+                    system_name=system_name,
+                    payload={
+                        "job_id": job_id,
+                        "reason": reason,
+                    },
+                )
+            except Exception as exc:
+                reason_text = str(exc or "").strip() or "画像AI总结失败"
+                profile_service.update_extraction_task_status(
+                    system_id,
+                    task_id=job_id,
+                    status="failed",
+                    error=reason_text,
+                )
+                self._notify(
+                    user_id=owner_user_id,
+                    notify_type="system_profile_summary_failed",
+                    system_id=system_id,
+                    system_name=system_name,
+                    payload={
+                        "job_id": job_id,
+                        "error_code": "SUMMARY_001",
+                        "error_reason": reason_text[:500],
+                        "reason": reason,
+                    },
+                )
 
     def _notify(
         self,
@@ -261,42 +300,133 @@ class ProfileSummaryService:
             return f"系统：{system_name}（{system_id}）。材料不足。"
         return joined[:12000]
 
-    def _call_llm(self, *, system_id: str, system_name: str, context: str) -> Dict[str, str]:
-        prompt = f"""请基于以下材料，为系统画像生成4个字段的候选建议（不要求完美，缺信息可留空字符串）。
+    def _normalize_relevant_domains(self, raw_domains: Any) -> List[str]:
+        if isinstance(raw_domains, str):
+            candidates = [part.strip() for part in raw_domains.split(",") if part.strip()]
+        elif isinstance(raw_domains, list):
+            candidates = [str(item).strip() for item in raw_domains if str(item).strip()]
+        else:
+            candidates = []
+
+        normalized: List[str] = []
+        for item in candidates:
+            if item in PROFILE_DOMAIN_KEYS and item not in normalized:
+                normalized.append(item)
+        return normalized
+
+    def _normalize_related_systems(self, raw_systems: Any, *, current_system_name: str) -> List[str]:
+        if isinstance(raw_systems, str):
+            candidates = [part.strip() for part in raw_systems.split(",") if part.strip()]
+        elif isinstance(raw_systems, list):
+            candidates = [str(item).strip() for item in raw_systems if str(item).strip()]
+        else:
+            candidates = []
+
+        current_name = str(current_system_name or "").strip().lower()
+        normalized: List[str] = []
+        for item in candidates:
+            if item.lower() == current_name:
+                continue
+            if item not in normalized:
+                normalized.append(item)
+        return normalized
+
+    def _build_multi_system_notifications(
+        self,
+        *,
+        system_name: str,
+        related_systems: List[str],
+    ) -> List[Dict[str, Any]]:
+        systems = self._normalize_related_systems(related_systems, current_system_name=system_name)
+        if not systems:
+            return []
+
+        joined_names = "、".join(systems)
+        return [
+            {
+                "type": "multi_system_detected",
+                "systems": systems,
+                "message": f"检测到文档中还包含系统 {joined_names} 的信息，如需更新请前往对应系统操作",
+            }
+        ]
+
+    def _call_llm(self, *, system_id: str, system_name: str, context: str) -> Dict[str, Any]:
+        stage1_prompt = f"""请基于以下材料判断系统画像相关域，并识别材料中提及的其他系统。
 
 系统：{system_name}（system_id={system_id}）
-
 材料（可能不完整）：
-{(context or '')[:10000]}
+{(context or '')[:9000]}
 
-请只返回JSON（不要解释），格式如下：
+请只返回JSON（不要解释），格式：
 {{
-  "system_scope": "",
-  "module_structure": [],
-  "integration_points": "",
-  "key_constraints": ""
+  "relevant_domains": ["system_positioning", "business_capabilities"],
+  "related_systems": ["系统A", "系统B"]
 }}
+relevant_domains 只允许以下值：
+system_positioning, business_capabilities, integration_interfaces, technical_architecture, constraints_risks
 """
-
-        response = llm_client.chat_with_system_prompt(
-            system_prompt="你是一个严谨的系统分析助手，擅长从材料中总结系统边界、核心功能、业务目标、集成点与关键约束。",
-            user_prompt=prompt,
-            temperature=0.2,
-            max_tokens=1200,
+        stage1_response = llm_client.chat_with_system_prompt(
+            system_prompt="你是一个严谨的系统分析助手，擅长从材料中识别系统画像相关域和跨系统信息。",
+            user_prompt=stage1_prompt,
+            temperature=0.1,
+            max_tokens=600,
+        )
+        stage1_parsed = llm_client.extract_json(stage1_response)
+        stage1_data = stage1_parsed if isinstance(stage1_parsed, dict) else {}
+        relevant_domains = self._normalize_relevant_domains(stage1_data.get("relevant_domains"))
+        related_systems = self._normalize_related_systems(
+            stage1_data.get("related_systems"),
+            current_system_name=system_name,
         )
 
-        parsed = llm_client.extract_json(response)
-        suggestions: Dict[str, str] = {}
-        if isinstance(parsed, dict):
-            for key in PROFILE_FIELDS:
-                value = parsed.get(key)
-                text = "" if value is None else str(value).strip()
-                suggestions[key] = text
-        else:
-            for key in PROFILE_FIELDS:
-                suggestions[key] = ""
+        if not relevant_domains:
+            relevant_domains = list(PROFILE_DOMAIN_KEYS)
 
-        return suggestions
+        stage2_prompt = f"""请基于以下材料，仅输出相关域的系统画像建议。
+
+系统：{system_name}（system_id={system_id}）
+相关域：{", ".join(relevant_domains)}
+材料（可能不完整）：
+{(context or '')[:9000]}
+
+请只返回JSON（不要解释），格式：
+{{
+  "suggestions": {{
+    "system_positioning": {{}},
+    "business_capabilities": {{}},
+    "integration_interfaces": {{}},
+    "technical_architecture": {{}},
+    "constraints_risks": {{}}
+  }}
+}}
+只填充相关域；不相关域可以省略。
+"""
+        stage2_response = llm_client.chat_with_system_prompt(
+            system_prompt="你是一个严谨的系统分析助手，擅长输出结构化系统画像建议。",
+            user_prompt=stage2_prompt,
+            temperature=0.2,
+            max_tokens=1600,
+        )
+        stage2_parsed = llm_client.extract_json(stage2_response)
+
+        suggestions: Dict[str, Any] = {}
+        if isinstance(stage2_parsed, dict):
+            nested = stage2_parsed.get("suggestions")
+            if isinstance(nested, dict):
+                suggestions = nested
+            elif isinstance(stage2_parsed.get("profile_data"), dict):
+                suggestions = stage2_parsed.get("profile_data") or {}
+            else:
+                suggestions = stage2_parsed
+
+        if not relevant_domains and isinstance(suggestions, dict):
+            relevant_domains = [domain for domain in PROFILE_DOMAIN_KEYS if domain in suggestions]
+
+        return {
+            "suggestions": suggestions if isinstance(suggestions, dict) else {},
+            "relevant_domains": relevant_domains,
+            "related_systems": related_systems,
+        }
 
 
 _profile_summary_service: Optional[ProfileSummaryService] = None

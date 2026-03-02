@@ -68,6 +68,14 @@ const sortReportVersions = (versions) => (
   })
 );
 
+const toNumberOrNull = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
 const ReportPage = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
@@ -84,26 +92,32 @@ const ReportPage = () => {
   const [expertLoading, setExpertLoading] = useState(false);
   const [highDeviation, setHighDeviation] = useState({ round: null, isOfficial: false, items: [] });
   const [highDeviationLoading, setHighDeviationLoading] = useState(false);
+  const [featureDetails, setFeatureDetails] = useState([]);
+  const [featureLoading, setFeatureLoading] = useState(false);
 
   const fetchTask = useCallback(async () => {
     try {
       setLoading(true);
       setHighDeviationLoading(true);
-      const [taskRes, highRes] = await Promise.all([
+      setFeatureLoading(true);
+      const [taskRes, highRes, evalRes] = await Promise.all([
         axios.get(`/api/v1/tasks/${taskId}`),
         axios.get(`/api/v1/tasks/${taskId}/high-deviation`).catch(() => ({ data: { data: { round: null, isOfficial: false, items: [] } } })),
+        axios.get(`/api/v1/tasks/${taskId}/evaluation`).catch(() => ({ data: { features: [] } })),
       ]);
       const payload = taskRes.data?.data || null;
       setTask(payload);
       setAssignments(payload?.expertAssignments || []);
       const highPayload = highRes.data?.data || { round: null, isOfficial: false, items: [] };
       setHighDeviation(highPayload);
+      setFeatureDetails(Array.isArray(evalRes.data?.features) ? evalRes.data.features : []);
       setLoadError('');
     } catch (error) {
       const detail = error?.response?.data?.detail || error?.response?.data?.message || '获取任务信息失败';
       setLoadError(detail);
     } finally {
       setHighDeviationLoading(false);
+      setFeatureLoading(false);
       setLoading(false);
     }
   }, [taskId]);
@@ -165,41 +179,44 @@ const ReportPage = () => {
     [historyReports],
   );
 
+  const downloadBlob = useCallback((blobData, filename) => {
+    const url = window.URL.createObjectURL(new Blob([blobData]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }, []);
+
   const handleDownloadLatest = useCallback(async () => {
+    if (!latestReport?.id) {
+      message.warning('暂无可导出报告');
+      return;
+    }
     try {
-      const response = await axios.get(`/api/v1/tasks/${taskId}/report`, {
+      const response = await axios.get(`/api/v1/reports/${latestReport.id}/export`, {
         responseType: 'blob',
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `评估报告_${taskId}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      downloadBlob(response.data, `评估报告_${taskId}.xlsx`);
       message.success('下载成功');
     } catch (error) {
       message.error(error.response?.data?.detail || '下载失败');
     }
-  }, [taskId]);
+  }, [downloadBlob, latestReport?.id, taskId]);
 
   const handleDownloadVersion = useCallback(async (record) => {
     try {
-      const response = await axios.get(`/api/v1/tasks/${taskId}/reports/${record.id}`, {
+      const response = await axios.get(`/api/v1/reports/${record.id}/export`, {
         responseType: 'blob',
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', record.file_name || `评估报告_${taskId}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const exportName = (record.file_name || `评估报告_${taskId}`).replace(/\.pdf$/i, '.xlsx');
+      downloadBlob(response.data, exportName);
       message.success('下载成功');
     } catch (error) {
       message.error(error.response?.data?.detail || '下载失败');
     }
-  }, [taskId]);
+  }, [downloadBlob, taskId]);
 
   const handleDownloadReportMenu = useCallback(async ({ key }) => {
     if (key === 'latest') {
@@ -321,6 +338,48 @@ const ReportPage = () => {
     { title: '专家均值', dataIndex: 'meanDays', key: 'meanDays', width: 100, render: (value) => value ?? '-' },
     { title: '偏离度%', dataIndex: 'deviation', key: 'deviation', width: 100, render: (value) => value ?? '-' },
   ];
+
+  const featureColumns = [
+    { title: '系统', dataIndex: 'system_name', key: 'system_name', width: 120, render: (value) => value || '-' },
+    { title: '功能点', dataIndex: 'description', key: 'description', width: 260, render: (value) => value || '-' },
+    {
+      title: '期望人天数',
+      dataIndex: 'expected',
+      key: 'expected',
+      width: 120,
+      render: (value, record) => {
+        const expected = toNumberOrNull(value);
+        const fallback = toNumberOrNull(record?.estimation_days) ?? toNumberOrNull(record?.original_estimate);
+        return expected ?? fallback ?? '-';
+      },
+    },
+  ];
+
+  const renderFeatureExpandedRow = (record) => {
+    const optimistic = toNumberOrNull(record?.optimistic);
+    const mostLikely = toNumberOrNull(record?.most_likely);
+    const pessimistic = toNumberOrNull(record?.pessimistic);
+    const degraded = Boolean(record?.estimation_degraded) || optimistic === null || mostLikely === null || pessimistic === null;
+
+    if (degraded) {
+      return (
+        <div style={{ background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 8, padding: 10 }}>
+          <Text>LLM 估算未成功，显示为拆分阶段原始估值</Text>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ background: '#f6fbff', border: '1px solid #d6e4ff', borderRadius: 8, padding: 10 }}>
+        <Space direction="vertical" size={6}>
+          <Text>乐观值：{optimistic}</Text>
+          <Text>最可能值：{mostLikely}</Text>
+          <Text>悲观值：{pessimistic}</Text>
+          <Text>估算理由：{record?.reasoning || 'LLM 未返回理由'}</Text>
+        </Space>
+      </div>
+    );
+  };
 
   const assignmentColumns = useMemo(() => {
     const columns = [
@@ -541,6 +600,23 @@ const ReportPage = () => {
             <Text type="secondary">暂无高偏离功能点</Text>
           )}
         </Space>
+      </Card>
+
+      <Card title="功能点明细" style={{ marginBottom: 16 }}>
+        <Table
+          rowKey={(record) => record.feature_id || `${record.system_name || 'system'}_${record.description || 'feature'}`}
+          columns={featureColumns}
+          dataSource={featureDetails}
+          loading={featureLoading}
+          pagination={false}
+          size="small"
+          scroll={{ x: 700 }}
+          expandable={{
+            expandRowByClick: true,
+            expandedRowRender: renderFeatureExpandedRow,
+          }}
+          locale={{ emptyText: '暂无功能点明细' }}
+        />
       </Card>
 
       <Modal

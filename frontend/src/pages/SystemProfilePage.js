@@ -43,12 +43,32 @@ const fieldLabels = {
   key_constraints: '关键约束',
 };
 
+const ESB_MAPPING_FIELDS = [
+  { key: 'provider_system_id', label: '提供方系统列名', placeholder: '例如：提供方系统简称,提供方系统ID' },
+  { key: 'consumer_system_id', label: '调用方系统列名', placeholder: '例如：调用方系统简称,调用方系统ID' },
+  { key: 'service_name', label: '服务名称列名', placeholder: '例如：交易名称,服务名称' },
+  { key: 'status', label: '状态列名', placeholder: '例如：状态,使用状态' },
+  { key: 'service_code', label: '交易码列名（可选）', placeholder: '例如：交易码,服务码' },
+];
+
+const buildEmptyEsbMappingDraft = () => ESB_MAPPING_FIELDS.reduce(
+  (acc, item) => ({ ...acc, [item.key]: '' }),
+  {}
+);
+
 const parseErrorMessage = (error, fallback) => {
   const responseData = error?.response?.data;
   return responseData?.message || responseData?.detail || fallback;
 };
 
 const emptyFormValues = Object.keys(fieldLabels).reduce((acc, key) => ({ ...acc, [key]: '' }), {});
+const splitMappingCandidates = (value) => (
+  String(value || '')
+    .replace(/，|、|；/g, ',')
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+);
 
 const SystemProfilePage = () => {
   const { isManager } = usePermission();
@@ -79,7 +99,7 @@ const SystemProfilePage = () => {
   const [scanJobsLoading, setScanJobsLoading] = useState(false);
   const [scanJobs, setScanJobs] = useState([]);
 
-  const [esbMappingJson, setEsbMappingJson] = useState('');
+  const [esbMappingDraft, setEsbMappingDraft] = useState(buildEmptyEsbMappingDraft());
   const [esbFiles, setEsbFiles] = useState([]);
   const [esbSubmitting, setEsbSubmitting] = useState(false);
 
@@ -343,14 +363,19 @@ const SystemProfilePage = () => {
       const formData = new FormData();
       formData.append('system_id', selectedSystemId);
       formData.append('file', esbFiles[0]);
-      if (esbMappingJson.trim()) {
-        formData.append('mapping_json', esbMappingJson.trim());
-      }
+      ESB_MAPPING_FIELDS.forEach((item) => {
+        const candidates = splitMappingCandidates(esbMappingDraft[item.key]);
+        if (!candidates.length) {
+          return;
+        }
+        formData.append(`mapping_${item.key}`, candidates.join('\n'));
+      });
       await axios.post('/api/v1/esb/imports', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       message.success('ESB导入完成');
       setEsbFiles([]);
+      setEsbMappingDraft(buildEmptyEsbMappingDraft());
       await Promise.all([loadProfiles(), loadProfileDetail(selectedSystemName, selectedSystemId)]);
     } catch (error) {
       message.error(parseErrorMessage(error, 'ESB导入失败'));
@@ -539,12 +564,7 @@ const SystemProfilePage = () => {
                 )}
 
                 {isManager && !canWrite && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="当前系统为只读"
-                    description="仅系统主责 PM 可执行草稿保存、发布及导入操作。"
-                  />
+                  <Text type="secondary">当前系统只读，仅系统主责 PM 可执行保存、发布及导入操作。</Text>
                 )}
 
                 <Form form={form} layout="vertical" initialValues={emptyFormValues}>
@@ -634,13 +654,25 @@ const SystemProfilePage = () => {
 
             <Card title="ESB导入（API-003）">
               <Space direction="vertical" style={{ width: '100%' }}>
-                <TextArea
-                  rows={3}
-                  value={esbMappingJson}
-                  onChange={(event) => setEsbMappingJson(event.target.value)}
-                  placeholder='可选：mapping_json，例如 {"provider_system":["提供方系统","provider"]}'
-                  disabled={!canWrite}
-                />
+                <Text type="secondary">
+                  可选：按表头填写映射列名，支持逗号或换行分隔多个候选名。
+                </Text>
+                <Row gutter={8}>
+                  {ESB_MAPPING_FIELDS.map((item) => (
+                    <Col key={item.key} span={12}>
+                      <Input
+                        value={esbMappingDraft[item.key]}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setEsbMappingDraft((prev) => ({ ...prev, [item.key]: nextValue }));
+                        }}
+                        placeholder={item.placeholder}
+                        disabled={!canWrite}
+                        addonBefore={item.label}
+                      />
+                    </Col>
+                  ))}
+                </Row>
                 <Upload
                   beforeUpload={(file) => {
                     setEsbFiles([file]);

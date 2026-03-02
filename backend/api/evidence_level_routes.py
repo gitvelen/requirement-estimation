@@ -2,7 +2,7 @@
 证据等级规则配置API
 """
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,7 +17,9 @@ router = APIRouter(prefix="/api/v1/evidence-level", tags=["证据等级"])
 
 
 class EvidenceRulePayload(BaseModel):
-    rules: Dict[str, Any]
+    rules: Optional[Dict[str, Any]] = None
+    version: Optional[int] = None
+    levels: Optional[List[Any]] = None
 
 
 @router.get("/rules")
@@ -34,8 +36,15 @@ async def update_rules(
     current_user: Dict[str, Any] = Depends(require_roles(["admin"]))
 ):
     try:
+        rules_payload = payload.rules
+        if not isinstance(rules_payload, dict):
+            rules_payload = {
+                "version": payload.version,
+                "levels": payload.levels or [],
+            }
+
         service = get_evidence_level_service()
-        updated = service.update_rules(payload.rules, actor=current_user)
+        updated = service.update_rules(rules_payload, actor=current_user)
         audit_service = get_audit_log_service()
         audit_service.append(
             action="evidence_rule_update",
@@ -57,4 +66,3 @@ async def list_rule_logs(
     audit_service = get_audit_log_service()
     logs = audit_service.list_logs(action="evidence_rule_update", limit=200)
     return {"code": 200, "data": logs}
-

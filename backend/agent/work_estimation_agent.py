@@ -5,7 +5,7 @@
 import logging
 import json
 import statistics
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 from backend.utils.llm_client import llm_client
 from backend.prompts.prompt_templates import WORK_ESTIMATION_PROMPT
 from backend.config.config import settings
@@ -25,10 +25,95 @@ class WorkEstimationAgent:
         self.experts = settings.DELPHI_EXPERTS[:3]
         self.expert_weights = {k: v for k, v in settings.DELPHI_EXPERT_WEIGHTS.items() if k in self.experts}
         logger.info(f"{self.name}初始化完成，使用{len(self.experts)}位专家")
+        self._latest_estimation_details: Dict[str, Dict[str, Any]] = {}
+
+    def _feature_key(self, feature: Dict[str, Any]) -> str:
+        feature_id = str(feature.get("id") or "").strip()
+        if feature_id:
+            return feature_id
+        return str(feature.get("功能点") or feature.get("name") or "").strip()
+
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _resolve_original_estimate(self, feature: Dict[str, Any]) -> float:
+        for key in ("original_estimate", "预估人天", "aiEstimatedDays", "预估人天数", "AI预估人天", "AI预估"):
+            if key not in feature:
+                continue
+            value = self._safe_float(feature.get(key), default=0.0)
+            if value > 0:
+                return round(value, 2)
+        return 1.0
+
+    def estimate_three_point_for_feature(
+        self,
+        feature: Dict[str, Any],
+        *,
+        system_context: str = "",
+        correction_context: str = "",
+        historical_context: str = "",
+    ) -> Dict[str, Any]:
+        feature_name = str(feature.get("功能点") or feature.get("name") or "").strip() or "未命名功能点"
+        description = str(feature.get("业务描述") or feature.get("description") or "").strip()
+        original_estimate = self._resolve_original_estimate(feature)
+
+        prompt = f"""请为以下功能点给出三点估计（单位：人天），仅返回 JSON。
+
+功能点：{feature_name}
+描述：{description}
+拆分阶段原始估值（用于校准，不可直接照搬）：{original_estimate}
+
+第一层知识（系统画像）：
+{system_context or "无"}
+
+第二层知识（历史修正模式）：
+{correction_context or "无"}
+
+第三层知识（历史评估样本）：
+{historical_context or "无"}
+
+输出格式：
+{{
+  "optimistic": 1.5,
+  "most_likely": 2.5,
+  "pessimistic": 4.0,
+  "reasoning": "估算依据"
+}}
+"""
+        response = llm_client.chat_with_system_prompt(
+            system_prompt="你是软件估算专家。输出必须是可解析JSON，数值必须为正数，reasoning简明具体。",
+            user_prompt=prompt,
+            temperature=0.2,
+            max_tokens=800,
+        )
+        parsed = llm_client.extract_json(response)
+        if not isinstance(parsed, dict):
+            raise ValueError("invalid_estimation_payload")
+
+        optimistic = self._safe_float(parsed.get("optimistic"), default=-1.0)
+        most_likely = self._safe_float(parsed.get("most_likely"), default=-1.0)
+        pessimistic = self._safe_float(parsed.get("pessimistic"), default=-1.0)
+        reasoning = str(parsed.get("reasoning") or "").strip()
+
+        if min(optimistic, most_likely, pessimistic) <= 0:
+            raise ValueError("invalid_estimation_value")
+
+        expected = round((optimistic + 4 * most_likely + pessimistic) / 6, 2)
+        return {
+            "optimistic": round(optimistic, 2),
+            "most_likely": round(most_likely, 2),
+            "pessimistic": round(pessimistic, 2),
+            "expected": expected,
+            "reasoning": reasoning or "LLM 未返回理由",
+            "original_estimate": original_estimate,
+        }
 
     def estimate(self, features: List[Dict]) -> Dict[str, float]:
         """
-        对功能点进行基于复杂度的快速工作量估算
+        对功能点进行工作量估算（LLM三点估计 + PERT）
 
         Args:
             features: 功能点列表
@@ -38,37 +123,28 @@ class WorkEstimationAgent:
         """
         try:
             logger.info(f"[工作量估算] 开始估算 {len(features)} 个功能点")
-
-            # 统计各复杂度数量
-            complexity_count = {"高": 0, "中": 0, "低": 0}
-            for feature in features:
-                complexity = feature.get("复杂度", "中")
-                if complexity in complexity_count:
-                    complexity_count[complexity] += 1
-
-            logger.info(f"[复杂度分布] 高:{complexity_count['高']} 中:{complexity_count['中']} 低:{complexity_count['低']}")
-
+            self._latest_estimation_details = {}
             estimates = {}
             total_estimated = 0
 
-            # 为每个功能点进行估算
             for idx, feature in enumerate(features, 1):
-                feature_name = feature.get("功能点", "")
-
-                # 基于复杂度的基准工作量
-                complexity = feature.get("复杂度", "中")
-                if complexity == "高":
-                    base_workload = 4.0
-                elif complexity == "中":
-                    base_workload = 2.5
-                else:
-                    base_workload = 1.5
-
-                # 使用基准值作为估算
-                estimates[feature_name] = base_workload
-                total_estimated += base_workload
-
-                # 每10个输出一次进度
+                key = self._feature_key(feature)
+                fallback = self._resolve_original_estimate(feature)
+                try:
+                    detail = self.estimate_three_point_for_feature(feature)
+                except Exception as exc:
+                    logger.warning("LLM估算失败，使用降级值 feature=%s error=%s", key, exc)
+                    detail = {
+                        "optimistic": None,
+                        "most_likely": None,
+                        "pessimistic": None,
+                        "expected": round(fallback, 2),
+                        "reasoning": None,
+                        "original_estimate": round(fallback, 2),
+                    }
+                estimates[key] = detail["expected"]
+                self._latest_estimation_details[key] = detail
+                total_estimated += detail["expected"]
                 if idx % 10 == 0 or idx == len(features):
                     logger.info(f"[进度] {idx}/{len(features)} 功能点已估算")
 
@@ -240,37 +316,30 @@ class WorkEstimationAgent:
             List: 更新后的功能点列表
         """
         for feature in features:
-            feature_name = feature.get("功能点", "")
+            key = self._feature_key(feature)
+            feature_name = str(feature.get("功能点") or feature.get("name") or key)
 
-            if feature_name in estimates:
-                man_days = estimates[feature_name]
+            if key in estimates:
+                man_days = self._safe_float(estimates[key], default=self._resolve_original_estimate(feature))
             else:
-                # 如果没有估算值，根据复杂度给默认值
-                complexity = feature.get("复杂度", "中")
-                if complexity == "高":
-                    man_days = 4.0
-                elif complexity == "中":
-                    man_days = 2.5
-                else:
-                    man_days = 1.5
-                logger.warning(f"功能点 '{feature_name}' 没有估算值，使用默认值: {man_days}人天")
+                man_days = self._resolve_original_estimate(feature)
+                logger.warning("功能点 '%s' 没有估算值，使用原始估值: %.2f人天", feature_name, man_days)
 
-            # 确保工作量不为0
             if man_days <= 0:
-                man_days = 2.0
-                logger.warning(f"功能点 '{feature_name}' 工作量为0，调整为默认值: {man_days}人天")
+                man_days = self._resolve_original_estimate(feature)
 
-            feature["预估人天"] = man_days
+            if "original_estimate" not in feature:
+                feature["original_estimate"] = self._resolve_original_estimate(feature)
 
-            # 根据人天调整复杂度
-            if man_days >= 4:
-                feature["复杂度"] = "高"
-            elif man_days >= 2.5:
-                feature["复杂度"] = "中"
-            else:
-                feature["复杂度"] = "低"
+            detail = self._latest_estimation_details.get(key, {})
+            feature["optimistic"] = detail.get("optimistic")
+            feature["most_likely"] = detail.get("most_likely")
+            feature["pessimistic"] = detail.get("pessimistic")
+            feature["expected"] = round(man_days, 2)
+            feature["reasoning"] = detail.get("reasoning")
+            feature["预估人天"] = round(man_days, 2)
 
-            logger.info(f"功能点 '{feature_name}' 工作量: {man_days}人天, 复杂度: {feature['复杂度']}")
+            logger.info("功能点 '%s' 工作量: %.2f人天", feature_name, feature["预估人天"])
 
         return features
 

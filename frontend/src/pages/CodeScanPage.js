@@ -19,6 +19,14 @@ import axios from 'axios';
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
 
+const splitToList = (value) => (
+  String(value || '')
+    .replace(/，|、|；/g, ',')
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+);
+
 const CodeScanPage = () => {
   const [form] = Form.useForm();
   const [systems, setSystems] = useState([]);
@@ -55,14 +63,23 @@ const CodeScanPage = () => {
     try {
       const values = await form.validateFields();
       setLoading(true);
+      const scanPaths = splitToList(values.scan_paths);
+      const excludeDirs = splitToList(values.exclude_dirs);
+      const options = {};
+      if (scanPaths.length) {
+        options.paths = scanPaths;
+      }
+      if (excludeDirs.length) {
+        options.exclude_dirs = excludeDirs;
+      }
       const response = await axios.post('/api/v1/code-scan/run', {
         system_name: values.system_name,
         system_id: values.system_id || undefined,
         repo_path: values.repo_path,
-        options: values.options ? JSON.parse(values.options) : undefined,
+        options: Object.keys(options).length > 0 ? options : undefined,
       });
       message.success(`已触发扫描任务：${response.data?.data?.job_id || ''}`);
-      form.resetFields(['repo_path', 'options']);
+      form.resetFields(['repo_path', 'scan_paths', 'exclude_dirs']);
       fetchJobs();
     } catch (error) {
       if (error?.errorFields) {
@@ -74,7 +91,7 @@ const CodeScanPage = () => {
     }
   };
 
-  const handleViewResult = async (jobId) => {
+  const handleViewResult = useCallback(async (jobId) => {
     try {
       setResultLoading(true);
       setResultVisible(true);
@@ -85,9 +102,9 @@ const CodeScanPage = () => {
     } finally {
       setResultLoading(false);
     }
-  };
+  }, []);
 
-  const handleCommit = async (jobId) => {
+  const handleCommit = useCallback(async (jobId) => {
     try {
       const response = await axios.post(`/api/v1/code-scan/commit/${jobId}`);
       const data = response.data?.data || {};
@@ -96,7 +113,7 @@ const CodeScanPage = () => {
     } catch (error) {
       message.error(error.response?.data?.detail || '提交失败');
     }
-  };
+  }, [fetchJobs]);
 
   const jobColumns = useMemo(() => [
     {
@@ -156,7 +173,7 @@ const CodeScanPage = () => {
         </Space>
       ),
     },
-  ], []);
+  ], [handleCommit, handleViewResult]);
 
   const resultColumns = [
     { title: '类型', dataIndex: 'entry_type', key: 'entry_type', width: 120 },
@@ -179,45 +196,56 @@ const CodeScanPage = () => {
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
-        <Form layout="inline" form={form}>
-          <Form.Item
-            name="system_name"
-            label="系统"
-            rules={[{ required: true, message: '请选择系统' }]}
-          >
-            <Select
-              style={{ width: 220 }}
-              placeholder="选择系统"
-              options={(systems || []).map((item) => ({ label: item.name, value: item.name }))}
-              onChange={(value) => {
-                const matched = (systems || []).find((item) => item.name === value);
-                form.setFieldsValue({ system_id: matched?.id || '' });
-              }}
-            />
-          </Form.Item>
-          <Form.Item name="system_id" style={{ display: 'none' }}>
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="repo_path"
-            label="仓库路径"
-            rules={[{ required: true, message: '请输入仓库路径' }]}
-          >
-            <Input style={{ width: 320 }} placeholder="/path/to/repo" />
-          </Form.Item>
-          <Form.Item name="options" label="选项(JSON)">
-            <TextArea rows={1} style={{ width: 260 }} placeholder='{"paths":["src/main/java"]}' />
-          </Form.Item>
-          <Form.Item>
+        <Form layout="vertical" form={form}>
+          <Space wrap align="start" style={{ width: '100%' }}>
+            <Form.Item
+              name="system_name"
+              label="系统"
+              rules={[{ required: true, message: '请选择系统' }]}
+            >
+              <Select
+                style={{ width: 220 }}
+                placeholder="选择系统"
+                options={(systems || []).map((item) => ({ label: item.name, value: item.name }))}
+                onChange={(value) => {
+                  const matched = (systems || []).find((item) => item.name === value);
+                  form.setFieldsValue({ system_id: matched?.id || '' });
+                }}
+              />
+            </Form.Item>
+            <Form.Item name="system_id" style={{ display: 'none' }}>
+              <Input />
+            </Form.Item>
+            <Form.Item
+              name="repo_path"
+              label="仓库路径"
+              rules={[{ required: true, message: '请输入仓库路径' }]}
+            >
+              <Input style={{ width: 360 }} placeholder="/path/to/repo" />
+            </Form.Item>
+            <Form.Item name="scan_paths" label="扫描路径（可选）">
+              <TextArea
+                rows={2}
+                style={{ width: 320 }}
+                placeholder={'每行一个路径，例如\nsrc/main/java\nsrc/main/kotlin'}
+              />
+            </Form.Item>
+            <Form.Item name="exclude_dirs" label="排除目录（可选）">
+              <TextArea
+                rows={2}
+                style={{ width: 280 }}
+                placeholder={'每行一个目录，例如\nbuild\ntarget'}
+              />
+            </Form.Item>
+          </Space>
+          <Space>
             <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={handleRun}>
               触发扫描
             </Button>
-          </Form.Item>
-          <Form.Item>
             <Button icon={<ReloadOutlined />} onClick={fetchJobs}>
               刷新任务
             </Button>
-          </Form.Item>
+          </Space>
         </Form>
       </Card>
 
@@ -261,4 +289,3 @@ const CodeScanPage = () => {
 };
 
 export default CodeScanPage;
-

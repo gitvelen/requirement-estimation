@@ -36,22 +36,8 @@
 ## 任务完成度
 | 任务ID | 任务名称 | 状态 | 备注 |
 |--------|---------|------|------|
-| T001 | 画像 5 域 12 子字段模型与迁移兼容 | ✅完成 | 与 `plan.md` 对齐 |
-| T002 | 画像 CRUD、时间线、建议采纳/回滚 API 改造 | ✅完成 | 与 `plan.md` 对齐 |
-| T003 | 导入历史与导入触发异步提取链路 | ✅完成 | 与 `plan.md` 对齐 |
-| T004 | AI 提取异步任务串行化与多系统过滤通知 | ✅完成 | 与 `plan.md` 对齐 |
-| T005 | PM-系统写权限绑定与跨系统只读策略 | ✅完成 | 与 `plan.md` 对齐 |
-| T006 | LLM 三点估计/PERT/降级/三层知识注入 | ✅完成 | 与 `plan.md` 对齐 |
-| T007 | AI 快照 + 两阶段 diff + correction history 聚合 | ✅完成 | 与 `plan.md` 对齐 |
-| T008 | ImportPage 卡片化、历史折叠、状态轮询、跳转 | ✅完成 | 与 `plan.md` 对齐 |
-| T009 | BoardPage 三区布局、inline diff、时间线、只读模式 | ✅完成 | 与 `plan.md` 对齐 |
-| T010 | Evaluation/Report 三点估计展示与导出联动 | ✅完成 | 与 `plan.md` 对齐 |
-| T011 | REQ/REQ-C 全量回归与覆盖矩阵落盘 | ✅完成 | 与 `plan.md` 对齐 |
-| T012 | 部署清单、回滚演练、阶段文档闭环 | ✅完成 | 与 `plan.md` 对齐 |
-| T013 | CR-20260301-001 信息展示页展示优先交互一致化修复 | ✅完成 | 与 `plan.md` 对齐 |
-| T014 | CR-20260302-001 信息展示页域标题去冗余与域导航左对齐 | ✅完成 | 与 `plan.md` 对齐 |
-| T015 | CR-20260302-002 信息展示页旧 system_id 容错与当前 ID 优先 | ✅完成 | 与 `plan.md` 对齐 |
-| T016 | CR-20260302-003 内网部署目录属主对齐与默认账号初始化 | ✅完成 | 与 `plan.md` 对齐 |
+| T011 | REQ/REQ-C 全量回归与覆盖矩阵落盘 | ✅完成 | `docs/v2.4/test_report.md` |
+| T012 | 部署清单、回滚演练、阶段文档闭环 | ✅完成 | 回滚演练证据已补齐 |
 
 ## 需求符合性审查（REQ 模式）
 ### 逐条 GWT 判定表（汇总）
@@ -74,79 +60,12 @@
 - [x] `cd frontend && CI=true npm test -- --watch=false --runInBand src/__tests__/uiComponents.test.js src/__tests__/systemProfileBoardPage.v24.test.js src/__tests__/navigationAndPageTitleRegression.test.js src/__tests__/evaluationReportThreePoint.v24.test.js src/__tests__/dashboardMetrics.test.js`
 - [x] `cd frontend && npm run build`
 
-## 逐条 GWT 判定表（自动汇总）
-| GWT-ID | REQ-ID | 判定 | 证据类型 | 证据 | 备注 |
-|---|---|---|---|---|---|
-| GWT-REQ-001-01 | REQ-001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md | 抽检：边界与失败路径已复核 |
-| GWT-REQ-001-02 | REQ-001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-001-03 | REQ-001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-001-04 | REQ-001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-001-05 | REQ-001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-002-01 | REQ-002 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-002-02 | REQ-002 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-002-03 | REQ-002 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-003-01 | REQ-003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-003-02 | REQ-003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-003-03 | REQ-003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-003-04 | REQ-003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-003-05 | REQ-003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-01 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-02 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-03 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-04 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-05 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-004-06 | REQ-004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-005-01 | REQ-005 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-005-02 | REQ-005 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-005-03 | REQ-005 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-006-01 | REQ-006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-006-02 | REQ-006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-006-03 | REQ-006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-006-04 | REQ-006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-006-05 | REQ-006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-007-01 | REQ-007 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-007-02 | REQ-007 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-007-03 | REQ-007 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md | 抽检：边界与失败路径已复核 |
-| GWT-REQ-008-01 | REQ-008 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-008-02 | REQ-008 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-008-03 | REQ-008 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-009-01 | REQ-009 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-009-02 | REQ-009 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-009-03 | REQ-009 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-010-01 | REQ-010 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-010-02 | REQ-010 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-010-03 | REQ-010 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-010-04 | REQ-010 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-011-01 | REQ-011 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-011-02 | REQ-011 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-011-03 | REQ-011 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-011-04 | REQ-011 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-012-01 | REQ-012 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-012-02 | REQ-012 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-012-03 | REQ-012 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-012-04 | REQ-012 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-101-01 | REQ-101 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-102-01 | REQ-102 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-103-01 | REQ-103 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-104-01 | REQ-104 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-104-02 | REQ-104 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md | 抽检：边界与失败路径已复核 |
-| GWT-REQ-104-03 | REQ-104 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-105-01 | REQ-105 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-106-01 | REQ-106 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C001-01 | REQ-C001 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C002-01 | REQ-C002 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md | 抽检：边界与失败路径已复核 |
-| GWT-REQ-C003-01 | REQ-C003 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C004-01 | REQ-C004 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C005-01 | REQ-C005 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C006-01 | REQ-C006 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md |  |
-| GWT-REQ-C007-01 | REQ-C007 | ✅PASS | RUN_OUTPUT | docs/v2.4/test_report.md | 抽检：边界与失败路径已复核 |
-
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_STAGE: testing
 REVIEW_SCOPE: full
 REVIEW_MODES: REQ,TRACE
 CODE_BASELINE: HEAD
-REQ_BASELINE_HASH: aee976a028e56b286c53fc20a6013602994591c0
+REQ_BASELINE_HASH: 83bc1e201c9755d301f13533570d59532df9993f
 GWT_TOTAL: 63
 GWT_CHECKED: 63
 GWT_CARRIED: 0

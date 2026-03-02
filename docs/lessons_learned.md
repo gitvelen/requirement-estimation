@@ -12,6 +12,7 @@
 - **R5**（需求）：Requirements 必须覆盖提案 In Scope 清单（每项落到 REQ/API/验收；若 Defer 必须回写提案并重新确认）
 - **R6**（追溯）：任何 REQ 编号调整后，必须同步更新 `plan.md` 的"任务关联 REQ/覆盖矩阵"，并做一次"引用存在性"自检
 - **R7**（实现）：开始任何实现前，必须建立TodoList，逐项勾选完成；完成后更新TodoList状态
+- **R8**（前端质量）：页面级改动必须至少包含 1 条“首屏渲染不崩溃”测试；`no-use-before-define` 视为阻断项，不得以 warning 放行
 
 ---
 
@@ -173,3 +174,25 @@
   - `rg -n "CR-YYYYMMDD-[0-9]{3}" docs/<版本号>/status.md docs/<版本号>/plan.md docs/<版本号>/test_report.md docs/<版本号>/cr/*.md`
 - **升级（规则/清单/自动化）**：是（建议在 pre-commit 增加“代码变更命中高风险前端页面但无 Active CR”提示）
 - **证据/关联**：`docs/v2.2/cr/CR-20260225-001.md`，`docs/v2.2/status.md`，`docs/v2.2/plan.md`，`docs/v2.2/test_report.md`
+
+---
+
+### 2026-03-01｜导入页首屏渲染漏测导致线上页面打不开（实现/测试）
+- **标签**：实现、测试、前端、门禁
+- **触发（事实）**：`SystemProfileImportPage` 运行时报 `ReferenceError: Cannot access 'loadImportHistory' before initialization`，知识导入页首屏崩溃无法打开。
+- **根因**：
+  1. 页面重构后 `useEffect` 依赖了尚未初始化的 `const` 回调（TDZ 错误）。
+  2. 测试覆盖偏结构和静态断言（布局一致性/通用组件），缺少页面首屏渲染 smoke。
+  3. 评审阶段已出现 `no-use-before-define` warning，但被降级为 P2 建议未阻断。
+- **影响**：
+  - 页面首屏不可用，核心业务入口受阻。
+  - 造成“已通过回归但运行态失败”的信任损耗。
+- **改进行动（可执行）**：
+  1. 页面级变更必须新增至少 1 条首屏渲染测试（render + waitFor，不抛异常）。
+  2. 将前端 lint 纳入强门禁：`eslint --max-warnings=0`，禁止 warning 带病放行。
+  3. 对 `no-use-before-define`、`no-undef`、`react-hooks/exhaustive-deps` 建立“默认 P1”处置规则。
+- **验证方式（可复现）**：
+  - `cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js`
+  - `cd frontend && npm run lint:system-profile-import`
+- **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R8`）
+- **证据/关联**：`frontend/src/pages/SystemProfileImportPage.js`，`frontend/src/__tests__/systemProfileImportPage.render.test.js`

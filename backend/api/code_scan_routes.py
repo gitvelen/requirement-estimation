@@ -46,6 +46,20 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _parse_list_text(value: Any) -> Tuple[str, ...]:
+    text = str(value or "").strip()
+    if not text:
+        return tuple()
+    normalized = text.replace("，", ",").replace("、", ",").replace("；", ",")
+    items = []
+    for line in normalized.splitlines():
+        for part in line.split(","):
+            candidate = part.strip()
+            if candidate:
+                items.append(candidate)
+    return tuple(items)
+
+
 def _parse_options_json(value: Optional[str]) -> Dict[str, Any]:
     if not value:
         return {}
@@ -293,6 +307,8 @@ async def create_scan_job(
     repo_path_form: Optional[str] = Form(None, alias="repo_path"),
     repo_source_form: Optional[str] = Form(None, alias="repo_source"),
     force_form: Optional[str] = Form(None, alias="force"),
+    scan_paths_form: Optional[str] = Form(None, alias="scan_paths"),
+    exclude_dirs_form: Optional[str] = Form(None, alias="exclude_dirs"),
     options_json: Optional[str] = Form(None),
     repo_archive: Optional[UploadFile] = File(None),
 ):
@@ -305,6 +321,8 @@ async def create_scan_job(
     repo_source_explicit = False
     force = False
     options: Dict[str, Any] = {}
+    scan_paths: Tuple[str, ...] = tuple()
+    exclude_dirs: Tuple[str, ...] = tuple()
 
     try:
         if "multipart/form-data" in content_type:
@@ -314,6 +332,8 @@ async def create_scan_job(
             repo_source_raw = str(repo_source_form or "").strip().lower()
             repo_source_explicit = bool(repo_source_raw)
             force = _parse_bool(force_form, default=False)
+            scan_paths = _parse_list_text(scan_paths_form)
+            exclude_dirs = _parse_list_text(exclude_dirs_form)
             options = _parse_options_json(options_json)
         else:
             payload = await request.json()
@@ -325,6 +345,16 @@ async def create_scan_job(
             repo_source_raw = str(payload.get("repo_source") or "").strip().lower()
             repo_source_explicit = bool(repo_source_raw)
             force = _parse_bool(payload.get("force"), default=False)
+            raw_scan_paths = payload.get("scan_paths")
+            if isinstance(raw_scan_paths, list):
+                scan_paths = tuple(str(item).strip() for item in raw_scan_paths if str(item).strip())
+            else:
+                scan_paths = _parse_list_text(raw_scan_paths)
+            raw_exclude_dirs = payload.get("exclude_dirs")
+            if isinstance(raw_exclude_dirs, list):
+                exclude_dirs = tuple(str(item).strip() for item in raw_exclude_dirs if str(item).strip())
+            else:
+                exclude_dirs = _parse_list_text(raw_exclude_dirs)
             raw_options = payload.get("options")
             if raw_options is None:
                 options = {}
@@ -332,6 +362,12 @@ async def create_scan_job(
                 options = raw_options
             else:
                 raise ValueError("options 必须是JSON对象")
+
+        options = dict(options)
+        if scan_paths and (not options.get("paths")):
+            options["paths"] = list(scan_paths)
+        if exclude_dirs and (not options.get("exclude_dirs")):
+            options["exclude_dirs"] = list(exclude_dirs)
 
         if not system_name:
             raise ValueError("system_name不能为空")

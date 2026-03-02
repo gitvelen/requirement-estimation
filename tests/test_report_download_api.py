@@ -2,9 +2,11 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
@@ -66,6 +68,48 @@ def _seed_report_task(task_id: str, manager, expert, report_path: str):
             "report_versions": [
                 {"id": "rep_1", "round": 1, "version": 1, "file_path": report_path}
             ],
+            "systems_data": {
+                "HOP": [
+                    {
+                        "id": "feat_success",
+                        "序号": "1.1",
+                        "功能模块": "开户",
+                        "功能点": "证件校验",
+                        "业务描述": "校验身份证与OCR结果",
+                        "输入": "身份证号",
+                        "输出": "校验结果",
+                        "依赖": "OCR服务",
+                        "复杂度": "中",
+                        "备注": "",
+                        "预估人天": 2.58,
+                        "optimistic": 1.5,
+                        "most_likely": 2.5,
+                        "pessimistic": 4.0,
+                        "expected": 2.58,
+                        "reasoning": "规则与接口复杂度中等",
+                        "original_estimate": 2.5,
+                    },
+                    {
+                        "id": "feat_degraded",
+                        "序号": "1.2",
+                        "功能模块": "销户",
+                        "功能点": "销户申请",
+                        "业务描述": "提交销户申请",
+                        "输入": "申请单",
+                        "输出": "申请结果",
+                        "依赖": "核心系统",
+                        "复杂度": "低",
+                        "备注": "",
+                        "预估人天": 1.5,
+                        "optimistic": None,
+                        "most_likely": None,
+                        "pessimistic": None,
+                        "expected": 1.5,
+                        "reasoning": None,
+                        "original_estimate": 1.5,
+                    },
+                ]
+            },
             "expert_assignments": [
                 {
                     "assignment_id": "assign_1",
@@ -139,3 +183,72 @@ def test_report_download_missing_report_returns_report003(client, tmp_path):
     )
     assert response.status_code == 400
     assert response.json().get("error_code") == "REPORT_003"
+
+
+def test_report_excel_export_contains_three_point_columns_and_degraded_values(client, tmp_path):
+    manager = _seed_user("rep_mgr3", "pwd123", ["manager"])
+    expert = _seed_user("rep_exp3", "pwd123", ["expert"])
+    outsider = _seed_user("rep_out3", "pwd123", ["manager"])
+
+    manager_token = _login(client, "rep_mgr3", "pwd123")
+    outsider_token = _login(client, "rep_out3", "pwd123")
+
+    report_file = tmp_path / "report_v24.pdf"
+    report_file.write_bytes(b"%PDF-1.4\n%test")
+    _seed_report_task("task_report_v24", manager, expert, str(report_file))
+
+    denied = client.get(
+        "/api/v1/reports/rep_1/export",
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+    assert denied.status_code == 403
+    assert denied.json().get("error_code") == "AUTH_001"
+
+    resp = client.get(
+        "/api/v1/reports/rep_1/export",
+        headers={"Authorization": f"Bearer {manager_token}"},
+    )
+    assert resp.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in str(resp.headers.get("content-type") or "")
+
+    wb = load_workbook(filename=BytesIO(resp.content))
+    ws = wb.active
+
+    headers = [ws.cell(row=1, column=idx).value for idx in range(1, 17)]
+    assert headers == [
+        "系统",
+        "序号",
+        "功能模块",
+        "功能点",
+        "业务描述",
+        "输入",
+        "输出",
+        "依赖项",
+        "复杂度等级",
+        "备注",
+        "预估人天参考",
+        "optimistic",
+        "most_likely",
+        "pessimistic",
+        "expected",
+        "reasoning",
+    ]
+
+    row_map = {
+        ws.cell(row=row_idx, column=4).value: [ws.cell(row=row_idx, column=col).value for col in range(1, 17)]
+        for row_idx in range(2, ws.max_row + 1)
+    }
+
+    success_row = row_map["证件校验"]
+    assert success_row[11] == 1.5
+    assert success_row[12] == 2.5
+    assert success_row[13] == 4.0
+    assert success_row[14] == 2.58
+    assert success_row[15] == "规则与接口复杂度中等"
+
+    degraded_row = row_map["销户申请"]
+    assert degraded_row[11] == "N/A"
+    assert degraded_row[12] == "N/A"
+    assert degraded_row[13] == "N/A"
+    assert degraded_row[14] == "N/A"
+    assert degraded_row[15] == "LLM 估算未成功"

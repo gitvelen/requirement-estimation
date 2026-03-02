@@ -173,6 +173,40 @@ def test_esb_import_filters_by_system_id_and_updates_completeness(client):
     assert int(profile.get("completeness_score") or 0) >= 30
 
 
+def test_esb_import_accepts_human_friendly_mapping_fields(client):
+    owner = _seed_user("esb_owner_human_map", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner_human_map", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    csv_content = (
+        "提供方系统简称,调用方系统简称,交易名称,状态\n"
+        "sys_hop,sys_x,查询接口,正常使用\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={
+            "system_id": "sys_hop",
+            "mapping_provider_system_id": "提供方系统简称",
+            "mapping_consumer_system_id": "调用方系统简称",
+            "mapping_service_name": "交易名称",
+            "mapping_status": "状态",
+        },
+        files={"file": ("esb.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "提供方系统简称"
+    assert payload.get("mapping_resolved", {}).get("consumer_system_id") == "调用方系统简称"
+    assert payload.get("mapping_resolved", {}).get("service_name") == "交易名称"
+    assert payload.get("mapping_resolved", {}).get("status") == "状态"
+
+
 def test_esb_import_embedding_unavailable_returns_emb001(client):
     owner = _seed_user("esb_owner4", "owner123", ["manager"])
     _seed_system_owner("HOP", "sys_hop", owner["id"])

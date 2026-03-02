@@ -37,6 +37,36 @@ const resolveCompletenessTagColor = (score) => {
   return 'success';
 };
 
+const toNumberOrNull = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+const resolveFeatureEstimate = (record) => {
+  const optimistic = toNumberOrNull(record?.optimistic);
+  const mostLikely = toNumberOrNull(record?.mostLikely ?? record?.most_likely);
+  const pessimistic = toNumberOrNull(record?.pessimistic);
+  const expected = toNumberOrNull(record?.expected);
+  const originalEstimate = toNumberOrNull(record?.originalEstimate);
+  const aiEstimated = toNumberOrNull(record?.aiEstimatedDays);
+
+  const degraded = Boolean(record?.estimationDegraded) || optimistic === null || mostLikely === null || pessimistic === null;
+  const baseline = expected ?? aiEstimated ?? originalEstimate ?? 0;
+
+  return {
+    optimistic,
+    mostLikely,
+    pessimistic,
+    expected: expected ?? baseline,
+    originalEstimate,
+    baseline,
+    degraded,
+  };
+};
+
 const EvaluationPage = () => {
   const { taskId } = useParams();
   const location = useLocation();
@@ -196,11 +226,13 @@ const EvaluationPage = () => {
   };
 
   const renderEstimateCell = (record) => {
+    const estimate = resolveFeatureEstimate(record);
+    const baselineValue = estimate.baseline;
     const draftValue = draftValues[record.id];
     const submittedValue = record.myEvaluation !== null && record.myEvaluation !== undefined ? record.myEvaluation : undefined;
-    const displayValue = draftValue !== undefined ? draftValue : (submittedValue !== undefined ? submittedValue : record.aiEstimatedDays);
-    const isEdited = (draftValue !== undefined && draftValue !== record.aiEstimatedDays)
-      || (draftValue === undefined && submittedValue !== undefined && submittedValue !== record.aiEstimatedDays);
+    const displayValue = draftValue !== undefined ? draftValue : (submittedValue !== undefined ? submittedValue : baselineValue);
+    const isEdited = (draftValue !== undefined && draftValue !== baselineValue)
+      || (draftValue === undefined && submittedValue !== undefined && submittedValue !== baselineValue);
 
     if (hasSubmitted) {
       return (
@@ -242,6 +274,31 @@ const EvaluationPage = () => {
         tabIndex={0}
       >
         <Text style={{ color: isEdited ? '#000' : '#999' }}>{displayValue}</Text>
+      </div>
+    );
+  };
+
+  const renderExpandedEstimate = (record) => {
+    const estimate = resolveFeatureEstimate(record);
+
+    if (estimate.degraded) {
+      return (
+        <Alert
+          type="warning"
+          showIcon
+          message="LLM 估算未成功，显示为拆分阶段原始估值"
+        />
+      );
+    }
+
+    return (
+      <div style={{ background: '#f6fbff', border: '1px solid #d6e4ff', borderRadius: 8, padding: 12 }}>
+        <Space direction="vertical" size={6}>
+          <Text>乐观值：{estimate.optimistic}</Text>
+          <Text>最可能值：{estimate.mostLikely}</Text>
+          <Text>悲观值：{estimate.pessimistic}</Text>
+          <Text>估算理由：{record.reasoning || 'LLM 未返回理由'}</Text>
+        </Space>
       </div>
     );
   };
@@ -324,7 +381,7 @@ const EvaluationPage = () => {
   };
 
   const estimateColumn = {
-    title: '预估人天数',
+    title: '期望人天数',
     key: 'estimate',
     width: 140,
     render: (_, record) => renderEstimateCell(record),
@@ -473,6 +530,10 @@ const EvaluationPage = () => {
                   rowKey="id"
                   dataSource={systemsData[systemName]}
                   columns={resolvedColumns}
+                  expandable={{
+                    expandRowByClick: true,
+                    expandedRowRender: renderExpandedEstimate,
+                  }}
                   pagination={false}
                   scroll={{ x: 1400 }}
                   rowClassName={(record) => (highDeviationSet.has(record.id) ? 'row-high-deviation' : '')}

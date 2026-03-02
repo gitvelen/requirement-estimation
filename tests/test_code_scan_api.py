@@ -191,6 +191,35 @@ def test_code_scan_path_not_allowlist_returns_scan004(client, tmp_path):
     assert payload["request_id"] == "req_scan_allowlist"
 
 
+def test_code_scan_accepts_human_friendly_option_fields(client):
+    owner = _seed_user("owner_human_options", "owner123", ["manager"])
+    token = _login(client, "owner_human_options", "owner123")
+
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    repo_path = _create_repo(Path(settings.REPORT_DIR), "repo-human-options")
+
+    response = client.post(
+        "/api/v1/code-scan/jobs",
+        json={
+            "system_name": "HOP",
+            "system_id": "sys_hop",
+            "repo_path": repo_path,
+            "scan_paths": "src/main/java\nsrc/test/java",
+            "exclude_dirs": "target,build",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+
+    job_id = response.json()["job_id"]
+    service = code_scan_service.get_code_scan_service()
+    job = service.get_status(job_id)
+    assert job is not None
+    options = job.get("options") or {}
+    assert options.get("paths") == ["src/main/java", "src/test/java"]
+    assert options.get("exclude_dirs") == ["target", "build"]
+
+
 def test_code_scan_git_disabled_returns_scan001(client):
     owner = _seed_user("owner3", "owner123", ["manager"])
     token = _login(client, "owner3", "owner123")

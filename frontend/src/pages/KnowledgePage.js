@@ -30,6 +30,54 @@ import usePermission from '../hooks/usePermission';
 
 const { Title, Text, Paragraph } = Typography;
 
+const renderMetadataValue = (value, path = 'metadata') => {
+  if (value === null || value === undefined) {
+    return <Text type="secondary">-</Text>;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return <Text type="secondary">-</Text>;
+    }
+    const allPrimitive = value.every((item) => (
+      item === null || item === undefined || ['string', 'number', 'boolean'].includes(typeof item)
+    ));
+    if (allPrimitive) {
+      return <Text>{value.map((item) => String(item)).join('、')}</Text>;
+    }
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        {value.map((item, index) => (
+          <Card key={`${path}-${index}`} size="small" styles={{ body: { padding: 8 } }}>
+            {renderMetadataValue(item, `${path}-${index}`)}
+          </Card>
+        ))}
+      </Space>
+    );
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (!entries.length) {
+      return <Text type="secondary">-</Text>;
+    }
+    return (
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        {entries.map(([key, itemValue]) => (
+          <div key={`${path}-${key}`}>
+            <Text strong>{key}</Text>
+            <div style={{ marginTop: 4, paddingLeft: 10 }}>
+              {renderMetadataValue(itemValue, `${path}-${key}`)}
+            </div>
+          </div>
+        ))}
+      </Space>
+    );
+  }
+
+  return <Text>{String(value)}</Text>;
+};
+
 const KnowledgePage = () => {
   const { isAdmin, isManager } = usePermission();
   const canUpload = isManager;
@@ -433,9 +481,9 @@ const KnowledgePage = () => {
                       <>
                         <Divider />
                         <Text strong>元数据：</Text>
-                        <pre style={{ marginTop: 8, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
-                          {JSON.stringify(record.metadata, null, 2)}
-                        </pre>
+                        <div style={{ marginTop: 8, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
+                          {renderMetadataValue(record.metadata)}
+                        </div>
                       </>
                     )}
                   </div>

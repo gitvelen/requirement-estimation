@@ -23,6 +23,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/esb", tags=["ESB导入"])
 
+MAPPING_FORM_FIELD_KEYS = (
+    "service_code",
+    "scenario_code",
+    "provider_system_id",
+    "provider_system_name",
+    "service_name",
+    "consumer_system_id",
+    "consumer_system_name",
+    "status",
+    "remark",
+    "system_id",
+    "system_name",
+    "owner",
+    "center",
+    "total_interface_count",
+    "no_call_interface_count",
+)
+
 
 def _parse_mapping_json(raw_mapping_json: Optional[str]) -> Dict[str, Any]:
     if raw_mapping_json is None or str(raw_mapping_json).strip() == "":
@@ -48,6 +66,26 @@ def _parse_mapping_json(raw_mapping_json: Optional[str]) -> Dict[str, Any]:
 
         normalized[field] = str(value).strip()
 
+    return normalized
+
+
+def _parse_mapping_form_fields(raw_mapping_fields: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key in MAPPING_FORM_FIELD_KEYS:
+        raw_value = raw_mapping_fields.get(key)
+        text = str(raw_value or "").strip()
+        if not text:
+            continue
+        normalized_text = text.replace("，", ",").replace("、", ",").replace("；", ",")
+        candidates = []
+        for line in normalized_text.splitlines():
+            for part in line.split(","):
+                candidate = part.strip()
+                if candidate:
+                    candidates.append(candidate)
+        if not candidates:
+            continue
+        normalized[key] = candidates if len(candidates) > 1 else candidates[0]
     return normalized
 
 
@@ -126,6 +164,21 @@ async def import_esb(
     file: UploadFile = File(...),
     system_id: str = Form(...),
     mapping_json: Optional[str] = Form(None),
+    mapping_service_code: Optional[str] = Form(None),
+    mapping_scenario_code: Optional[str] = Form(None),
+    mapping_provider_system_id: Optional[str] = Form(None),
+    mapping_provider_system_name: Optional[str] = Form(None),
+    mapping_service_name: Optional[str] = Form(None),
+    mapping_consumer_system_id: Optional[str] = Form(None),
+    mapping_consumer_system_name: Optional[str] = Form(None),
+    mapping_status: Optional[str] = Form(None),
+    mapping_remark: Optional[str] = Form(None),
+    mapping_system_id: Optional[str] = Form(None),
+    mapping_system_name: Optional[str] = Form(None),
+    mapping_owner: Optional[str] = Form(None),
+    mapping_center: Optional[str] = Form(None),
+    mapping_total_interface_count: Optional[str] = Form(None),
+    mapping_no_call_interface_count: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
 ):
     normalized_system_id = str(system_id or "").strip()
@@ -165,6 +218,28 @@ async def import_esb(
 
     try:
         mapping_override = _parse_mapping_json(mapping_json)
+        form_mapping_override = _parse_mapping_form_fields(
+            {
+                "service_code": mapping_service_code,
+                "scenario_code": mapping_scenario_code,
+                "provider_system_id": mapping_provider_system_id,
+                "provider_system_name": mapping_provider_system_name,
+                "service_name": mapping_service_name,
+                "consumer_system_id": mapping_consumer_system_id,
+                "consumer_system_name": mapping_consumer_system_name,
+                "status": mapping_status,
+                "remark": mapping_remark,
+                "system_id": mapping_system_id,
+                "system_name": mapping_system_name,
+                "owner": mapping_owner,
+                "center": mapping_center,
+                "total_interface_count": mapping_total_interface_count,
+                "no_call_interface_count": mapping_no_call_interface_count,
+            }
+        )
+        for key, value in form_mapping_override.items():
+            if key not in mapping_override:
+                mapping_override[key] = value
     except Exception as exc:
         return build_error_response(
             request=request,

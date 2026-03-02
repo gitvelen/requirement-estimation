@@ -224,7 +224,51 @@ def _get_ai_estimate(feature: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _to_float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_estimation_detail(feature: Dict[str, Any]) -> Dict[str, Any]:
+    optimistic = _to_float_or_none(feature.get("optimistic"))
+    most_likely = _to_float_or_none(feature.get("most_likely"))
+    pessimistic = _to_float_or_none(feature.get("pessimistic"))
+
+    original_estimate = _to_float_or_none(feature.get("original_estimate"))
+    if original_estimate is None or original_estimate <= 0:
+        original_estimate = _get_ai_estimate(feature)
+    if original_estimate <= 0:
+        original_estimate = 1.0
+
+    expected = _to_float_or_none(feature.get("expected"))
+    if expected is None:
+        if optimistic is not None and most_likely is not None and pessimistic is not None:
+            expected = round((optimistic + 4 * most_likely + pessimistic) / 6, 2)
+        else:
+            expected = round(original_estimate, 2)
+    else:
+        expected = round(expected, 2)
+
+    reasoning = str(feature.get("reasoning") or feature.get("AI分析理由") or "").strip()
+    degraded = optimistic is None or most_likely is None or pessimistic is None
+
+    return {
+        "optimistic": optimistic,
+        "most_likely": most_likely,
+        "pessimistic": pessimistic,
+        "expected": expected,
+        "reasoning": reasoning,
+        "original_estimate": round(float(original_estimate), 2),
+        "degraded": degraded,
+    }
+
+
 def _build_feature_response(feature: Dict[str, Any], my_value: Optional[float] = None) -> Dict[str, Any]:
+    estimation = _extract_estimation_detail(feature)
     return {
         "id": feature.get("id"),
         "sequence": feature.get("序号", ""),
@@ -234,7 +278,15 @@ def _build_feature_response(feature: Dict[str, Any], my_value: Optional[float] =
         "inputs": _ensure_list(feature.get("输入") or feature.get("输入项") or feature.get("inputs")),
         "outputs": _ensure_list(feature.get("输出") or feature.get("输出项") or feature.get("outputs")),
         "dependencies": _ensure_list(feature.get("依赖项") or feature.get("依赖") or feature.get("dependencies")),
-        "aiEstimatedDays": _get_ai_estimate(feature),
+        "aiEstimatedDays": estimation["expected"],
+        "optimistic": estimation["optimistic"],
+        "mostLikely": estimation["most_likely"],
+        "most_likely": estimation["most_likely"],
+        "pessimistic": estimation["pessimistic"],
+        "expected": estimation["expected"],
+        "originalEstimate": estimation["original_estimate"],
+        "reasoning": estimation["reasoning"],
+        "estimationDegraded": estimation["degraded"],
         "remark": feature.get("备注") or feature.get("remark"),
         "myEvaluation": my_value
     }
@@ -647,6 +699,40 @@ def _finalize_round(task: Dict[str, Any], round_no: int) -> None:
 
     high_deviation_ids = [fid for fid, dev in deviations.items() if dev > DEVIATION_THRESHOLD]
     task.setdefault("high_deviation_features", {})[round_key] = high_deviation_ids
+
+    # 【v2.4】如果是最后一轮且已有 Phase 1 diff，计算 Phase 2 diff 并更新 correction_history
+    max_rounds = task.get("max_rounds", DEFAULT_MAX_ROUNDS)
+    if round_no >= max_rounds and task.get("pm_correction_diff"):
+        from backend.service.diff_service import get_diff_service
+        from backend.service.system_profile_service import get_system_profile_service
+        diff_service = get_diff_service()
+
+        ai_original_output = task.get("ai_original_output") or {}
+        pm_correction_diff = task.get("pm_correction_diff") or {}
+
+        # 计算 Phase 2 diff（估值级）
+        updated_diff = diff_service.compute_phase2_diff(
+            task_id=task.get("task_id"),
+            ai_original_output=ai_original_output,
+            expert_final_means=means,
+            pm_correction_diff=pm_correction_diff
+        )
+        task["pm_correction_diff"] = updated_diff
+        logger.info(f"[任务 {task.get('task_id')}] Phase 2 diff 已计算")
+
+        # 更新系统画像的 ai_correction_history
+        try:
+            system_profile_service = get_system_profile_service()
+            systems = task.get("systems") or []
+            for system_name in systems:
+                if system_name in updated_diff:
+                    diff_service.update_correction_history(
+                        system_profile_service=system_profile_service,
+                        system_id=system_name,
+                        pm_correction_diff={system_name: updated_diff[system_name]}
+                    )
+        except Exception as e:
+            logger.warning(f"[任务 {task.get('task_id')}] 更新 correction_history 失败: {e}")
 
     report_path = _generate_round_report(task, round_no)
     if report_path:
@@ -1203,7 +1289,7 @@ def process_task_sync(task_id: str, file_path: str):
         orchestrator = get_agent_orchestrator()
 
         # 处理需求评估（传递进度回调）
-        report_path, systems_data, ai_system_analysis = orchestrator.process_with_retry(
+        report_path, systems_data, ai_system_analysis, ai_original_output = orchestrator.process_with_retry(
             task_id=task_id,
             requirement_data=requirement_data,
             max_retry=settings.TASK_RETRY_TIMES,
@@ -1226,6 +1312,8 @@ def process_task_sync(task_id: str, file_path: str):
                 task["requirement_name"] = requirement_name
                 task["requirement_content"] = requirement_data.get("requirement_content", "")
                 task["ai_system_analysis"] = ai_system_analysis
+                # 【v2.4】保存 AI 原始输出快照
+                task["ai_original_output"] = ai_original_output
                 # 更新任务状态
                 task["status"] = "completed"
                 task["ai_status"] = "completed"
@@ -2236,9 +2324,10 @@ async def confirm_evaluation(task_id: str):
 
     流程：
     1. 标记任务为confirmed
-    2. 使用最新的systems_data重新生成Excel
-    3. 更新report_path
-    4. 如果有回调URL，发送完成通知
+    2. 【v2.4】计算 Phase 1 diff（PM 修正）
+    3. 使用最新的systems_data重新生成Excel
+    4. 更新report_path
+    5. 如果有回调URL，发送完成通知
 
     Args:
         task_id: 任务ID
@@ -2261,6 +2350,25 @@ async def confirm_evaluation(task_id: str):
         systems_data = task.get("systems_data", {})
         if not systems_data:
             raise HTTPException(status_code=400, detail="没有可确认的评估数据")
+
+        # 【v2.4】计算 Phase 1 diff（PM 提交时）
+        ai_original_output = task.get("ai_original_output")
+        if ai_original_output:
+            from backend.service.diff_service import get_diff_service
+            diff_service = get_diff_service()
+
+            pm_correction_diff = diff_service.compute_phase1_diff(
+                task_id=task_id,
+                ai_original_output=ai_original_output,
+                pm_final_systems_data=systems_data
+            )
+
+            # 保存 Phase 1 diff
+            with _task_storage_context() as data:
+                task_record = data.get(task_id)
+                if task_record:
+                    task_record["pm_correction_diff"] = pm_correction_diff
+                    logger.info(f"[任务 {task_id}] Phase 1 diff 已计算并保存")
 
         # 生成新的Excel报告（包含修正记录）
         from backend.utils.excel_generator import excel_generator
@@ -4275,6 +4383,64 @@ async def list_report_versions(
     }
 
 
+@router.get("/reports/{report_id}/export")
+async def export_report_excel(
+    report_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager"]))
+):
+    matched_task = None
+    with _task_store_lock():
+        for task in list(_load_task_storage_unlocked().values()):
+            _ensure_task_schema(task)
+            if any(str(item.get("id")) == str(report_id) for item in task.get("report_versions", []) if isinstance(item, dict)):
+                matched_task = task
+                break
+
+    if not matched_task:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="REPORT_003",
+            message="报告不存在",
+            details={"report_id": report_id},
+        )
+
+    if "admin" not in (current_user.get("roles") or []):
+        try:
+            _ensure_manager_access(matched_task, current_user)
+        except HTTPException:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "无权导出该报告", "report_id": report_id},
+            )
+
+    try:
+        from backend.utils.excel_generator import excel_generator
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_name = f"{matched_task.get('task_id')}_{report_id}_{timestamp}.xlsx"
+        output_path = os.path.join(settings.REPORT_DIR, output_name)
+        file_path = excel_generator.export_three_point_report(matched_task, output_path=output_path)
+    except Exception as exc:
+        logger.exception("导出评估报告Excel失败 report_id=%s", report_id)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="REPORT_004",
+            message="导出失败",
+            details={"report_id": report_id, "error": str(exc)},
+        )
+
+    return FileResponse(
+        path=file_path,
+        filename=os.path.basename(file_path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @router.get("/tasks/{task_id}/high-deviation")
 async def get_task_high_deviation(
     task_id: str,
@@ -4498,6 +4664,103 @@ async def download_task_document(
         filename=os.path.basename(file_path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
+
+
+@router.post("/tasks/{task_id}/estimate")
+async def estimate_task_workload(
+    task_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    with _task_storage_context() as data:
+        task = data.get(task_id)
+        if not task:
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="TASK_001",
+                message="评估任务不存在",
+                details={"task_id": task_id},
+            )
+
+        _ensure_task_schema(task)
+        _ensure_feature_ids(task)
+
+        try:
+            _ensure_manager_access(task, current_user)
+        except HTTPException:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "仅任务创建者可触发估算", "task_id": task_id},
+            )
+
+        systems_data = task.get("systems_data") if isinstance(task.get("systems_data"), dict) else {}
+        features_payload: List[Dict[str, Any]] = []
+        degraded = False
+
+        from backend.agent.work_estimation_agent import work_estimation_agent
+
+        for system_name, features in systems_data.items():
+            if not isinstance(features, list):
+                continue
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+
+                fallback = _to_float_or_none(feature.get("original_estimate"))
+                if fallback is None or fallback <= 0:
+                    fallback = _get_ai_estimate(feature)
+                if fallback <= 0:
+                    fallback = 1.0
+
+                try:
+                    detail = work_estimation_agent.estimate_three_point_for_feature(feature)
+                except Exception as exc:
+                    logger.warning("任务估算降级 task=%s feature=%s error=%s", task_id, feature.get("id"), exc)
+                    degraded = True
+                    detail = {
+                        "optimistic": None,
+                        "most_likely": None,
+                        "pessimistic": None,
+                        "expected": round(float(fallback), 2),
+                        "reasoning": None,
+                        "original_estimate": round(float(fallback), 2),
+                    }
+
+                # 兼容旧返回或测试桩：若未回传 original_estimate，则回退到 baseline。
+                resolved_original_estimate = _to_float_or_none(detail.get("original_estimate"))
+                if resolved_original_estimate is None or resolved_original_estimate <= 0:
+                    resolved_original_estimate = round(float(fallback), 2)
+
+                feature["optimistic"] = detail.get("optimistic")
+                feature["most_likely"] = detail.get("most_likely")
+                feature["pessimistic"] = detail.get("pessimistic")
+                feature["expected"] = detail.get("expected")
+                feature["reasoning"] = detail.get("reasoning")
+                feature["original_estimate"] = resolved_original_estimate
+                feature["预估人天"] = detail.get("expected")
+
+                features_payload.append(
+                    {
+                        "id": feature.get("id"),
+                        "name": feature.get("功能点") or feature.get("name") or "",
+                        "system": system_name,
+                        "optimistic": detail.get("optimistic"),
+                        "most_likely": detail.get("most_likely"),
+                        "pessimistic": detail.get("pessimistic"),
+                        "expected": detail.get("expected"),
+                        "reasoning": detail.get("reasoning"),
+                        "original_estimate": resolved_original_estimate,
+                    }
+                )
+
+    result: Dict[str, Any] = {"degraded": degraded, "features": features_payload}
+    if degraded:
+        result["code"] = "LLM_ESTIMATION_DEGRADED"
+    return result
 
 
 @router.get("/evaluation/{task_id}")
@@ -4962,14 +5225,21 @@ async def get_task_evaluation_detail(
         for feature in features:
             if not isinstance(feature, dict):
                 continue
+            estimation = _extract_estimation_detail(feature)
             features_payload.append(
                 {
                     "feature_id": feature.get("id"),
                     "description": feature.get("功能点") or feature.get("description") or feature.get("name") or "",
                     "complexity_level": feature.get("complexity_level") or feature.get("复杂度等级"),
                     "complexity_score": feature.get("complexity_score") or feature.get("复杂度分数"),
-                    "estimation_days": _get_ai_estimate(feature),
-                    "reasoning": feature.get("reasoning") or feature.get("AI分析理由") or "",
+                    "estimation_days": estimation["expected"],
+                    "optimistic": estimation["optimistic"],
+                    "most_likely": estimation["most_likely"],
+                    "pessimistic": estimation["pessimistic"],
+                    "expected": estimation["expected"],
+                    "original_estimate": estimation["original_estimate"],
+                    "reasoning": estimation["reasoning"],
+                    "estimation_degraded": estimation["degraded"],
                     "system_name": system_name,
                 }
             )
@@ -5414,3 +5684,91 @@ async def get_feature_flags(
             message="Feature Flags 查询失败",
             details={"reason": str(exc)},
         )
+
+
+# 【v2.4】新增 API-009 和 API-010 接口
+
+@router.get("/tasks/{task_id}/ai-output")
+async def get_ai_original_output(
+    task_id: str,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
+):
+    """
+    获取 AI 原始输出快照（API-009）
+
+    Args:
+        task_id: 任务ID
+        current_user: 当前用户
+
+    Returns:
+        Dict: AI 原始输出快照
+    """
+    task = _get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    _ensure_task_schema(task)
+
+    # 权限校验
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
+
+    ai_original_output = task.get("ai_original_output") or {
+        "system_recognition": None,
+        "feature_split": None,
+        "work_estimation": None
+    }
+
+    return {
+        "code": 200,
+        "data": {
+            "task_id": task_id,
+            "ai_original_output": ai_original_output
+        }
+    }
+
+
+@router.get("/tasks/{task_id}/correction-diff")
+async def get_correction_diff(
+    task_id: str,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin", "manager", "expert"]))
+):
+    """
+    获取 PM 修正 diff（API-010）
+
+    Args:
+        task_id: 任务ID
+        current_user: 当前用户
+
+    Returns:
+        Dict: PM 修正 diff
+    """
+    task = _get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    _ensure_task_schema(task)
+
+    # 权限校验
+    roles = current_user.get("roles", [])
+    if "admin" not in roles:
+        if "manager" in roles:
+            _ensure_manager_access(task, current_user)
+        elif "expert" in roles:
+            if not _expert_has_task_access(task, current_user):
+                raise HTTPException(status_code=403, detail="无权访问该任务")
+
+    pm_correction_diff = task.get("pm_correction_diff") or {}
+
+    return {
+        "code": 200,
+        "data": {
+            "task_id": task_id,
+            "pm_correction_diff": pm_correction_diff
+        }
+    }

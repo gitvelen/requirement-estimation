@@ -21,6 +21,8 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
+    "lint": "eslint \"src/**/*.{js,jsx}\"",
+    "lint:system-profile-import": "eslint --max-warnings=0 src/pages/SystemProfileImportPage.js src/__tests__/systemProfileImportPage.render.test.js",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

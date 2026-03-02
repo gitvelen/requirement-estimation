@@ -4,6 +4,7 @@ Excel报告生成模块
 """
 import os
 import logging
+import json
 from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -414,6 +415,129 @@ class ExcelGenerator:
 
         # 冻结窗格：冻结前10列（A-J）和第一行
         ws.freeze_panes = "K2"
+
+    def _to_float_or_none(self, value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _to_cell_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return "、".join(str(item).strip() for item in value if str(item).strip())
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    def export_three_point_report(self, task: Dict[str, Any], output_path: Optional[str] = None) -> str:
+        """导出 v2.4 三点估计 Excel 报告。"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "功能点明细"
+
+        headers = [
+            "系统",
+            "序号",
+            "功能模块",
+            "功能点",
+            "业务描述",
+            "输入",
+            "输出",
+            "依赖项",
+            "复杂度等级",
+            "备注",
+            "预估人天参考",
+            "optimistic",
+            "most_likely",
+            "pessimistic",
+            "expected",
+            "reasoning",
+        ]
+
+        for col_idx, header_text in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=header_text)
+            cell.font = self.header_font
+            cell.fill = self.header_fill
+            cell.alignment = self.header_alignment
+            cell.border = self.border
+
+        row_idx = 2
+        systems_data = task.get("systems_data") if isinstance(task.get("systems_data"), dict) else {}
+        for system_name, features in systems_data.items():
+            if not isinstance(features, list):
+                continue
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+
+                optimistic = self._to_float_or_none(feature.get("optimistic"))
+                most_likely = self._to_float_or_none(feature.get("most_likely"))
+                pessimistic = self._to_float_or_none(feature.get("pessimistic"))
+                expected = self._to_float_or_none(feature.get("expected"))
+                if expected is not None:
+                    expected = round(expected, 2)
+                reasoning = str(feature.get("reasoning") or "").strip()
+
+                estimation_ok = optimistic is not None and most_likely is not None and pessimistic is not None
+                if estimation_ok:
+                    optimistic_cell: Any = round(optimistic, 2)
+                    most_likely_cell: Any = round(most_likely, 2)
+                    pessimistic_cell: Any = round(pessimistic, 2)
+                    expected_cell: Any = expected if expected is not None else round((optimistic + 4 * most_likely + pessimistic) / 6, 2)
+                    reasoning_cell: Any = reasoning or "LLM 未返回理由"
+                    reference_cell: Any = expected_cell
+                else:
+                    optimistic_cell = "N/A"
+                    most_likely_cell = "N/A"
+                    pessimistic_cell = "N/A"
+                    expected_cell = "N/A"
+                    reasoning_cell = "LLM 估算未成功"
+                    reference_cell = "N/A"
+
+                row_values = [
+                    system_name,
+                    feature.get("序号") or "",
+                    feature.get("功能模块") or "",
+                    feature.get("功能点") or feature.get("name") or "",
+                    self._to_cell_text(feature.get("业务描述") or feature.get("description") or ""),
+                    self._to_cell_text(feature.get("输入") or feature.get("inputs") or ""),
+                    self._to_cell_text(feature.get("输出") or feature.get("outputs") or ""),
+                    self._to_cell_text(feature.get("依赖项") or feature.get("依赖") or feature.get("dependencies") or ""),
+                    feature.get("复杂度等级") or feature.get("复杂度") or "",
+                    feature.get("备注") or feature.get("remark") or "",
+                    reference_cell,
+                    optimistic_cell,
+                    most_likely_cell,
+                    pessimistic_cell,
+                    expected_cell,
+                    reasoning_cell,
+                ]
+
+                for col_idx, value in enumerate(row_values, start=1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.alignment = self.cell_alignment
+                    cell.border = self.border
+
+                row_idx += 1
+
+        column_widths = [12, 8, 14, 20, 30, 20, 20, 20, 12, 18, 12, 12, 12, 12, 12, 40]
+        for col_idx, width in enumerate(column_widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        ws.row_dimensions[1].height = 28
+        ws.freeze_panes = "A2"
+
+        if not output_path:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            task_id = str(task.get("task_id") or "task")
+            output_path = os.path.join(self.report_dir, f"{task_id}_three_point_{timestamp}.xlsx")
+
+        wb.save(output_path)
+        return output_path
 
 
 # 全局生成器实例

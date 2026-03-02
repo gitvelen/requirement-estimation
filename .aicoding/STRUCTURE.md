@@ -50,6 +50,8 @@
    - **Squash merge 时的 CR-ID 规则**：Squash 后的单条 commit 消息必须包含本次涉及的所有 CR-ID，格式：`feat: <描述> [CR-YYYYMMDD-001, CR-YYYYMMDD-002]`
    - PR 标题/描述中也应列出所有 CR-ID，便于追溯
 5. **禁止危险操作**：`push --force`、`reset --hard`、`branch -D` 等必须经用户授权
+6. **远端同步**：非 PR 的主分支操作（打 tag、hotfix 合入等）完成后，须将 commit 和 tag 一并 push 到远端，确认 `ahead_by=0`
+7. **Commit message 自动生成**：AI 根据 diff 按现有格式规范（`<type>: <描述>`，有 CR 时加 `[CR-ID]`）自动生成，无需询问用户
 
 ## 变更单（CR）
 - 适用：已完成/已测试后出现新需求或范围调整

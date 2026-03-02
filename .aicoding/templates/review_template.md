@@ -17,8 +17,8 @@
 
 ## 选用规则
 
-1. **ChangeManagement 阶段**：自由格式审查（人工介入期），结果追加到 `review_change_management.md`
-2. **Proposal 阶段**：自由格式审查（人工介入期），结果追加到 `review_proposal.md`
+1. **ChangeManagement 阶段**：自由格式审查（人工介入期），结果追加到 `review_change_management.md`；建议参照 REP 协议执行事实核实
+2. **Proposal 阶段**：自由格式审查（人工介入期），结果追加到 `review_proposal.md`；建议参照 REP 协议执行事实核实和概念交叉引用
 3. **Requirements 阶段**：使用 `review_requirements_template.md`（已有独立验证逻辑：CONSTRAINTS-CHECKLIST + CONSTRAINTS-CONFIRMATION）
 4. **Design 阶段**：使用 `review_design_template.md`（轻量，聚焦需求覆盖、架构合理性、API 契约）
 5. **Planning 阶段**：使用 `review_planning_template.md`（轻量，聚焦任务可执行性、需求反向覆盖）
@@ -35,6 +35,7 @@
 - **证据驱动**：列出"你验证了什么、怎么验证、关键输出是什么"；避免仅凭推断
 - **对抗性自检**：自审时必填，缓解"自己写自己审"的盲区
 - **机器可读摘要块**：门禁只认最后一次摘要块，计数必须可验真
+- **审查执行协议（REP）**：所有审查必须按 A→B→C→D 四步执行（详见 cr-rules.md §审查执行协议）；第 2+ 轮追加步骤 E
 
 ## 落盘路径约定
 

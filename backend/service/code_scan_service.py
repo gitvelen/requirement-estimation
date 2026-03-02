@@ -147,17 +147,29 @@ class CodeScanService:
         if not isinstance(options, dict):
             return normalized
 
+        def _normalize_list_option(raw_value: Any) -> List[str]:
+            if isinstance(raw_value, list):
+                return [str(item).strip() for item in raw_value if str(item).strip()]
+            if isinstance(raw_value, str):
+                text = raw_value.replace("，", ",").replace("、", ",").replace("；", ",")
+                values = []
+                for line in text.splitlines():
+                    for part in line.split(","):
+                        candidate = part.strip()
+                        if candidate:
+                            values.append(candidate)
+                return values
+            return []
+
         raw_paths = options.get("paths")
-        if isinstance(raw_paths, list):
-            paths = [str(item).strip() for item in raw_paths if str(item).strip()]
-            if paths:
-                normalized["paths"] = paths
+        paths = _normalize_list_option(raw_paths)
+        if paths:
+            normalized["paths"] = paths
 
         raw_excludes = options.get("exclude_dirs")
-        if isinstance(raw_excludes, list):
-            excludes = [str(item).strip() for item in raw_excludes if str(item).strip()]
-            if excludes:
-                normalized["exclude_dirs"] = excludes
+        excludes = _normalize_list_option(raw_excludes)
+        if excludes:
+            normalized["exclude_dirs"] = excludes
 
         return normalized
 

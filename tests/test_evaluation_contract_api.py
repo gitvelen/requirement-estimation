@@ -11,6 +11,7 @@ if ROOT_DIR not in sys.path:
 
 from backend.app import app
 from backend.api import routes as task_routes
+from backend.agent.work_estimation_agent import work_estimation_agent
 from backend.config.config import settings
 from backend.service import user_service
 
@@ -68,13 +69,19 @@ def _seed_task(task_id: str, manager, expert):
                     {
                         "id": "feat_1",
                         "功能点": "开户",
-                        "预估人天": 2,
+                        "预估人天": 2.1,
+                        "optimistic": 1.5,
+                        "most_likely": 2.0,
+                        "pessimistic": 3.0,
+                        "expected": 2.1,
                         "reasoning": "AI判断规则复杂",
+                        "original_estimate": 2.0,
                     },
                     {
                         "id": "feat_2",
                         "功能点": "销户",
                         "预估人天": 1,
+                        "original_estimate": 1.0,
                     },
                 ]
             },
@@ -159,3 +166,53 @@ def test_task_evaluation_detail_contract(client):
     features = payload.get("features") or []
     assert len(features) == 2
     assert all(item.get("feature_id") for item in features)
+    feature_map = {item.get("feature_id"): item for item in features}
+    assert feature_map["feat_1"]["optimistic"] == pytest.approx(1.5)
+    assert feature_map["feat_1"]["most_likely"] == pytest.approx(2.0)
+    assert feature_map["feat_1"]["pessimistic"] == pytest.approx(3.0)
+    assert feature_map["feat_1"]["expected"] == pytest.approx(2.1)
+    assert feature_map["feat_1"]["estimation_degraded"] is False
+    assert feature_map["feat_2"]["expected"] == pytest.approx(1.0)
+    assert feature_map["feat_2"]["estimation_degraded"] is True
+
+
+def test_task_estimate_contract_access_control(client, monkeypatch):
+    manager = _seed_user("estimate_mgr_owner", "pwd123", ["manager"])
+    outsider = _seed_user("estimate_mgr_outsider", "pwd123", ["manager"])
+    expert = _seed_user("estimate_exp", "pwd123", ["expert"])
+
+    owner_token = _login(client, "estimate_mgr_owner", "pwd123")
+    outsider_token = _login(client, "estimate_mgr_outsider", "pwd123")
+
+    _seed_task("task_estimate_contract", manager, expert)
+
+    monkeypatch.setattr(
+        work_estimation_agent,
+        "estimate_three_point_for_feature",
+        lambda *args, **kwargs: {
+            "optimistic": 1.0,
+            "most_likely": 2.0,
+            "pessimistic": 3.0,
+            "expected": 2.0,
+            "reasoning": "估算依据",
+        },
+        raising=False,
+    )
+
+    allowed = client.post(
+        "/api/v1/tasks/task_estimate_contract/estimate",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload.get("degraded") is False
+    features = payload.get("features") or []
+    assert len(features) == 2
+    assert all("expected" in item for item in features)
+
+    denied = client.post(
+        "/api/v1/tasks/task_estimate_contract/estimate",
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+    assert denied.status_code == 403
+    assert denied.json().get("error_code") == "AUTH_001"
