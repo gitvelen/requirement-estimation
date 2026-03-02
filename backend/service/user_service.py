@@ -33,6 +33,14 @@ ROLE_MAP = {
     "expert": "expert",
 }
 
+INTERNAL_DEFAULT_USERS = (
+    {"username": "admin", "roles": ["admin"]},
+    {"username": "manager", "roles": ["manager"]},
+    {"username": "expert1", "roles": ["expert"]},
+    {"username": "expert2", "roles": ["expert"]},
+    {"username": "expert3", "roles": ["expert"]},
+)
+
 
 @contextmanager
 def _user_store_lock():
@@ -174,3 +182,65 @@ def update_user_record(user: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, 
 
 def record_login(user: Dict[str, Any]) -> None:
     user["last_login_at"] = datetime.now().isoformat()
+
+
+def ensure_internal_default_users(force_reset_password: bool = True) -> Dict[str, int]:
+    created = 0
+    updated = 0
+
+    with user_storage_context() as users:
+        existing_by_username: Dict[str, Dict[str, Any]] = {}
+        for item in users:
+            if not isinstance(item, dict):
+                continue
+            username = str(item.get("username") or "").strip()
+            if username and username not in existing_by_username:
+                existing_by_username[username] = item
+
+        for default_user in INTERNAL_DEFAULT_USERS:
+            username = default_user["username"]
+            expected_roles = list(default_user["roles"])
+            expected_password_hash = hash_password(username)
+            existing_user = existing_by_username.get(username)
+
+            if existing_user is None:
+                users.append(
+                    create_user_record(
+                        {
+                            "username": username,
+                            "display_name": username,
+                            "password": username,
+                            "roles": expected_roles,
+                            "on_duty": True,
+                            "is_active": True,
+                        }
+                    )
+                )
+                created += 1
+                continue
+
+            changed = False
+            if force_reset_password and existing_user.get("password_hash") != expected_password_hash:
+                existing_user["password_hash"] = expected_password_hash
+                changed = True
+
+            if normalize_roles(existing_user.get("roles")) != expected_roles:
+                existing_user["roles"] = expected_roles
+                changed = True
+
+            if not str(existing_user.get("display_name") or "").strip():
+                existing_user["display_name"] = username
+                changed = True
+
+            if existing_user.get("is_active") is not True:
+                existing_user["is_active"] = True
+                changed = True
+
+            if existing_user.get("on_duty") is not True:
+                existing_user["on_duty"] = True
+                changed = True
+
+            if changed:
+                updated += 1
+
+    return {"created": created, "updated": updated, "total_defaults": len(INTERNAL_DEFAULT_USERS)}

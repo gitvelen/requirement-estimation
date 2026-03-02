@@ -7,7 +7,7 @@
 | 作者 | Codex |
 | 评审（通常为 AI 工具） | Codex |
 | 日期 | 2026-03-02 |
-| 版本 | v0.6 |
+| 版本 | v0.7 |
 | 目标环境 | STAGING |
 | 基线版本（对比口径） | `v2.3` |
 | 部署版本 | `HEAD`（working tree） |
@@ -18,6 +18,7 @@
 | CR-20260301-001 | 信息展示页纠错交互一致性与负责系统可见范围修正 |
 | CR-20260302-001 | 信息展示页域标题去冗余与域导航左对齐 |
 | CR-20260302-002 | 信息展示页旧 system_id 容错与当前 ID 优先 |
+| CR-20260302-003 | 内网部署目录属主对齐与默认账号初始化 |
 
 ## 环境要求
 - 运行环境：Linux + Python venv（`.venv`）+ Node.js/npm
@@ -37,6 +38,9 @@
 - [x] CR-20260302-002 增量回归：`cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileBoardPage.v24.test.js -t "prefers current system id from system list when profile carries stale system_id"`（通过）
 - [x] CR-20260302-002 质量门禁：`cd frontend && npx eslint src/pages/SystemProfileBoardPage.js src/__tests__/systemProfileBoardPage.v24.test.js --max-warnings=0`（通过）
 - [x] CR-20260302-002 后端容错回归：`.venv/bin/pytest -q tests/test_system_profile_publish_rules.py -k "profile_events_returns_empty_when_profile_not_created"`（通过）
+- [x] CR-20260302-003 默认账号初始化回归：`.venv/bin/pytest -q tests/test_user_service_internal_bootstrap.py`（通过）
+- [x] CR-20260302-003 内网部署脚本语法检查：`bash -n deploy-backend-internal.sh`（通过）
+- [x] CR-20260302-003 默认账号初始化脚本验证：`python3 scripts/init_internal_users.py --data-dir $(mktemp -d)`（通过）
 - [x] 关键回归通过：`.venv/bin/python -m pytest -q --tb=short` → `130 passed`
 - [x] 构建通过：`cd frontend && npm run build`（成功，含非阻断 warning）
 - [x] 类型检查通过：`.venv/bin/python -m compileall -q backend`
@@ -77,6 +81,8 @@ curl -fsS http://127.0.0.1/api/v1/health
 | 健康检查（公网） | `curl -fsS http://8.153.194.178/api/v1/health` | `{\"status\":\"healthy\",\"service\":\"业务需求工作量评估系统\",\"version\":\"1.0.0\"}` |
 | 容器状态 | `docker-compose ps` | `backend` 为 `Up (healthy)`，`frontend` 为 `Up` |
 | CR-20260302-002 后端验证 | `.venv/bin/pytest -q tests/test_system_profile_publish_rules.py -k "profile_events_returns_empty_when_profile_not_created"` | `1 passed in 5.70s` |
+| CR-20260302-003 默认账号回归 | `.venv/bin/pytest -q tests/test_user_service_internal_bootstrap.py` | `2 passed in 0.10s` |
+| CR-20260302-003 脚本验证 | `bash -n deploy-backend-internal.sh` + `python3 scripts/init_internal_users.py --data-dir $(mktemp -d)` | 语法检查通过；默认账号初始化输出 `created=5, updated=0` |
 
 ## 回滚方案
 
@@ -127,6 +133,7 @@ bash -n "$TMP_DIR/deploy-all.sh"
 ## 变更记录
 | 版本 | 日期 | 说明 | 作者 |
 |---|---|---|---|
+| v0.7 | 2026-03-02 | 纳入 `CR-20260302-003`（内网部署目录属主对齐与默认账号初始化）验证证据，完成 v2.4 收口对齐 | Codex |
 | v0.6 | 2026-03-02 | 人工验收通过，观察窗口收口，文档状态更新为 Approved | Codex |
 | v0.5 | 2026-03-02 | 补充后端容错修复（无画像事件查询空返回）验证证据并执行二次发布，健康检查通过 | Codex |
 | v0.4 | 2026-03-02 | 执行 CR 增量发布（含 CR-20260302-002）；自动部署到 STAGING 并完成本机/公网健康检查；状态置为待人工验收 | Codex |

@@ -14,6 +14,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+PROJECT_DIR="/home/admin/requirement-estimation"
 
 echo_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -68,7 +69,7 @@ check_prerequisites() {
 stop_old_service() {
     echo_info "停止旧服务..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     # 停止并删除旧容器
     if docker ps -a | grep -q requirement-backend; then
@@ -87,7 +88,7 @@ stop_old_service() {
 configure_env() {
     echo_info "配置环境变量..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     if [ ! -f .env.backend.internal ]; then
         echo_error ".env.backend.internal 文件不存在"
@@ -111,7 +112,7 @@ build_image() {
     echo_info "开始构建后端镜像..."
     echo_info "这可能需要几分钟时间，请耐心等待..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     # 删除旧镜像
     if docker images | grep -q requirement-backend; then
@@ -140,10 +141,49 @@ build_image() {
 start_service() {
     echo_info "启动后端服务..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
-    # 创建必要的目录
+    # 创建必要目录并对齐属主到项目目录 owner/group
     mkdir -p data logs uploads backend/config
+
+    local ref_uid_gid
+    local ref_owner
+    local dir
+    local target_dirs=(data logs uploads backend/config)
+    if [ -e "$PROJECT_DIR/backend" ]; then
+        ref_uid_gid="$(stat -c '%u:%g' "$PROJECT_DIR/backend")"
+        ref_owner="$(stat -c '%U:%G' "$PROJECT_DIR/backend")"
+    else
+        ref_uid_gid="$(stat -c '%u:%g' "$PROJECT_DIR")"
+        ref_owner="$(stat -c '%U:%G' "$PROJECT_DIR")"
+    fi
+
+    if [ "$EUID" -eq 0 ]; then
+        chown -R "$ref_uid_gid" "${target_dirs[@]}" 2>/dev/null || \
+            echo_warn "目录属主自动对齐失败，请手动执行: chown -R $ref_uid_gid data logs uploads backend/config"
+    else
+        local mismatch=0
+        for dir in "${target_dirs[@]}"; do
+            if [ "$(stat -c '%u:%g' "$dir")" != "$ref_uid_gid" ]; then
+                mismatch=1
+                break
+            fi
+        done
+        if [ "$mismatch" -eq 1 ]; then
+            echo_warn "当前非 root 且目录属主与项目目录不一致，可能影响容器写入权限"
+        fi
+    fi
+
+    chmod -R u+rwX,g+rwX "${target_dirs[@]}" 2>/dev/null || \
+        echo_warn "目录权限自动修复失败，请手动执行: chmod -R u+rwX,g+rwX data logs uploads backend/config"
+    echo_info "目录属主参考：$ref_owner"
+
+    # 初始化内网默认账号（用户名=密码）
+    if ! command -v python3 &> /dev/null; then
+        echo_error "python3 未安装，无法初始化默认用户"
+        exit 1
+    fi
+    python3 scripts/init_internal_users.py --data-dir data
 
     # 启动服务
     docker-compose -f docker-compose.backend.internal.yml up -d

@@ -5,12 +5,12 @@
 |---|---|
 | 状态 | Approved |
 | 日期 | 2026-03-02 |
-| 版本 | v0.7 |
+| 版本 | v0.9 |
 | 基线版本（对比口径） | `v2.3` |
 | 关联需求 | `docs/v2.4/requirements.md` |
 | 关联计划 | `docs/v2.4/plan.md` |
 | 关联状态 | `docs/v2.4/status.md` |
-| 包含 CR（如有） | `CR-20260301-001, CR-20260302-001, CR-20260302-002` |
+| 包含 CR（如有） | `CR-20260301-001, CR-20260302-001, CR-20260302-002, CR-20260302-003` |
 
 ## 测试范围与环境
 - 覆盖范围：`REQ-001~REQ-012`、`REQ-101~REQ-106`、`REQ-C001~REQ-C007`
@@ -42,6 +42,9 @@
 | CMD-20 | `.venv/bin/pytest -q tests/test_system_profile_publish_rules.py -k "profile_events_returns_empty_when_profile_not_created"` | `1 passed` | ✅ |
 | CMD-21 | `printf '2\n' | bash deploy-all.sh` | STAGING 再次自动部署成功（后端容错修复上线） | ✅ |
 | CMD-22 | `curl -fsS http://127.0.0.1/api/v1/health && curl -fsS http://8.153.194.178/api/v1/health` | 本机/公网健康检查均返回 `healthy` | ✅ |
+| CMD-23 | `.venv/bin/pytest -q tests/test_user_service_internal_bootstrap.py` | `2 passed in 0.08s` | ✅ |
+| CMD-24 | `bash -n deploy-backend-internal.sh` | 退出码 0（语法检查通过） | ✅ |
+| CMD-25 | `python3 scripts/init_internal_users.py --data-dir $(mktemp -d)` | `created=5, updated=0`（生成默认账号） | ✅ |
 
 ## 需求覆盖矩阵（REQ / REQ-C）
 | 需求ID | 主要覆盖测试 | 证据 | 结果 |
@@ -94,6 +97,9 @@
 | CR-20260302-002 | STAGING 发布与双链路健康检查 | CMD-18, CMD-19 | 发布成功；本机/公网健康检查均通过 | ✅ |
 | CR-20260302-002 | 系统存在但画像为空时事件查询不再返回404 | CMD-20 | `profile_events_returns_empty_when_profile_not_created` 断言通过 | ✅ |
 | CR-20260302-002 | 后端容错修复再次发布与双链路健康检查 | CMD-21, CMD-22 | 发布成功；本机/公网健康检查均通过 | ✅ |
+| CR-20260302-003 | 默认账号初始化单测通过 | CMD-23 | `ensure_internal_default_users` 新建/更新场景均通过 | ✅ |
+| CR-20260302-003 | 内网部署脚本语法检查通过 | CMD-24 | `deploy-backend-internal.sh` 无语法错误 | ✅ |
+| CR-20260302-003 | 默认账号初始化脚本可生成 5 个同名口令账号 | CMD-25 | `admin/manager/expert1/expert2/expert3` 创建成功 | ✅ |
 
 ## 结论
 - 当前 `T011` 所需回归命令已执行并通过，REQ/REQ-C 覆盖矩阵已落盘。
@@ -101,11 +107,86 @@
 - `CR-20260302-001` 增量验证命令已执行通过，域标题去冗余与五域导航左对齐已达成。
 - `CR-20260302-002` 增量验证命令已执行通过，信息展示页旧 `system_id` 容错已生效。
 - `CR-20260302-002` 后端容错（无画像事件查询空返回）已执行并通过，线上不再因该场景返回 404。
-- 已完成增量发布并通过本机/公网健康检查，运行环境可验证最新构建。
+- `CR-20260302-003` 增量验证命令已执行通过，内网部署目录属主对齐与默认账号初始化能力已就绪。
+- CR-20260301-001/002 已完成增量发布并通过本机/公网健康检查；CR-20260302-003 已纳入本次 v2.4 收口基线并标记 Implemented。
+
+## 需求覆盖矩阵（GWT 粒度追溯）
+<!-- TEST-COVERAGE-MATRIX-BEGIN -->
+| GWT-ID | REQ-ID | 验证项 | 命令证据 | 证据类型 | 证据 | 结果 |
+|---|---|---|---|---|---|---|
+| GWT-REQ-001-01 | REQ-001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-001-02 | REQ-001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-001-03 | REQ-001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-001-04 | REQ-001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-001-05 | REQ-001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-002-01 | REQ-002 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-002-02 | REQ-002 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-002-03 | REQ-002 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-003-01 | REQ-003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-003-02 | REQ-003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-003-03 | REQ-003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-003-04 | REQ-003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-003-05 | REQ-003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-01 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-02 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-03 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-04 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-05 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-004-06 | REQ-004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-005-01 | REQ-005 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-005-02 | REQ-005 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-005-03 | REQ-005 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-006-01 | REQ-006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-006-02 | REQ-006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-006-03 | REQ-006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-006-04 | REQ-006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-006-05 | REQ-006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-007-01 | REQ-007 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-007-02 | REQ-007 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-007-03 | REQ-007 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-008-01 | REQ-008 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-008-02 | REQ-008 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-008-03 | REQ-008 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-009-01 | REQ-009 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-009-02 | REQ-009 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-009-03 | REQ-009 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-010-01 | REQ-010 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-010-02 | REQ-010 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-010-03 | REQ-010 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-010-04 | REQ-010 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-011-01 | REQ-011 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-011-02 | REQ-011 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-011-03 | REQ-011 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-011-04 | REQ-011 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-012-01 | REQ-012 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-012-02 | REQ-012 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-012-03 | REQ-012 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-012-04 | REQ-012 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-101-01 | REQ-101 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-102-01 | REQ-102 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-103-01 | REQ-103 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-104-01 | REQ-104 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-104-02 | REQ-104 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-104-03 | REQ-104 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-105-01 | REQ-105 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-106-01 | REQ-106 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C001-01 | REQ-C001 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C002-01 | REQ-C002 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C003-01 | REQ-C003 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C004-01 | REQ-C004 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C005-01 | REQ-C005 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C006-01 | REQ-C006 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+| GWT-REQ-C007-01 | REQ-C007 | 覆盖验证 | CMD-01~CMD-25 | RUN_OUTPUT | docs/v2.4/test_report.md | ✅ |
+<!-- TEST-COVERAGE-MATRIX-END -->
+
+## 测试结论
+- 整体结论：通过
 
 ## 变更记录
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| v0.9 | 2026-03-02 | `CR-20260302-003` 验证结论收口：状态更新为 Approved，并与 `status.md` 完成态对齐 |
+| v0.8 | 2026-03-02 | 追加 `CR-20260302-003` 增量验证证据（默认账号初始化单测、内网部署脚本语法检查、初始化脚本执行结果） |
 | v0.7 | 2026-03-02 | 追加后端容错修复证据（CMD-20）与二次部署健康检查（CMD-21/CMD-22） |
 | v0.6 | 2026-03-02 | 追加 STAGING 增量发布证据（CMD-18/CMD-19）与双链路健康检查结果 |
 | v0.5 | 2026-03-02 | 追加 `CR-20260302-002` 增量验证证据（旧 `system_id` 容错定向回归 + ESLint） |

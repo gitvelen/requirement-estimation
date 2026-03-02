@@ -1,20 +1,20 @@
 ---
 _baseline: v2.3
 _current: HEAD
-_workflow_mode: auto
-_run_status: running
-_change_status: in_progress
+_workflow_mode: semi-auto
+_run_status: completed
+_change_status: done
 _change_level: major
 _review_round: 0
-_phase: Testing
+_phase: Deployment
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.4 |
 | 变更目录 | `docs/v2.4/` |
-| 当前阶段 | Testing |
-| 变更状态 | In Progress |
+| 当前阶段 | Deployment |
+| 变更状态 | Done |
 | 变更分级 | major |
 | 基线版本（对比口径） | v2.3 |
 | 当前代码版本 | HEAD |
@@ -22,7 +22,7 @@ _phase: Testing
 | 当前执行 AI | Codex |
 | 人类决策人 |  |
 | 最后更新 | 2026-03-02 |
-| 完成日期 | - |
+| 完成日期 | 2026-03-02 |
 
 ## 变更摘要
 - v2.4 系统画像增强与评估机制优化：文档导入页重构、系统画像展示增强（时间线+inline diff）、AI 结构化信息提取与字段更新、画像建议回滚机制、工作量估算机制激活、评估经验资产沉淀机制
@@ -50,7 +50,7 @@ _phase: Testing
 ## Active CR 列表（🔴 MUST，CR场景）
 | CR-ID | 状态 | 标题 | 影响面（文档/模块/ID） | 链接 |
 |---|---|---|---|---|
-| CR-20260302-003 | In Progress | 内网部署目录属主对齐与默认账号初始化 | plan/deploy-backend-internal/user_service/scripts/tests | `cr/CR-20260302-003.md` |
+| - | - | 当前无 Active CR | - | - |
 
 ## Idea池（可选，非Active）
 | CR-ID | 状态 | 标题 | 提出日期 | 优先级 | 链接 |
@@ -78,16 +78,16 @@ _phase: Testing
 - v2.4 为 Major 级别变更（前后端多模块改动），走完整 8 阶段流程。
 - 2026-03-01：T010（三点估计展示与导出联动）、T011（全量回归与覆盖矩阵）、T012（部署清单与回滚演练）均已完成，相关证据已回写 `review_implementation.md`、`review_testing.md`、`deployment.md`。
 - 2026-03-01：已按 STAGING 路径执行 `printf '2\\n' | bash deploy-all.sh` 并通过健康检查，曾进入 `wait_confirm` 等待验收。
-- 2026-03-01：收到用户“继续”指令后完成收口，状态切换为 `_change_status: in_progress` + `_run_status: running`。
+- 2026-03-01：收到用户“继续”指令后完成收口，状态切换为 `_change_status: done` + `_run_status: completed`。
 - 2026-03-01：主文档同步清单已补齐（系统功能说明书/技术方案设计/接口文档/用户手册/部署记录）。
 - 2026-03-01：收到用户“走CR”指令后新增 `CR-20260301-001`，状态回切为进行中（`_change_status: in_progress` + `_run_status: running`），复查口径切换为 `diff-only`。
 - 2026-03-02：新增 `CR-20260302-001`（去冗余域标题 + 五域导航左对齐），继续按 `diff-only` 口径迭代。
 - 2026-03-02：新增 `CR-20260302-002`（旧 `system_id` 容错与当前 ID 优先），继续按 `diff-only` 口径迭代。
 - 2026-03-02：按 STAGING 路径执行 `printf '2\\n' | bash deploy-all.sh`，并通过本机/公网健康检查，状态置 `wait_confirm` 等待人工验收。
 - 2026-03-02：追加修复“系统存在但画像为空时 `/profile/events` 返回404”问题，完成后端容错回归与二次发布，健康检查通过。
-- 2026-03-02：人工验收通过，CR-20260301-001/CR-20260302-001/CR-20260302-002 已上线，状态切换为 `_change_status: in_progress` + `_run_status: running`。
+- 2026-03-02：人工验收通过，CR-20260301-001/CR-20260302-001/CR-20260302-002 已上线，状态切换为 `_change_status: done` + `_run_status: completed`。
 - 2026-03-02：用户新增 `CR-20260302-003`（内网部署目录属主对齐与默认账号初始化），状态回切为 `_change_status: in_progress` + `_run_status: running`。
-- 2026-03-02：`CR-20260302-003` 验证通过并完成收口，状态切换为 `_change_status: in_progress` + `_run_status: running`。
+- 2026-03-02：`CR-20260302-003` 验证通过并完成收口，状态切换为 `_change_status: done` + `_run_status: completed`。
 
 ---
 
@@ -101,7 +101,7 @@ _phase: Testing
 | Planning | Implementation | 2026-02-28 | Planning v0.1 审查收敛（P0/P1=0），任务反向覆盖门禁通过 | Codex | 12 个任务拆解完成；REQ/REQ-C 25 项反向覆盖完整；验证命令闭环 |
 | Implementation | Testing | 2026-03-01 | T010~T011 收敛并完成全量回归门禁（pytest/build/typecheck） | Codex | `test_report.md`、`review_implementation.md` 已落盘；预审门禁 130 passed |
 | Testing | Deployment | 2026-03-01 | T012 收敛并完成部署清单与回滚演练证据 | Codex | `deployment.md`、`review_testing.md` 已落盘；L1 rollback 测试通过 + L2 worktree 演练通过 |
-| Deployment | Done | 2026-03-01 | STAGING 部署成功且健康检查通过，进入完成态 | User+Codex | `_change_status: in_progress` 与 `_run_status: running` 同步成立 |
+| Deployment | Done | 2026-03-01 | STAGING 部署成功且健康检查通过，进入完成态 | User+Codex | `_change_status: done` 与 `_run_status: completed` 同步成立 |
 | Deployment | Deployment | 2026-03-01 | 收口后新增信息展示页交互一致性修正需求，按 CR 流程继续迭代 | User+Codex | 新增 `CR-20260301-001` 并启用 diff-only 复查口径 |
 | Deployment | Deployment | 2026-03-02 | 新增视觉一致性诉求（域标题去冗余、域导航左对齐），按 CR 流程继续迭代 | User+Codex | 新增 `CR-20260302-001` 并纳入 Active CR |
 | Deployment | Deployment | 2026-03-02 | 线上报错“系统不存在”，定位为旧 system_id 失配并新增容错修复 CR | User+Codex | 新增 `CR-20260302-002` 并纳入 Active CR |
