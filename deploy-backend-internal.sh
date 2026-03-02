@@ -178,12 +178,12 @@ start_service() {
         echo_warn "目录权限自动修复失败，请手动执行: chmod -R u+rwX,g+rwX data logs uploads backend/config"
     echo_info "目录属主参考：$ref_owner"
 
-    # 初始化内网默认账号（用户名=密码）
-    if ! command -v python3 &> /dev/null; then
-        echo_error "python3 未安装，无法初始化默认用户"
+    # 初始化内网默认账号（用户名=密码，容器内执行，不依赖宿主机 python3）
+    if ! docker-compose -f docker-compose.backend.internal.yml run --rm --no-deps backend \
+        python scripts/init_internal_users.py --data-dir /app/data; then
+        echo_error "默认用户初始化失败"
         exit 1
     fi
-    python3 scripts/init_internal_users.py --data-dir data
 
     # 启动服务
     docker-compose -f docker-compose.backend.internal.yml up -d
