@@ -245,6 +245,35 @@ def test_profile_import_requires_owner_or_backup_permission(client):
     assert allowed.status_code == 200
 
 
+def test_profile_import_accepts_v24_doc_type_aliases(client, monkeypatch):
+    manager = _seed_user("import_doc_type_alias", "pwd123", ["manager"])
+    token = _login(client, "import_doc_type_alias", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    summary_stub = StubProfileSummaryService()
+    monkeypatch.setattr(profile_summary_module, "get_profile_summary_service", lambda: summary_stub)
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_hop/profile/import",
+        data={"doc_type": "tech_solution"},
+        files={"file": ("tech.csv", "字段,说明\nA,技术方案".encode("utf-8"), "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["import_result"]["status"] == "success"
+
+    history = client.get(
+        "/api/v1/system-profiles/sys_hop/profile/import-history",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert history.status_code == 200
+    history_payload = history.json()
+    assert history_payload["total"] == 1
+    assert history_payload["items"][0]["doc_type"] == "tech_solution"
+
+
 def test_profile_import_rejects_invalid_doc_type(client):
     manager = _seed_user("import_invalid_doc_type", "pwd123", ["manager"])
     token = _login(client, "import_invalid_doc_type", "pwd123")

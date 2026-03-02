@@ -38,6 +38,10 @@ const pickReadableDetail = (detail) => {
 };
 
 export const extractErrorMessage = (error, fallback) => {
+  if (Number(error?.response?.status) === 413) {
+    return '文件过大（超过上传限制 50MB）';
+  }
+
   const responseData = error?.response?.data;
   const responseText = pickReadableDetail(responseData);
   if (responseText) {

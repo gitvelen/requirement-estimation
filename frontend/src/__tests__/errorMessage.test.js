@@ -40,4 +40,15 @@ describe('extractErrorMessage', () => {
 
     expect(extractErrorMessage(error, '保存失败')).toBe('保存失败');
   });
+
+  it('maps 413 response to file-too-large message', () => {
+    const error = {
+      response: {
+        status: 413,
+        data: '<html><body>413 Request Entity Too Large</body></html>',
+      },
+    };
+
+    expect(extractErrorMessage(error, '文档导入失败')).toBe('文件过大（超过上传限制 50MB）');
+  });
 });

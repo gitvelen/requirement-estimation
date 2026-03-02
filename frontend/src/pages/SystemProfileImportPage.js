@@ -27,6 +27,7 @@ import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
+import { extractErrorMessage } from '../utils/errorMessage';
 
 const { Text } = Typography;
 
@@ -41,11 +42,6 @@ const DOC_TYPE_CONFIGS = [
 ];
 
 const EXTRACTION_POLL_INTERVAL = 3000;
-
-const parseErrorMessage = (error, fallback) => {
-  const responseData = error?.response?.data;
-  return responseData?.message || responseData?.detail || fallback;
-};
 
 const SystemProfileImportPage = () => {
   const { user } = useAuth();
@@ -99,7 +95,7 @@ const SystemProfileImportPage = () => {
       const items = response.data?.data?.systems || [];
       setSystems(items);
     } catch (error) {
-      message.error(parseErrorMessage(error, '加载系统清单失败'));
+      message.error(extractErrorMessage(error, '加载系统清单失败'));
     }
   }, []);
 
@@ -142,7 +138,7 @@ const SystemProfileImportPage = () => {
       setScanJob(response.data || null);
     } catch (error) {
       setScanJob(null);
-      message.error(parseErrorMessage(error, '加载扫描任务状态失败'));
+      message.error(extractErrorMessage(error, '加载扫描任务状态失败'));
     } finally {
       setScanRefreshing(false);
     }
@@ -320,7 +316,7 @@ const SystemProfileImportPage = () => {
         ...prev,
         [docType]: { ...prev[docType], submitting: false },
       }));
-      message.error(parseErrorMessage(error, '文档导入失败'));
+      message.error(extractErrorMessage(error, '文档导入失败'));
     }
   }, [selectedSystem, selectedSystemName, docStates, loadImportHistory, pollExtractionStatus]);
 
@@ -371,7 +367,7 @@ const SystemProfileImportPage = () => {
       setScanArchiveFiles([]);
       setScanIngestResult(null);
     } catch (error) {
-      message.error(parseErrorMessage(error, '触发代码扫描失败'));
+      message.error(extractErrorMessage(error, '触发代码扫描失败'));
     } finally {
       setScanSubmitting(false);
     }
@@ -396,7 +392,7 @@ const SystemProfileImportPage = () => {
         pollExtractionStatus(systemId);
       }
     } catch (error) {
-      message.error(parseErrorMessage(error, '扫描结果入库失败'));
+      message.error(extractErrorMessage(error, '扫描结果入库失败'));
     } finally {
       setScanIngesting(false);
     }
