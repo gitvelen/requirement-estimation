@@ -29,6 +29,11 @@ SUPPORTED_IMPORT_DOC_TYPES = {
     "tech_doc",
     "esb_template",
     "knowledge_doc",
+    "requirements",
+    "design",
+    "tech_solution",
+    "history_report",
+    "esb",
 }
 
 SUPPORTED_IMPORT_EXTENSIONS = {".docx", ".doc", ".pdf", ".pptx", ".txt", ".xlsx", ".xls", ".csv"}
