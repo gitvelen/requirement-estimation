@@ -392,22 +392,41 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
 请只返回JSON（不要解释），格式：
 {{
   "suggestions": {{
-    "system_positioning": {{}},
-    "business_capabilities": {{}},
-    "integration_interfaces": {{}},
-    "technical_architecture": {{}},
-    "constraints_risks": {{}}
+    "system_positioning": {{
+      "system_description": "系统描述文本",
+      "target_users": ["用户类型1", "用户类型2"],
+      "boundaries": ["边界说明1", "边界说明2"]
+    }},
+    "business_capabilities": {{
+      "module_structure": [{{"module_name": "模块名", "functions": [{{"name": "功能名", "desc": "功能描述"}}]}}],
+      "core_processes": ["核心流程1", "核心流程2"]
+    }},
+    "integration_interfaces": {{
+      "integration_points": [{{"peer_system": "对端系统", "protocol": "协议", "direction": "方向", "description": "描述"}}],
+      "external_dependencies": ["外部依赖1", "外部依赖2"]
+    }},
+    "technical_architecture": {{
+      "architecture_positioning": "架构定位文本",
+      "tech_stack": ["技术栈1", "技术栈2"],
+      "performance_profile": {{"指标名": "指标值"}}
+    }},
+    "constraints_risks": {{
+      "key_constraints": [{{"category": "约束类别", "description": "约束描述"}}],
+      "known_risks": ["风险1", "风险2"]
+    }}
   }}
 }}
-只填充相关域；不相关域可以省略。
+只填充相关域；不相关域可以省略。每个域内的字段尽量填充，如果材料中没有信息则使用空值（空字符串/空数组/空对象）。
 """
         stage2_response = llm_client.chat_with_system_prompt(
             system_prompt="你是一个严谨的系统分析助手，擅长输出结构化系统画像建议。",
             user_prompt=stage2_prompt,
             temperature=0.2,
-            max_tokens=1600,
+            max_tokens=2500,
         )
+        logger.info(f"LLM Stage2 原始响应: {stage2_response[:500]}")
         stage2_parsed = llm_client.extract_json(stage2_response)
+        logger.info(f"LLM Stage2 解析结果: {json.dumps(stage2_parsed, ensure_ascii=False)[:500]}")
 
         suggestions: Dict[str, Any] = {}
         if isinstance(stage2_parsed, dict):
@@ -419,11 +438,59 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
             else:
                 suggestions = stage2_parsed
 
+        # 转换 LLM 返回的简化结构到前端期望的详细结构
+        normalized_suggestions = {}
+        for domain_key, domain_value in suggestions.items():
+            if not isinstance(domain_value, dict):
+                continue
+
+            normalized_domain = {}
+
+            if domain_key == "system_positioning":
+                # 优先使用 LLM 返回的正确字段名，否则尝试 description 字段
+                normalized_domain["system_description"] = domain_value.get("system_description", domain_value.get("description", ""))
+                normalized_domain["target_users"] = domain_value.get("target_users", [])
+                normalized_domain["boundaries"] = domain_value.get("boundaries", [])
+
+            elif domain_key == "business_capabilities":
+                desc = domain_value.get("description", "")
+                normalized_domain["module_structure"] = domain_value.get("module_structure", [])
+                normalized_domain["core_processes"] = domain_value.get("core_processes", [])
+                # 如果只有 description，尝试解析为 core_processes
+                if desc and not normalized_domain["core_processes"]:
+                    normalized_domain["core_processes"] = [desc]
+
+            elif domain_key == "integration_interfaces":
+                desc = domain_value.get("description", "")
+                normalized_domain["integration_points"] = domain_value.get("integration_points", [])
+                normalized_domain["external_dependencies"] = domain_value.get("external_dependencies", [])
+                # 如果只有 description，尝试解析为 external_dependencies
+                if desc and not normalized_domain["external_dependencies"]:
+                    normalized_domain["external_dependencies"] = [desc]
+
+            elif domain_key == "technical_architecture":
+                normalized_domain["architecture_positioning"] = domain_value.get("architecture_positioning", domain_value.get("description", ""))
+                normalized_domain["tech_stack"] = domain_value.get("tech_stack", [])
+                normalized_domain["performance_profile"] = domain_value.get("performance_profile", {})
+
+            elif domain_key == "constraints_risks":
+                desc = domain_value.get("description", "")
+                normalized_domain["key_constraints"] = domain_value.get("key_constraints", [])
+                normalized_domain["known_risks"] = domain_value.get("known_risks", [])
+                # 如果只有 description，尝试解析为 known_risks
+                if desc and not normalized_domain["known_risks"]:
+                    normalized_domain["known_risks"] = [desc]
+
+            if normalized_domain:
+                normalized_suggestions[domain_key] = normalized_domain
+
+        logger.info(f"标准化后 suggestions: {json.dumps(normalized_suggestions, ensure_ascii=False)[:500]}")
+
         if not relevant_domains and isinstance(suggestions, dict):
             relevant_domains = [domain for domain in PROFILE_DOMAIN_KEYS if domain in suggestions]
 
         return {
-            "suggestions": suggestions if isinstance(suggestions, dict) else {},
+            "suggestions": normalized_suggestions if isinstance(normalized_suggestions, dict) else {},
             "relevant_domains": relevant_domains,
             "related_systems": related_systems,
         }
