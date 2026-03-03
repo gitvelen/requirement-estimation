@@ -162,11 +162,11 @@ const KnowledgePage = () => {
     return {
       name: 'file',
       disabled: !canUpload || !selectedSystem,
-      action: '/api/v1/knowledge/import',
+      action: '/api/v1/knowledge/imports',
       accept: '.docx,.pptx',
       data: {
-        auto_extract: true,
         knowledge_type: 'system_profile',
+        level: 'normal',
         system_name: selectedSystem,
       },
       showUploadList: false,

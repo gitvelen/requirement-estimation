@@ -81,7 +81,7 @@ const EsbPage = () => {
 
   const uploadProps = useMemo(() => ({
     name: 'file',
-    action: '/api/v1/knowledge/esb/import',
+    action: '/api/v1/esb/imports',
     accept: '.csv,.xlsx',
     showUploadList: false,
     beforeUpload: (file) => {
