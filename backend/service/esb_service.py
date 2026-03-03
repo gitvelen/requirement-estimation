@@ -37,10 +37,38 @@ class EsbService:
     FIELD_ALIASES = {
         "service_code": ["交易码", "交易代码", "服务码", "服务代码"],
         "scenario_code": ["服务场景码", "场景码", "场景代码", "服务场景代码"],
-        "provider_system_id": ["提供方系统简称", "提供方系统标识", "提供方系统编号", "提供方系统代码", "提供方系统ID", "提供方系统", "系统标识"],
+        "provider_system_id": [
+            "提供方系统简称",
+            "提供方系统标识",
+            "提供方系统编号",
+            "提供方系统代码",
+            "提供方系统ID",
+            "提供方系统",
+            "服务方系统简称",
+            "服务方系统标识",
+            "服务方系统编号",
+            "服务方系统代码",
+            "服务方系统ID",
+            "服务方系统",
+            "系统标识",
+        ],
         "provider_system_name": ["提供方中文名称", "提供方系统名称", "提供方系统中文名", "提供方名称", "系统名称"],
         "service_name": ["交易名称", "服务名称", "服务名", "交易名"],
-        "consumer_system_id": ["调用方系统简称", "调用方系统标识", "调用方系统编号", "调用方系统代码", "调用方系统ID", "调用方系统", "系统标识#2"],
+        "consumer_system_id": [
+            "调用方系统简称",
+            "调用方系统标识",
+            "调用方系统编号",
+            "调用方系统代码",
+            "调用方系统ID",
+            "调用方系统",
+            "消费方系统简称",
+            "消费方系统标识",
+            "消费方系统编号",
+            "消费方系统代码",
+            "消费方系统ID",
+            "消费方系统",
+            "系统标识#2",
+        ],
         "consumer_system_name": ["调用方中文名称", "调用方系统名称", "调用方系统中文名", "调用方名称", "系统名称#2"],
         "status": ["状态", "使用状态", "生效状态"],
         "remark": ["备注", "说明", "备注信息"],
@@ -157,7 +185,7 @@ class EsbService:
         return hit_count
 
     def _select_header_row_index(self, rows: List[List[Any]]) -> int:
-        max_scan = min(len(rows), 5)
+        max_scan = len(rows)
         best_index = 0
         best_score = (-1, -1, -1, -1)
 
@@ -282,7 +310,7 @@ class EsbService:
         errors: List[str] = []
         entries: List[Dict[str, Any]] = []
         system_summary: List[Dict[str, Any]] = []
-        missing_required_headers = False
+        recognized_sheet_found = False
         mapping_resolved: Dict[str, str] = {}
 
         for sheet_name, rows in parsed_sheets.items():
@@ -290,7 +318,10 @@ class EsbService:
                 continue
             header_map = self._build_header_map(list(rows[0].keys()))
             detail_mapping = self._resolve_mapping(header_map, mapping_json, self.FIELD_ALIASES)
-            if "status" not in detail_mapping and self._is_interface_template_header(header_map):
+            if (
+                "status" not in detail_mapping
+                and all(field in detail_mapping for field in ("provider_system_id", "consumer_system_id", "service_name"))
+            ):
                 detail_mapping["status"] = self.DEFAULT_STATUS_SENTINEL
             summary_mapping = self._resolve_mapping(header_map, mapping_json, self.SUMMARY_ALIASES)
 
@@ -303,9 +334,10 @@ class EsbService:
 
             is_detail = all(field in detail_mapping for field in self.REQUIRED_FIELDS)
             is_summary = ("system_id" in summary_mapping and "system_name" in summary_mapping and not is_detail)
+            if is_detail or is_summary:
+                recognized_sheet_found = True
 
             if not is_detail and not is_summary:
-                missing_required_headers = True
                 errors.append(f"Sheet {sheet_name}: 缺少必填列，已跳过")
                 continue
 
@@ -348,7 +380,7 @@ class EsbService:
                 )
                 entries.append(entry)
 
-        if missing_required_headers and not entries and not system_summary:
+        if not recognized_sheet_found:
             raise ValueError("ESB文件缺少必填字段：provider_system_id, consumer_system_id, service_name, status")
 
         if entries:

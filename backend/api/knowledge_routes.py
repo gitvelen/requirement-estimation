@@ -339,21 +339,23 @@ async def import_knowledge_v2(
             "errors": errors,
         }
     except ValueError as exc:
+        reason = str(exc).strip()
         return build_error_response(
             request=request,
             status_code=400,
             error_code="KNOW_002",
-            message="知识库文件解析失败",
-            details={"reason": str(exc)},
+            message=f"知识库文件解析失败：{reason}" if reason else "知识库文件解析失败",
+            details={"reason": reason},
         )
     except Exception as exc:
+        reason = str(exc).strip()
         logger.error("知识导入失败: %s", exc)
         return build_error_response(
             request=request,
             status_code=400,
             error_code="KNOW_002",
-            message="知识库文件解析失败",
-            details={"reason": str(exc)},
+            message=f"知识库文件解析失败：{reason}" if reason else "知识库文件解析失败",
+            details={"reason": reason},
         )
 
 @router.post("/import")

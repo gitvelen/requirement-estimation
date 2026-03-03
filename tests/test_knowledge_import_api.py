@@ -260,3 +260,27 @@ def test_knowledge_import_parse_failure_returns_know002(client):
 
     assert response.status_code == 400
     assert response.json()["error_code"] == "KNOW_002"
+
+
+def test_knowledge_import_parse_failure_exposes_reason_in_message(client):
+    _seed_user("kmgr7", "pwd123", ["manager"])
+    token = _login(client, "kmgr7", "pwd123")
+
+    service = ks.get_knowledge_service()
+
+    def broken_parse(*_args, **_kwargs):
+        raise RuntimeError("旧格式解析工具不可用：soffice未安装")
+
+    service.document_parser.parse = broken_parse
+
+    response = client.post(
+        "/api/v1/knowledge/imports",
+        data={"knowledge_type": "document", "level": "normal"},
+        files={"file": ("legacy.xls", b"fake-content", "application/vnd.ms-excel")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "KNOW_002"
+    assert "soffice未安装" in str(payload.get("message") or "")

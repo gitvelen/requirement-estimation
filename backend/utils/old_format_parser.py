@@ -178,9 +178,42 @@ def xlsx_bytes_to_sheet_rows(xlsx_bytes: bytes) -> Dict[str, List[List[Any]]]:
     return data
 
 
+def _xls_bytes_to_sheet_rows_with_xlrd(file_content: bytes) -> Dict[str, List[List[Any]]]:
+    try:
+        import xlrd
+    except Exception as exc:
+        raise RuntimeError("旧格式解析工具不可用：xlrd未安装") from exc
+
+    try:
+        workbook = xlrd.open_workbook(file_contents=file_content)
+    except Exception as exc:
+        raise RuntimeError(f"旧格式解析失败: {str(exc)[:200]}") from exc
+
+    data: Dict[str, List[List[Any]]] = {}
+    for sheet in workbook.sheets():
+        rows: List[List[Any]] = []
+        for row_idx in range(sheet.nrows):
+            row_values = sheet.row_values(row_idx)
+            if any(cell is not None and str(cell).strip() != "" for cell in row_values):
+                rows.append(list(row_values))
+        data[sheet.name] = rows
+    return data
+
+
 def xls_bytes_to_sheet_rows(file_content: bytes, filename: str, *, timeout_seconds: Optional[int] = None) -> Dict[str, List[List[Any]]]:
-    xlsx_bytes = xls_bytes_to_xlsx_bytes(file_content, filename, timeout_seconds=timeout_seconds)
-    return xlsx_bytes_to_sheet_rows(xlsx_bytes)
+    try:
+        xlsx_bytes = xls_bytes_to_xlsx_bytes(file_content, filename, timeout_seconds=timeout_seconds)
+        return xlsx_bytes_to_sheet_rows(xlsx_bytes)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "soffice未安装" not in message:
+            raise
+
+        try:
+            logger.warning("soffice 不可用，回退 xlrd 解析 .xls")
+            return _xls_bytes_to_sheet_rows_with_xlrd(file_content)
+        except Exception as fallback_exc:
+            raise RuntimeError(f"{message}; {fallback_exc}") from fallback_exc
 
 
 def sheet_rows_to_text(sheet_rows: Dict[str, List[List[Any]]], *, max_lines: int = 2000) -> str:

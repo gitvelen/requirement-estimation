@@ -1,8 +1,10 @@
 import os
 import sys
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
@@ -83,6 +85,58 @@ def _seed_system_owner(system_name: str, system_id: str, owner_id: str):
             }
         ]
     )
+
+
+def _build_esb_workbook_with_offset_header() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "接口申请-20250724常规版本"
+
+    for i in range(1, 6):
+        ws.append([f"说明{i}", "", "", "", "", ""])
+
+    ws.append(["系统标识", "系统名称", "服务场景码", "交易名称", "系统标识", "系统名称"])
+    ws.append(["sys_hop", "HOP", "scene_01", "查询接口", "sys_x", "X系统"])
+
+    extra = wb.create_sheet("字典")
+    extra.append(["字段", "说明"])
+    extra.append(["系统标识", "系统唯一ID"])
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def _build_esb_workbook_with_valid_and_unrelated_sheets() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "接口申请"
+    ws.append(["系统标识", "系统名称", "服务场景码", "交易名称", "系统标识", "系统名称"])
+    ws.append(["sys_other", "OTHER", "scene_01", "查询接口", "sys_x", "X系统"])
+
+    unrelated = wb.create_sheet("新服务治理平台服务视图")
+    unrelated.append(["序号", "模块", "说明"])
+    unrelated.append(["1", "A", "B"])
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def _build_esb_workbook_with_deep_header_row() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "接口申请-深层表头"
+
+    for i in range(1, 121):
+        ws.append([f"说明{i}", "", "", "", "", ""])
+
+    ws.append(["系统标识", "系统名称", "服务场景码", "交易名称", "系统标识", "系统名称"])
+    ws.append(["sys_hop", "HOP", "scene_01", "查询接口", "sys_x", "X系统"])
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def test_esb_import_requires_owner(client):
@@ -205,6 +259,107 @@ def test_esb_import_accepts_human_friendly_mapping_fields(client):
     assert payload.get("mapping_resolved", {}).get("consumer_system_id") == "调用方系统简称"
     assert payload.get("mapping_resolved", {}).get("service_name") == "交易名称"
     assert payload.get("mapping_resolved", {}).get("status") == "状态"
+
+
+def test_esb_import_accepts_interface_template_header_beyond_first_five_rows(client):
+    owner = _seed_user("esb_owner_offset_header", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner_offset_header", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    xlsx_content = _build_esb_workbook_with_offset_header()
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={"system_id": "sys_hop"},
+        files={"file": ("esb_offset_header.xlsx", xlsx_content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "系统标识"
+    assert payload.get("mapping_resolved", {}).get("consumer_system_id") == "系统标识#2"
+    assert payload.get("mapping_resolved", {}).get("service_name") == "交易名称"
+
+
+def test_esb_import_accepts_service_provider_consumer_aliases_without_status_column(client):
+    owner = _seed_user("esb_owner_aliases", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner_aliases", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    csv_content = (
+        "服务方系统标识,消费方系统标识,服务名称\n"
+        "sys_hop,sys_x,查询接口\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={"system_id": "sys_hop"},
+        files={"file": ("esb_aliases.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "服务方系统标识"
+    assert payload.get("mapping_resolved", {}).get("consumer_system_id") == "消费方系统标识"
+    assert payload.get("mapping_resolved", {}).get("service_name") == "服务名称"
+
+
+def test_esb_import_does_not_raise_missing_required_when_detail_sheet_exists_but_rows_filtered(client):
+    owner = _seed_user("esb_owner_filtered_rows", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner_filtered_rows", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    xlsx_content = _build_esb_workbook_with_valid_and_unrelated_sheets()
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={"system_id": "sys_hop"},
+        files={"file": ("esb_valid_plus_unrelated.xlsx", xlsx_content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 0
+    assert payload["skipped"] >= 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "系统标识"
+
+
+def test_esb_import_accepts_header_beyond_fifty_rows(client):
+    owner = _seed_user("esb_owner_deep_header", "owner123", ["manager"])
+    _seed_system_owner("HOP", "sys_hop", owner["id"])
+    token = _login(client, "esb_owner_deep_header", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    xlsx_content = _build_esb_workbook_with_deep_header_row()
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={"system_id": "sys_hop"},
+        files={"file": ("esb_deep_header.xlsx", xlsx_content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 1
+    assert payload.get("mapping_resolved", {}).get("provider_system_id") == "系统标识"
+    assert payload.get("mapping_resolved", {}).get("consumer_system_id") == "系统标识#2"
 
 
 def test_esb_import_embedding_unavailable_returns_emb001(client):

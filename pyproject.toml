@@ -29,35 +29,28 @@ dependencies = [
     "fastapi>=0.104.1",
     "uvicorn[standard]>=0.24.0",
     "python-multipart>=0.0.6",
-
     # 数据验证
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
-
     # 文档处理
     "python-docx>=1.1.0",
     "openpyxl>=3.1.2",
-
     # 文件类型检测
     "python-magic>=0.4.27",
-
     # 向量数据库
     "pymilvus>=2.3.3",
-
     # PDF解析（可选）
     "PyPDF2>=3.0.0",
-
     # PDF生成
     "reportlab>=4.0.0",
-
     # JWT
     "PyJWT>=2.8.0",
-
     # AI 相关
     "langchain>=0.1.0",
     "langchain-openai>=0.0.2",
     "langgraph>=0.0.26",
     "dashscope>=1.14.0",
+    "xlrd",
 ]
 
 [project.optional-dependencies]
