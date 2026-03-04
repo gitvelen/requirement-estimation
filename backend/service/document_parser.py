@@ -571,8 +571,16 @@ class DocumentParser:
 
     def _extract_from_xlsx(self, data: Dict, expected_type: Optional[str] = None) -> Dict[str, Any]:
         """从XLSX数据提取知识"""
+        # ESB服务治理文档需要忽略的sheet（与 _parse_xlsx 保持一致）
+        ignored_sheets = {"系统清单", "字典", "新服务治理平台服务视图"}
+
         # 查找系统知识相关的Sheet
         for sheet_name, sheet_data in data.items():
+            # 跳过需要忽略的sheet
+            if sheet_name in ignored_sheets:
+                logger.info(f"提取阶段跳过Sheet '{sheet_name}'（已配置忽略）")
+                continue
+
             if len(sheet_data) > 0:
                 first_row = sheet_data[0]
 
