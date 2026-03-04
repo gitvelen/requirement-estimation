@@ -61,28 +61,39 @@ def test_import_search_scope_and_status(tmp_path, monkeypatch):
 
 
 def test_import_xlsx_with_two_row_header_and_duplicate_system_id_columns(tmp_path, monkeypatch):
+    """测试使用固定表头导入XLSX文件"""
     service = build_service(tmp_path, monkeypatch)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "sheet1"
 
-    # Row 1: grouped header (same style as interface request template)
+    # Row 1: 分组表头（会被跳过）
     ws["A1"] = "#"
     ws["B1"] = "投产日期"
     ws["O1"] = "调用方"
 
-    # Row 2: actual columns
+    # Row 2: 实际列名（会被跳过，使用固定表头）
     ws["C2"] = "系统标识"
+    ws["D2"] = "系统名称"
     ws["H2"] = "服务名称"
-    ws["O2"] = "系统标识"
+    ws["I2"] = "场景名称"
+    ws["J2"] = "交易码"
+    ws["K2"] = "交易名称"
+    ws["L2"] = "消费方系统标识"
+    ws["M2"] = "消费方系统名称"
 
-    # Row 3: data
+    # Row 3: 数据行（从第3行开始读取，按固定表头顺序）
+    # 固定表头: 序号(A), 投产日期(B), 系统标识(C), 系统名称(D), 系统负责人(E),
+    #          服务场景码(F), 服务名称(G), 场景名称(H), 交易码(I), 交易名称(J),
+    #          消费方系统标识(K), 消费方系统名称(L), ...
     ws["A3"] = 1
     ws["B3"] = "2026-01-01"
-    ws["C3"] = "SYS_A"
-    ws["H3"] = "账户查询"
-    ws["O3"] = "SYS_B"
+    ws["C3"] = "SYS_A"  # 系统标识
+    ws["D3"] = "系统A"  # 系统名称
+    ws["J3"] = "账户查询"  # 交易名称（第10列）
+    ws["K3"] = "SYS_B"  # 消费方系统标识（第11列）
+    ws["L3"] = "系统B"  # 消费方系统名称（第12列）
 
     buf = BytesIO()
     wb.save(buf)
@@ -91,8 +102,8 @@ def test_import_xlsx_with_two_row_header_and_duplicate_system_id_columns(tmp_pat
 
     assert result["imported"] == 1
     assert result["mapping_resolved"]["provider_system_id"] == "系统标识"
-    assert result["mapping_resolved"]["consumer_system_id"] == "系统标识#2"
-    assert result["mapping_resolved"]["service_name"] == "服务名称"
+    assert result["mapping_resolved"]["consumer_system_id"] == "消费方系统标识"
+    assert result["mapping_resolved"]["service_name"] == "交易名称"
 
     with open(service.store_path, "r", encoding="utf-8") as f:
         store = json.load(f)

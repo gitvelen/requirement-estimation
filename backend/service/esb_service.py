@@ -38,38 +38,24 @@ class EsbService:
         "service_code": ["交易码", "交易代码", "服务码", "服务代码"],
         "scenario_code": ["服务场景码", "场景码", "场景代码", "服务场景代码"],
         "provider_system_id": [
-            "提供方系统简称",
+            "系统标识",
             "提供方系统标识",
+            "提供方系统简称",
             "提供方系统编号",
             "提供方系统代码",
             "提供方系统ID",
-            "提供方系统",
-            "服务方系统简称",
-            "服务方系统标识",
-            "服务方系统编号",
-            "服务方系统代码",
-            "服务方系统ID",
-            "服务方系统",
-            "系统标识",
         ],
-        "provider_system_name": ["提供方中文名称", "提供方系统名称", "提供方系统中文名", "提供方名称", "系统名称"],
+        "provider_system_name": ["系统名称", "提供方系统名称", "提供方中文名称"],
         "service_name": ["交易名称", "服务名称", "服务名", "交易名"],
         "consumer_system_id": [
-            "调用方系统简称",
-            "调用方系统标识",
-            "调用方系统编号",
-            "调用方系统代码",
-            "调用方系统ID",
-            "调用方系统",
-            "消费方系统简称",
             "消费方系统标识",
+            "调用方系统标识",
+            "调用方系统简称",
+            "消费方系统简称",
             "消费方系统编号",
-            "消费方系统代码",
-            "消费方系统ID",
-            "消费方系统",
-            "系统标识#2",
+            "调用方系统编号",
         ],
-        "consumer_system_name": ["调用方中文名称", "调用方系统名称", "调用方系统中文名", "调用方名称", "系统名称#2"],
+        "consumer_system_name": ["消费方系统名称", "调用方系统名称", "调用方中文名称"],
         "status": ["状态", "使用状态", "生效状态"],
         "remark": ["备注", "说明", "备注信息"],
     }
@@ -261,6 +247,7 @@ class EsbService:
     def _parse_file(self, file_content: bytes, filename: str) -> Dict[str, List[Dict[str, Any]]]:
         parsed = self.document_parser.parse(file_content, filename)
         if isinstance(parsed, list):
+            # CSV格式：已经是字典列表，直接返回
             return {"_default": parsed}
         if isinstance(parsed, dict):
             # XLSX -> {sheet: rows}
@@ -268,7 +255,12 @@ class EsbService:
                 sheet_dict: Dict[str, List[Dict[str, Any]]] = {}
                 for sheet_name, rows in parsed.items():
                     if isinstance(rows, list):
-                        sheet_dict[sheet_name] = self._rows_to_dicts(rows)
+                        # 检查第一行是否已经是字典（CSV格式）
+                        if rows and isinstance(rows[0], dict):
+                            sheet_dict[sheet_name] = rows
+                        else:
+                            # 原始行数据，需要转换为字典
+                            sheet_dict[sheet_name] = self._rows_to_dicts(rows)
                 return sheet_dict
         return {}
 
@@ -315,8 +307,11 @@ class EsbService:
 
         for sheet_name, rows in parsed_sheets.items():
             if not rows:
+                logger.warning(f"Sheet {sheet_name}: 无数据行，跳过")
                 continue
+            logger.info(f"处理 Sheet {sheet_name}: {len(rows)} 行数据")
             header_map = self._build_header_map(list(rows[0].keys()))
+            logger.debug(f"Sheet {sheet_name} 表头列: {list(header_map.keys())[:10]}")
             detail_mapping = self._resolve_mapping(header_map, mapping_json, self.FIELD_ALIASES)
             if (
                 "status" not in detail_mapping
@@ -338,8 +333,22 @@ class EsbService:
                 recognized_sheet_found = True
 
             if not is_detail and not is_summary:
-                errors.append(f"Sheet {sheet_name}: 缺少必填列，已跳过")
+                error_msg = f"Sheet {sheet_name}: 缺少必填列，已跳过"
+                logger.warning(f"{error_msg} (detail_mapping={detail_mapping}, summary_mapping={summary_mapping})")
+                errors.append(error_msg)
                 continue
+
+            logger.info(f"Sheet {sheet_name}: 识别为 {'detail' if is_detail else 'summary'} 模式")
+
+            # 记录第一行数据用于调试
+            if rows:
+                first_row = rows[0]
+                logger.info(f"Sheet {sheet_name} 第一行数据示例:")
+                for field in ["provider_system_id", "provider_system_name", "consumer_system_id", "consumer_system_name", "service_name"]:
+                    col = detail_mapping.get(field) if is_detail else summary_mapping.get(field)
+                    if col:
+                        value = first_row.get(col)
+                        logger.info(f"  {field} ({col}): {value}")
 
             if is_summary:
                 for idx, row in enumerate(rows, start=2):
@@ -364,10 +373,19 @@ class EsbService:
                     skipped += 1
                     if reason:
                         errors.append(f"Sheet {sheet_name} row {row_no}: {reason}")
+                    # 记录前3行失败的详细信息
+                    if skipped <= 3:
+                        logger.warning(f"Sheet {sheet_name} row {row_no} 跳过: {reason}")
+                        logger.debug(f"  原始数据: {dict(list(row.items())[:10])}")
+                        logger.debug(f"  提取结果: {entry}")
                     continue
 
                 if normalized_target_system_id and not self._entry_matches_system_id(entry, normalized_target_system_id):
                     skipped += 1
+                    # 记录前3行因系统过滤被跳过的信息
+                    if skipped <= 3:
+                        logger.info(f"Sheet {sheet_name} row {row_no} 跳过: 不属于目标系统 {normalized_target_system_id}")
+                        logger.info(f"  提供方: {entry.get('provider_system_id')}, 消费方: {entry.get('consumer_system_id')}")
                     continue
 
                 entry.update(
