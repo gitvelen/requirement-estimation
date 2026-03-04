@@ -196,8 +196,16 @@ class DocumentParser:
 
             data = {}
 
+            # ESB服务治理文档需要忽略的sheet
+            ignored_sheets = {"系统清单", "字典", "新服务治理平台服务视图"}
+
             # 遍历所有Sheet
             for sheet_name in wb.sheetnames:
+                # 跳过需要忽略的sheet
+                if sheet_name in ignored_sheets:
+                    logger.info(f"跳过Sheet '{sheet_name}'（已配置忽略）")
+                    continue
+
                 ws = wb[sheet_name]
 
                 # 提取数据
