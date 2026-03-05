@@ -14,6 +14,12 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+PROJECT_DIR="/home/admin/requirement-estimation"
+COMPOSE_FILE="docker-compose.frontend.internal.yml"
+NGINX_CONF_PATH="$PROJECT_DIR/frontend/nginx.internal.conf"
+RUNTIME_NGINX_CONF="$PROJECT_DIR/frontend/nginx.internal.runtime.conf"
+BUILD_DIR="$PROJECT_DIR/frontend/build"
+BACKEND_UPSTREAM=""
 
 echo_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -25,6 +31,25 @@ echo_warn() {
 
 echo_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+strip_wrapping_quotes() {
+    local value="$1"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    printf "%s" "$value"
+}
+
+normalize_upstream_value() {
+    local raw="$1"
+    local normalized
+    normalized="$(strip_wrapping_quotes "$raw")"
+    normalized="${normalized#http://}"
+    normalized="${normalized#https://}"
+    normalized="${normalized%/}"
+    printf "%s" "$normalized"
 }
 
 ###############################################################################
@@ -82,7 +107,6 @@ prepare_build_files() {
     echo_info "检查前端构建文件..."
 
     local BUILD_TAR="/home/admin/frontend-build.tar.gz"
-    local BUILD_DIR="/home/admin/requirement-estimation/frontend/build"
 
     # 优先使用项目内已存在的构建产物
     if [ -f "$BUILD_DIR/index.html" ]; then
@@ -118,18 +142,89 @@ prepare_build_files() {
 }
 
 ###############################################################################
+# 渲染运行时 nginx 配置（支持前后端分离）
+###############################################################################
+
+resolve_backend_upstream() {
+    local value="${FRONTEND_BACKEND_UPSTREAM:-}"
+
+    if [ -z "$value" ] && [ -f "$PROJECT_DIR/.env.frontend.internal" ]; then
+        value="$(grep '^FRONTEND_BACKEND_UPSTREAM=' "$PROJECT_DIR/.env.frontend.internal" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '\r')"
+    fi
+
+    if [ -z "$value" ] && [ -f "$NGINX_CONF_PATH" ]; then
+        value="$(grep -E 'proxy_pass[[:space:]]+http://[^;]+;' "$NGINX_CONF_PATH" | head -n 1 | sed -E 's/.*proxy_pass[[:space:]]+http:\/\/([^;]+);.*/\1/')"
+    fi
+
+    BACKEND_UPSTREAM="$(normalize_upstream_value "$value")"
+
+    if [ -z "$BACKEND_UPSTREAM" ]; then
+        echo_error "未解析到后端地址，请设置 FRONTEND_BACKEND_UPSTREAM（示例：10.62.22.121:443）"
+        exit 1
+    fi
+
+    if [ "$BACKEND_UPSTREAM" = "requirement-backend:443" ] || [ "$BACKEND_UPSTREAM" = "requirement-backend" ]; then
+        echo_error "当前后端地址为容器名 requirement-backend，前后端分离部署不可达"
+        echo_error "请设置 FRONTEND_BACKEND_UPSTREAM（示例：10.62.22.121:443）"
+        exit 1
+    fi
+
+    if [[ "$BACKEND_UPSTREAM" =~ [[:space:]] ]]; then
+        echo_error "FRONTEND_BACKEND_UPSTREAM 包含空格，格式非法: $BACKEND_UPSTREAM"
+        exit 1
+    fi
+
+    echo_info "后端代理目标: $BACKEND_UPSTREAM"
+}
+
+render_runtime_nginx_config() {
+    echo_info "渲染运行时 nginx 配置..."
+
+    if [ ! -f "$NGINX_CONF_PATH" ]; then
+        echo_error "nginx 内网配置文件不存在: frontend/nginx.internal.conf"
+        exit 1
+    fi
+
+    resolve_backend_upstream
+
+    sed -E "s#proxy_pass[[:space:]]+http://[^;]+;#proxy_pass http://${BACKEND_UPSTREAM};#g" \
+        "$NGINX_CONF_PATH" > "$RUNTIME_NGINX_CONF"
+
+    if ! grep -q "proxy_pass http://${BACKEND_UPSTREAM};" "$RUNTIME_NGINX_CONF"; then
+        echo_error "运行时 nginx 配置渲染失败，未找到目标 proxy_pass"
+        exit 1
+    fi
+
+    export FRONTEND_NGINX_CONF="./frontend/$(basename "$RUNTIME_NGINX_CONF")"
+}
+
+###############################################################################
 # 检查 nginx 配置
 ###############################################################################
 
 check_nginx_config() {
     echo_info "检查 nginx 配置..."
 
-    if [ ! -f "/home/admin/requirement-estimation/frontend/nginx.internal.conf" ]; then
-        echo_error "nginx 内网配置文件不存在: frontend/nginx.internal.conf"
+    if [ ! -f "$RUNTIME_NGINX_CONF" ]; then
+        echo_error "运行时 nginx 配置不存在: $RUNTIME_NGINX_CONF"
         exit 1
     fi
 
-    echo_info "nginx 配置文件检查通过"
+    if ! grep -q "proxy_pass http://${BACKEND_UPSTREAM};" "$RUNTIME_NGINX_CONF"; then
+        echo_error "运行时 nginx 配置缺少后端代理: proxy_pass http://${BACKEND_UPSTREAM};"
+        exit 1
+    fi
+
+    # 使用离线 nginx 镜像进行语法预检，避免错误配置上线
+    if ! docker run --rm \
+        -v "$RUNTIME_NGINX_CONF:/etc/nginx/nginx.conf:ro" \
+        -v "$BUILD_DIR:/usr/share/nginx/html:ro" \
+        nginx:latest nginx -t; then
+        echo_error "nginx 配置语法校验失败"
+        exit 1
+    fi
+
+    echo_info "nginx 配置检查通过"
 }
 
 ###############################################################################
@@ -139,7 +234,7 @@ check_nginx_config() {
 stop_old_service() {
     echo_info "停止旧服务..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     # 停止并删除旧容器
     if docker ps -a | grep -q requirement-frontend; then
@@ -148,7 +243,7 @@ stop_old_service() {
     fi
 
     # 停止 docker-compose 启动的服务
-    docker-compose -f docker-compose.frontend.internal.yml down 2>/dev/null || true
+    docker-compose -f "$COMPOSE_FILE" down 2>/dev/null || true
 
     echo_info "旧服务已停止"
 }
@@ -160,7 +255,7 @@ stop_old_service() {
 check_nginx_image() {
     echo_info "检查 nginx 镜像..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     if ! docker image inspect nginx:latest >/dev/null 2>&1; then
         echo_error "本地不存在 nginx:latest，请先离线导入镜像"
@@ -178,10 +273,10 @@ check_nginx_image() {
 start_service() {
     echo_info "启动前端服务..."
 
-    cd /home/admin/requirement-estimation
+    cd "$PROJECT_DIR"
 
     # 直接启动服务（不构建，使用已构建前端产物）
-    docker-compose -f docker-compose.frontend.internal.yml up -d
+    docker-compose -f "$COMPOSE_FILE" up -d
 
     if [ $? -eq 0 ]; then
         echo_info "服务启动成功"
@@ -208,6 +303,21 @@ verify_service() {
         exit 1
     fi
 
+    echo_info "验证容器内 nginx 配置..."
+    if ! docker exec requirement-frontend nginx -t; then
+        echo_error "容器内 nginx 配置校验失败"
+        docker logs requirement-frontend
+        exit 1
+    fi
+
+    local runtime_upstream
+    runtime_upstream="$(docker exec requirement-frontend sh -c "grep -E 'proxy_pass[[:space:]]+http://[^;]+;' /etc/nginx/nginx.conf | head -n 1 | sed -E 's/.*proxy_pass[[:space:]]+http:\/\/([^;]+);.*/\\1/'")"
+    runtime_upstream="$(normalize_upstream_value "$runtime_upstream")"
+    if [ "$runtime_upstream" != "$BACKEND_UPSTREAM" ]; then
+        echo_error "容器内 proxy_pass 与目标后端不一致：$runtime_upstream != $BACKEND_UPSTREAM"
+        exit 1
+    fi
+
     echo_info "检查服务健康状态..."
     sleep 3
 
@@ -228,13 +338,13 @@ show_result() {
     echo_info "部署完成！"
     echo_info "========================================"
     echo_info "前端服务地址：http://10.62.16.251:8000"
+    echo_info "后端代理地址：http://$BACKEND_UPSTREAM"
     echo_info ""
     echo_info "常用命令："
     echo_info "  查看日志：docker logs -f requirement-frontend"
-    echo_info "  重启服务：docker-compose -f docker-compose.frontend.internal.yml restart"
-    echo_info "  停止服务：docker-compose -f docker-compose.frontend.internal.yml down"
+    echo_info "  重启服务：docker-compose -f $COMPOSE_FILE restart"
+    echo_info "  停止服务：docker-compose -f $COMPOSE_FILE down"
     echo_info "========================================"
-    echo_warn "请确保后端服务 (10.62.22.121:443) 已启动"
 }
 
 ###############################################################################
@@ -244,8 +354,9 @@ show_result() {
 main() {
     check_prerequisites
     prepare_build_files
-    check_nginx_config
     check_nginx_image
+    render_runtime_nginx_config
+    check_nginx_config
     stop_old_service
     start_service
     verify_service

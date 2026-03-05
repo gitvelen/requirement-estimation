@@ -38,11 +38,11 @@ class Settings(BaseSettings):
 
     # 阿里云大模型配置
     DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
-    DASHSCOPE_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    LLM_MODEL: str = "qwen-turbo"  # 默认模型
-    LLM_TEMPERATURE: float = 0.7
-    LLM_MAX_TOKENS: int = 4000
-    LLM_TIMEOUT: int = 120  # LLM请求超时时间（秒），异步任务需要更长时间
+    DASHSCOPE_API_BASE: str = os.getenv("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo")
+    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4000"))
+    LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))  # LLM请求超时时间（秒），异步任务需要更长时间
 
     # Milvus向量数据库配置
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
@@ -60,8 +60,13 @@ class Settings(BaseSettings):
 
     # 文件上传配置
     UPLOAD_DIR: str = "uploads"
-    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
-    ALLOWED_EXTENSIONS: set = {".docx"}
+    MAX_FILE_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10")) * 1024 * 1024  # 默认10MB
+
+    @property
+    def ALLOWED_EXTENSIONS(self) -> set:
+        """获取允许的文件扩展名集合"""
+        extensions_str = os.getenv("ALLOWED_EXTENSIONS", ".docx,.doc,.pdf,.txt,.xlsx,.xls")
+        return {ext.strip() for ext in extensions_str.split(",") if ext.strip()}
 
     # Excel报告配置
     REPORT_DIR: str = "data"

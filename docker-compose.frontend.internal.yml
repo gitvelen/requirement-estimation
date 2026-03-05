@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:80"
     volumes:
-      - ./frontend/nginx.internal.conf:/etc/nginx/nginx.conf:ro
+      - ${FRONTEND_NGINX_CONF:-./frontend/nginx.internal.conf}:/etc/nginx/nginx.conf:ro
       - ./frontend/build:/usr/share/nginx/html:ro
     restart: unless-stopped
     networks:

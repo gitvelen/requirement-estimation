@@ -191,24 +191,50 @@ class DocumentParser:
         try:
             from openpyxl import load_workbook
 
-            # 从字节加载工作簿
-            wb = load_workbook(BytesIO(file_content))
+            # 从字节加载工作簿，data_only=True 读取公式计算后的值
+            wb = load_workbook(BytesIO(file_content), data_only=True)
 
             data = {}
 
+            # ESB服务治理文档需要忽略的sheet
+            ignored_sheets = {"系统清单", "字典", "新服务治理平台服务视图"}
+
+            # ESB服务治理文档固定表头（第2行，索引1）
+            esb_fixed_header = [
+                "序号", "投产日期", "系统标识", "系统名称", "系统负责人",
+                "服务场景码", "服务名称", "场景名称", "交易码", "交易名称",
+                "消费方系统标识", "消费方系统名称", "消费方系统负责人",
+                "操作类型", "调用日志检查(ESB项目组)", "是否延期(项目组)",
+                "确认投产（项目组）", "申请人", "需求编号", "备注"
+            ]
+
             # 遍历所有Sheet
+            logger.info(f"文件包含的所有sheets: {wb.sheetnames}")
             for sheet_name in wb.sheetnames:
+                # 跳过需要忽略的sheet
+                if sheet_name in ignored_sheets:
+                    logger.info(f"✓ 跳过Sheet '{sheet_name}'（已配置忽略）")
+                    continue
+                logger.info(f"✗ 处理Sheet '{sheet_name}'（未在忽略列表中）")
+
                 ws = wb[sheet_name]
 
-                # 提取数据
+                # 提取数据：使用固定表头，从第3行（索引2）开始读取数据
                 sheet_data = []
-                for row in ws.iter_rows(values_only=True):
+
+                # 添加固定表头作为第一行
+                sheet_data.append(esb_fixed_header)
+
+                # 从第3行开始读取数据（跳过前2行）
+                for idx, row in enumerate(ws.iter_rows(values_only=True)):
+                    if idx < 2:  # 跳过第1、2行
+                        continue
                     # 过滤空行
                     if any(cell is not None for cell in row):
                         sheet_data.append(list(row))
 
                 data[sheet_name] = sheet_data
-                logger.info(f"Sheet '{sheet_name}': {len(sheet_data)} 行")
+                logger.info(f"Sheet '{sheet_name}': {len(sheet_data)-1} 行数据（使用固定表头）")
 
             logger.info(f"XLSX解析成功，共 {len(data)} 个Sheet")
 
@@ -563,8 +589,16 @@ class DocumentParser:
 
     def _extract_from_xlsx(self, data: Dict, expected_type: Optional[str] = None) -> Dict[str, Any]:
         """从XLSX数据提取知识"""
+        # ESB服务治理文档需要忽略的sheet（与 _parse_xlsx 保持一致）
+        ignored_sheets = {"系统清单", "字典", "新服务治理平台服务视图"}
+
         # 查找系统知识相关的Sheet
         for sheet_name, sheet_data in data.items():
+            # 跳过需要忽略的sheet
+            if sheet_name in ignored_sheets:
+                logger.info(f"提取阶段跳过Sheet '{sheet_name}'（已配置忽略）")
+                continue
+
             if len(sheet_data) > 0:
                 first_row = sheet_data[0]
 

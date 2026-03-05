@@ -15,6 +15,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 PROJECT_DIR="/home/admin/requirement-estimation"
+COMPOSE_FILE="docker-compose.backend.internal.yml"
 
 echo_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -26,6 +27,24 @@ echo_warn() {
 
 echo_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+strip_wrapping_quotes() {
+    local value="$1"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    printf "%s" "$value"
+}
+
+read_env_value() {
+    local key="$1"
+    local env_file="$2"
+    local raw_value
+
+    raw_value="$(grep "^${key}=" "$env_file" | tail -n 1 | cut -d '=' -f2- | tr -d '\r')"
+    strip_wrapping_quotes "$raw_value"
 }
 
 ###############################################################################
@@ -73,7 +92,7 @@ stop_old_service() {
 
     # 停止并删除旧容器
     if docker ps -a | grep -q requirement-backend; then
-        docker-compose -f docker-compose.backend.internal.yml down 2>/dev/null || \
+        docker-compose -f "$COMPOSE_FILE" down 2>/dev/null || \
         docker stop requirement-backend 2>/dev/null || true
         docker rm requirement-backend 2>/dev/null || true
     fi
@@ -102,6 +121,30 @@ configure_env() {
 
     cp .env.backend.internal .env.backend
     echo_info "已从 .env.backend.internal 同步 .env.backend"
+
+    local ENV_FILE=".env.backend"
+    local required_env_keys=("DASHSCOPE_API_KEY" "DASHSCOPE_API_BASE")
+    local key
+    for key in "${required_env_keys[@]}"; do
+        if ! grep -q "^${key}=" "$ENV_FILE"; then
+            echo_error "环境变量缺失: $key（文件: $ENV_FILE）"
+            exit 1
+        fi
+
+        local normalized_value
+        normalized_value="$(read_env_value "$key" "$ENV_FILE")"
+        if [ -z "$normalized_value" ]; then
+            echo_error "环境变量为空: $key（文件: $ENV_FILE）"
+            exit 1
+        fi
+    done
+
+    if ! docker-compose -f "$COMPOSE_FILE" config > /dev/null; then
+        echo_error "docker-compose 配置解析失败，请检查 $COMPOSE_FILE 与 .env.backend"
+        exit 1
+    fi
+
+    echo_info "环境变量文件检查通过"
 }
 
 ###############################################################################
@@ -121,9 +164,9 @@ build_image() {
     fi
 
     # 构建新镜像
-    if ! docker-compose -f docker-compose.backend.internal.yml build --no-cache; then
+    if ! docker-compose -f "$COMPOSE_FILE" build --no-cache; then
         echo_warn "BuildKit 构建失败，回退到经典构建模式（DOCKER_BUILDKIT=0）..."
-        DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose -f docker-compose.backend.internal.yml build --no-cache
+        DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose -f "$COMPOSE_FILE" build --no-cache
     fi
 
     if [ $? -eq 0 ]; then
@@ -179,14 +222,14 @@ start_service() {
     echo_info "目录属主参考：$ref_owner"
 
     # 初始化内网默认账号（用户名=密码，容器内执行，不依赖宿主机 python3）
-    if ! docker-compose -f docker-compose.backend.internal.yml run --rm --no-deps backend \
+    if ! docker-compose -f "$COMPOSE_FILE" run --rm --no-deps backend \
         python scripts/init_internal_users.py --data-dir /app/data; then
         echo_error "默认用户初始化失败"
         exit 1
     fi
 
     # 启动服务
-    docker-compose -f docker-compose.backend.internal.yml up -d
+    docker-compose -f "$COMPOSE_FILE" up -d
 
     if [ $? -eq 0 ]; then
         echo_info "服务启动成功"
@@ -213,6 +256,25 @@ verify_service() {
         exit 1
     fi
 
+    echo_info "验证容器运行时环境变量..."
+    local file_api_base
+    local runtime_api_base
+    file_api_base="$(read_env_value "DASHSCOPE_API_BASE" ".env.backend")"
+    runtime_api_base="$(docker exec requirement-backend printenv DASHSCOPE_API_BASE 2>/dev/null | tr -d '\r')"
+    runtime_api_base="$(strip_wrapping_quotes "$runtime_api_base")"
+
+    if [ -z "$runtime_api_base" ]; then
+        echo_error "容器内未加载 DASHSCOPE_API_BASE"
+        exit 1
+    fi
+
+    if [ "$runtime_api_base" != "$file_api_base" ]; then
+        echo_error "容器内 DASHSCOPE_API_BASE 与 .env.backend 不一致"
+        echo_error "请检查 docker-compose 环境注入链路"
+        exit 1
+    fi
+    echo_info "运行时环境变量验证通过"
+
     echo_info "检查服务健康状态..."
     sleep 5
 
@@ -237,8 +299,8 @@ show_result() {
     echo_info ""
     echo_info "常用命令："
     echo_info "  查看日志：docker logs -f requirement-backend"
-    echo_info "  重启服务：docker-compose -f docker-compose.backend.internal.yml restart"
-    echo_info "  停止服务：docker-compose -f docker-compose.backend.internal.yml down"
+    echo_info "  重启服务：docker-compose -f $COMPOSE_FILE restart"
+    echo_info "  停止服务：docker-compose -f $COMPOSE_FILE down"
     echo_info "========================================"
 }
 
