@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
 from pydantic import BaseModel
 
+from backend.config.config import settings
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.api.auth import require_roles
@@ -57,6 +58,59 @@ def _parsed_to_text(parsed_data: Any) -> str:
     if isinstance(parsed_data, dict):
         if "text" in parsed_data and isinstance(parsed_data.get("text"), str):
             return str(parsed_data.get("text") or "")
+
+        # DOCX parser output: {"paragraphs": [...], "tables": [...], "metadata": {...}}
+        if "paragraphs" in parsed_data:
+            lines = []
+            for paragraph in parsed_data.get("paragraphs") or []:
+                if isinstance(paragraph, dict):
+                    line = str(paragraph.get("text") or "").strip()
+                else:
+                    line = str(paragraph or "").strip()
+                if line:
+                    lines.append(line)
+
+            for table in parsed_data.get("tables") or []:
+                if not isinstance(table, dict):
+                    continue
+                for row in table.get("data") or []:
+                    if isinstance(row, list):
+                        line = " | ".join(str(cell).strip() for cell in row if cell is not None and str(cell).strip())
+                    elif isinstance(row, dict):
+                        line = " ".join(str(v).strip() for v in row.values() if str(v).strip())
+                    else:
+                        line = str(row or "").strip()
+                    if line:
+                        lines.append(line)
+
+            if lines:
+                return "\n".join(lines)
+
+        # PPTX parser output: {"slides": [...]}
+        if "slides" in parsed_data:
+            lines = []
+            for slide in parsed_data.get("slides") or []:
+                if isinstance(slide, dict):
+                    line = str(slide.get("text") or "").strip()
+                else:
+                    line = str(slide or "").strip()
+                if line:
+                    lines.append(line)
+            if lines:
+                return "\n".join(lines)
+
+        # PDF parser output: {"pages": [...]}
+        if "pages" in parsed_data:
+            lines = []
+            for page in parsed_data.get("pages") or []:
+                if isinstance(page, dict):
+                    line = str(page.get("text") or "").strip()
+                else:
+                    line = str(page or "").strip()
+                if line:
+                    lines.append(line)
+            if lines:
+                return "\n".join(lines)
 
         if parsed_data and all(isinstance(v, list) for v in parsed_data.values()):
             lines = []
@@ -195,13 +249,15 @@ async def import_knowledge_v2(
         if not file_content:
             raise ValueError("知识库文件解析失败")
 
-        if len(file_content) > 50 * 1024 * 1024:
+        max_bytes = int(getattr(settings, "KNOWLEDGE_IMPORT_MAX_BYTES", 200 * 1024 * 1024))
+        max_mb = max(int(max_bytes // (1024 * 1024)), 1)
+        if len(file_content) > max_bytes:
             return build_error_response(
                 request=request,
                 status_code=400,
                 error_code="KNOW_001",
                 message="知识库文件类型不支持",
-                details={"reason": "文件大小超过50MB限制"},
+                details={"reason": f"文件大小超过{max_mb}MB限制"},
             )
 
         knowledge_service = get_knowledge_service()
@@ -412,11 +468,13 @@ async def import_knowledge(
         # 读取文件内容
         content = await file.read()
 
-        # 验证文件大小（限制50MB）
-        if len(content) > 50 * 1024 * 1024:
+        # 验证文件大小（可配置，默认200MB）
+        max_bytes = int(getattr(settings, "KNOWLEDGE_IMPORT_MAX_BYTES", 200 * 1024 * 1024))
+        max_mb = max(int(max_bytes // (1024 * 1024)), 1)
+        if len(content) > max_bytes:
             raise HTTPException(
                 status_code=413,
-                detail="文件过大，最大允许50MB"
+                detail=f"文件过大，最大允许{max_mb}MB"
             )
 
         # 获取知识库服务

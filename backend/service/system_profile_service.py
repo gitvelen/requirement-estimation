@@ -218,6 +218,21 @@ class SystemProfileService:
             else str(raw_fields.get("key_constraints")).strip(),
         }
 
+    def _normalize_ai_suggestion_ignored_for_storage(self, value: Any) -> Dict[str, Any]:
+        raw_ignored = value if isinstance(value, dict) else {}
+        normalized: Dict[str, Any] = {}
+        for raw_key, raw_value in raw_ignored.items():
+            field_path = str(raw_key or "").strip()
+            if not field_path or "." not in field_path:
+                continue
+            domain_key, sub_field = field_path.split(".", 1)
+            domain_key = domain_key.strip()
+            sub_field = sub_field.strip()
+            if not domain_key or not sub_field:
+                continue
+            normalized[f"{domain_key}.{sub_field}"] = copy.deepcopy(raw_value)
+        return normalized
+
     def _normalize_profile_for_output(self, profile: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(profile or {})
         raw_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
@@ -226,6 +241,9 @@ class SystemProfileService:
             payload["field_sources"] = {}
         if not isinstance(payload.get("ai_suggestions"), dict):
             payload["ai_suggestions"] = {}
+        payload["ai_suggestion_ignored"] = self._normalize_ai_suggestion_ignored_for_storage(
+            payload.get("ai_suggestion_ignored")
+        )
         payload.setdefault("ai_suggestions_updated_at", "")
         if payload.get("ai_suggestions_updated_at") is None:
             payload["ai_suggestions_updated_at"] = ""
@@ -467,6 +485,10 @@ class SystemProfileService:
                 profile["ai_suggestions_previous"] = self._migrate_suggestions_structure(previous, fields)
                 changed = True
 
+        if not isinstance(profile.get("ai_suggestion_ignored"), dict):
+            profile["ai_suggestion_ignored"] = {}
+            changed = True
+
         if not isinstance(profile.get("ai_correction_history"), dict):
             profile["ai_correction_history"] = self._default_ai_correction_history()
             changed = True
@@ -682,6 +704,12 @@ class SystemProfileService:
                 )
                 profile["fields"] = normalized_for_storage
 
+            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
+            ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+            if ignored_key in ignored_map:
+                ignored_map.pop(ignored_key, None)
+                profile["ai_suggestion_ignored"] = ignored_map
+
             self._append_profile_event(
                 profile,
                 event_type="ai_suggestion_accept",
@@ -738,6 +766,12 @@ class SystemProfileService:
             target_domain[normalized_sub_field] = rolled_back_value
             profile["ai_suggestions"] = ai_suggestions
 
+            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
+            ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+            if ignored_key in ignored_map:
+                ignored_map.pop(ignored_key, None)
+                profile["ai_suggestion_ignored"] = ignored_map
+
             self._append_profile_event(
                 profile,
                 event_type="ai_suggestion_rollback",
@@ -753,6 +787,58 @@ class SystemProfileService:
                 "profile": self._normalize_profile_for_output(profile),
                 "rolled_back_value": rolled_back_value,
             }
+
+    def ignore_ai_suggestion(
+        self,
+        system_name: str,
+        *,
+        domain: str,
+        sub_field: str,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        normalized_domain = str(domain or "").strip()
+        normalized_sub_field = str(sub_field or "").strip()
+        if not name:
+            raise ValueError("system_name不能为空")
+        if not normalized_domain or not normalized_sub_field:
+            raise ValueError("invalid_domain_or_sub_field")
+
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        now = datetime.now().isoformat()
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                raise ValueError("系统画像不存在")
+
+            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+            fields = self._normalize_fields_for_output(fields)
+            ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
+
+            domain_payload = ai_suggestions.get(normalized_domain)
+            if not isinstance(domain_payload, dict) or (normalized_sub_field not in domain_payload):
+                raise ValueError("SUGGESTION_NOT_FOUND")
+
+            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
+            ignored_value = copy.deepcopy(domain_payload.get(normalized_sub_field))
+            ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+            ignored_map[ignored_key] = ignored_value
+            profile["ai_suggestion_ignored"] = ignored_map
+
+            self._append_profile_event(
+                profile,
+                event_type="ai_suggestion_ignore",
+                source=actor_name,
+                summary=f"忽略 {normalized_domain}.{normalized_sub_field} 的 AI 建议",
+                affected_domains=[normalized_domain],
+            )
+            profile["updated_at"] = now
+            profile["updated_by_name"] = actor_name
+            self._save_unlocked(items)
+
+            return self._normalize_profile_for_output(profile)
 
     def record_import_history(
         self,
@@ -961,6 +1047,7 @@ class SystemProfileService:
         evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
         system_id = str(payload.get("system_id") or "").strip()
         incoming_sources = payload.get("field_sources") if isinstance(payload.get("field_sources"), dict) else {}
+        incoming_ignored = self._normalize_ai_suggestion_ignored_for_storage(payload.get("ai_suggestion_ignored"))
 
         now = datetime.now().isoformat()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
@@ -979,6 +1066,7 @@ class SystemProfileService:
                     "pending_fields": [],
                     "field_sources": {},
                     "ai_suggestions": {},
+                    "ai_suggestion_ignored": {},
                     "ai_suggestions_updated_at": "",
                     "created_at": now,
                 }
@@ -1015,6 +1103,11 @@ class SystemProfileService:
                     continue
                 field_sources[k] = v
             existing["field_sources"] = field_sources
+
+            if incoming_ignored:
+                existing["ai_suggestion_ignored"] = incoming_ignored
+            elif not isinstance(existing.get("ai_suggestion_ignored"), dict):
+                existing["ai_suggestion_ignored"] = {}
 
             existing["updated_by"] = actor_id
             existing["updated_by_name"] = actor_name

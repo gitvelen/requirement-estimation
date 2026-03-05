@@ -123,7 +123,7 @@ configure_env() {
     echo_info "已从 .env.backend.internal 同步 .env.backend"
 
     local ENV_FILE=".env.backend"
-    local required_env_keys=("DASHSCOPE_API_KEY" "DASHSCOPE_API_BASE")
+    local required_env_keys=("DASHSCOPE_API_KEY" "DASHSCOPE_API_BASE" "EMBEDDING_API_BASE" "EMBEDDING_MODEL")
     local key
     for key in "${required_env_keys[@]}"; do
         if ! grep -q "^${key}=" "$ENV_FILE"; then
@@ -259,6 +259,8 @@ verify_service() {
     echo_info "验证容器运行时环境变量..."
     local file_api_base
     local runtime_api_base
+    local file_embedding_base
+    local runtime_embedding_base
     file_api_base="$(read_env_value "DASHSCOPE_API_BASE" ".env.backend")"
     runtime_api_base="$(docker exec requirement-backend printenv DASHSCOPE_API_BASE 2>/dev/null | tr -d '\r')"
     runtime_api_base="$(strip_wrapping_quotes "$runtime_api_base")"
@@ -270,6 +272,21 @@ verify_service() {
 
     if [ "$runtime_api_base" != "$file_api_base" ]; then
         echo_error "容器内 DASHSCOPE_API_BASE 与 .env.backend 不一致"
+        echo_error "请检查 docker-compose 环境注入链路"
+        exit 1
+    fi
+
+    file_embedding_base="$(read_env_value "EMBEDDING_API_BASE" ".env.backend")"
+    runtime_embedding_base="$(docker exec requirement-backend printenv EMBEDDING_API_BASE 2>/dev/null | tr -d '\r')"
+    runtime_embedding_base="$(strip_wrapping_quotes "$runtime_embedding_base")"
+
+    if [ -z "$runtime_embedding_base" ]; then
+        echo_error "容器内未加载 EMBEDDING_API_BASE"
+        exit 1
+    fi
+
+    if [ "$runtime_embedding_base" != "$file_embedding_base" ]; then
+        echo_error "容器内 EMBEDDING_API_BASE 与 .env.backend 不一致"
         echo_error "请检查 docker-compose 环境注入链路"
         exit 1
     fi

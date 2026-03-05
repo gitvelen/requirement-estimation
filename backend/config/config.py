@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     KNOWLEDGE_ENABLED: bool = os.getenv("KNOWLEDGE_ENABLED", "true").lower() == "true"
     # 向量存储后端：local（本地文件向量库）/ milvus（Milvus向量库，需配套MinIO等）
     KNOWLEDGE_VECTOR_STORE: str = os.getenv("KNOWLEDGE_VECTOR_STORE", "local").lower()
-    EMBEDDING_MODEL: str = "text-embedding-v2"  # 阿里云Embedding模型
+    EMBEDDING_API_BASE: str = os.getenv("EMBEDDING_API_BASE", "").strip()  # embedding独立网关（可选）
+    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "auto").strip().lower()  # auto/openai/dashscope
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")  # Embedding模型
     EMBEDDING_DIM: int = 1024  # 向量维度
     KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
     KNOWLEDGE_SIMILARITY_THRESHOLD: float = 0.6  # 相似度阈值
@@ -62,6 +64,34 @@ class Settings(BaseSettings):
     # 文件上传配置
     UPLOAD_DIR: str = "uploads"
     MAX_FILE_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10")) * 1024 * 1024  # 默认10MB
+    SYSTEM_PROFILE_IMPORT_MAX_BYTES: int = int(
+        os.getenv("SYSTEM_PROFILE_IMPORT_MAX_MB", "200")
+    ) * 1024 * 1024
+    KNOWLEDGE_IMPORT_MAX_BYTES: int = int(
+        os.getenv("KNOWLEDGE_IMPORT_MAX_MB", "200")
+    ) * 1024 * 1024
+
+    # 系统画像AI总结上下文配置（字符级）
+    PROFILE_SUMMARY_CONTEXT_MAX_CHARS: int = int(
+        os.getenv("PROFILE_SUMMARY_CONTEXT_MAX_CHARS", "120000")
+    )
+    PROFILE_SUMMARY_SAMPLE_MAX_ITEMS: int = int(
+        os.getenv("PROFILE_SUMMARY_SAMPLE_MAX_ITEMS", "48")
+    )
+    PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS: int = int(
+        os.getenv("PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS", "1200")
+    )
+
+    # 非结构化文档切片配置
+    KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE: int = int(
+        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE", "1000")
+    )
+    KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP: int = int(
+        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP", "150")
+    )
+    KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS: int = int(
+        os.getenv("KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS", "2000")
+    )
 
     @property
     def ALLOWED_EXTENSIONS(self) -> set:

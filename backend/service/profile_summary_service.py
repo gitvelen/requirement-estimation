@@ -30,6 +30,57 @@ logger = logging.getLogger(__name__)
 
 PROFILE_DOMAIN_KEYS = tuple(PROFILE_V24_DOMAIN_KEYS)
 
+DOMAIN_HINT_KEYWORDS: Dict[str, tuple[str, ...]] = {
+    "system_positioning": (
+        "系统定位",
+        "边界",
+        "目标用户",
+        "适用范围",
+        "业务背景",
+    ),
+    "business_capabilities": (
+        "模块",
+        "流程",
+        "功能",
+        "开户",
+        "还款",
+        "交易",
+    ),
+    "integration_interfaces": (
+        "接口",
+        "esb",
+        "rpc",
+        "sftp",
+        "对接",
+        "外部系统",
+        "报文",
+    ),
+    "technical_architecture": (
+        "技术架构",
+        "架构",
+        "部署",
+        "技术栈",
+        "高可用",
+        "性能",
+        "并发",
+        "微服务",
+        "tomcat",
+        "redis",
+        "mysql",
+        "sofa",
+        "jvm",
+    ),
+    "constraints_risks": (
+        "约束",
+        "风险",
+        "限制",
+        "假设",
+        "依赖",
+        "安全",
+        "合规",
+    ),
+}
+
 
 class ProfileSummaryService:
     def __init__(self) -> None:
@@ -238,6 +289,18 @@ class ProfileSummaryService:
 
         # ESB entries (best-effort)
         try:
+            def _normalize(value: Any) -> str:
+                text = str(value or "").strip()
+                return text.casefold() if text else ""
+
+            owner_info = system_routes.resolve_system_owner(system_id=system_id, system_name=system_name)
+            target_candidates = {
+                _normalize(system_id),
+                _normalize(system_name),
+                _normalize(owner_info.get("system_abbreviation")),
+            }
+            target_candidates.discard("")
+
             esb = get_esb_service()
             with esb._lock():  # noqa: SLF001 - internal lock reused for read
                 store = esb._load_unlocked()  # noqa: SLF001 - file store, safe for internal read
@@ -246,9 +309,11 @@ class ProfileSummaryService:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                pid = str(entry.get("provider_system_id") or "").strip()
-                cid = str(entry.get("consumer_system_id") or "").strip()
-                if system_id not in {pid, cid}:
+                pid = _normalize(entry.get("provider_system_id"))
+                cid = _normalize(entry.get("consumer_system_id"))
+                pname = _normalize(entry.get("provider_system_name"))
+                cname = _normalize(entry.get("consumer_system_name"))
+                if not any(value in target_candidates for value in (pid, cid, pname, cname) if value):
                     continue
                 related.append(entry)
             samples = []
@@ -283,11 +348,11 @@ class ProfileSummaryService:
                     ]
                     related.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
                     samples = []
-                    for item in related[:12]:
+                    for item in self._select_knowledge_samples(related, max_items=self._sample_max_items()):
                         content = str(item.get("content") or "").strip()
                         if not content:
                             continue
-                        samples.append(content[:500])
+                        samples.append(content[: self._sample_item_max_chars()])
                     parts.append("【文档/代码材料片段】")
                     parts.append(f"chunks_total={len(related)}")
                     if samples:
@@ -298,7 +363,113 @@ class ProfileSummaryService:
         joined = "\n".join(parts).strip()
         if not joined:
             return f"系统：{system_name}（{system_id}）。材料不足。"
-        return joined[:12000]
+        return joined[: self._context_max_chars()]
+
+    def _context_max_chars(self) -> int:
+        value = int(getattr(settings, "PROFILE_SUMMARY_CONTEXT_MAX_CHARS", 120000) or 120000)
+        return max(value, 12000)
+
+    def _sample_max_items(self) -> int:
+        value = int(getattr(settings, "PROFILE_SUMMARY_SAMPLE_MAX_ITEMS", 48) or 48)
+        return max(value, 12)
+
+    def _sample_item_max_chars(self) -> int:
+        value = int(getattr(settings, "PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS", 1200) or 1200)
+        return max(value, 300)
+
+    def _extract_chunk_index(self, item: Dict[str, Any]) -> Optional[int]:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        raw_chunk_index = metadata.get("chunk_index")
+        if raw_chunk_index is None:
+            return None
+        try:
+            return int(raw_chunk_index)
+        except (TypeError, ValueError):
+            return None
+
+    def _select_knowledge_samples(self, related: List[Dict[str, Any]], max_items: int = 12) -> List[Dict[str, Any]]:
+        if not related:
+            return []
+
+        if len(related) <= max_items:
+            selected = list(related)
+        else:
+            latest = related[0] if isinstance(related[0], dict) else {}
+            latest_metadata = latest.get("metadata") if isinstance(latest.get("metadata"), dict) else {}
+            latest_source = str(latest_metadata.get("source_filename") or latest.get("source_file") or "").strip()
+
+            source_related: List[Dict[str, Any]] = []
+            if latest_source:
+                for item in related:
+                    if not isinstance(item, dict):
+                        continue
+                    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                    source_name = str(metadata.get("source_filename") or item.get("source_file") or "").strip()
+                    if source_name == latest_source:
+                        source_related.append(item)
+
+            candidate = source_related if source_related else related
+
+            candidate_with_index = [
+                (item, self._extract_chunk_index(item))
+                for item in candidate
+                if isinstance(item, dict)
+            ]
+            candidate_with_index = [
+                (item, idx)
+                for item, idx in candidate_with_index
+                if idx is not None
+            ]
+
+            if candidate_with_index:
+                candidate_with_index.sort(key=lambda pair: pair[1])
+                ordered = [item for item, _ in candidate_with_index]
+                if len(ordered) <= max_items:
+                    selected = ordered
+                else:
+                    selected = []
+                    total = len(ordered)
+                    for i in range(max_items):
+                        slot = round(i * (total - 1) / (max_items - 1))
+                        chosen = ordered[slot]
+                        if chosen not in selected:
+                            selected.append(chosen)
+            else:
+                head_count = max_items // 2
+                tail_count = max_items - head_count
+                selected = candidate[:head_count] + candidate[-tail_count:]
+                deduped: List[Dict[str, Any]] = []
+                seen_keys = set()
+                for item in selected:
+                    item_key = (
+                        str(item.get("id") or ""),
+                        str(item.get("created_at") or ""),
+                        str((item.get("metadata") or {}).get("chunk_index") if isinstance(item.get("metadata"), dict) else ""),
+                        str((item.get("metadata") or {}).get("source_filename") if isinstance(item.get("metadata"), dict) else ""),
+                    )
+                    if item_key in seen_keys:
+                        continue
+                    seen_keys.add(item_key)
+                    deduped.append(item)
+                selected = deduped
+
+        selected.sort(
+            key=lambda item: (
+                self._extract_chunk_index(item) if self._extract_chunk_index(item) is not None else 10**9,
+                str(item.get("created_at") or ""),
+            )
+        )
+        return selected[:max_items]
+
+    def _infer_domains_from_context(self, context: str) -> List[str]:
+        haystack = str(context or "").lower()
+        inferred: List[str] = []
+        for domain, keywords in DOMAIN_HINT_KEYWORDS.items():
+            if domain not in PROFILE_DOMAIN_KEYS:
+                continue
+            if any(str(keyword or "").lower() in haystack for keyword in keywords):
+                inferred.append(domain)
+        return inferred
 
     def _normalize_relevant_domains(self, raw_domains: Any) -> List[str]:
         if isinstance(raw_domains, str):
@@ -351,11 +522,12 @@ class ProfileSummaryService:
         ]
 
     def _call_llm(self, *, system_id: str, system_name: str, context: str) -> Dict[str, Any]:
+        context_window = (context or "")[: self._context_max_chars()]
         stage1_prompt = f"""请基于以下材料判断系统画像相关域，并识别材料中提及的其他系统。
 
 系统：{system_name}（system_id={system_id}）
 材料（可能不完整）：
-{(context or '')[:9000]}
+{context_window}
 
 请只返回JSON（不要解释），格式：
 {{
@@ -374,6 +546,10 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
         stage1_parsed = llm_client.extract_json(stage1_response)
         stage1_data = stage1_parsed if isinstance(stage1_parsed, dict) else {}
         relevant_domains = self._normalize_relevant_domains(stage1_data.get("relevant_domains"))
+        inferred_domains = self._infer_domains_from_context(context_window)
+        for domain in inferred_domains:
+            if domain not in relevant_domains:
+                relevant_domains.append(domain)
         related_systems = self._normalize_related_systems(
             stage1_data.get("related_systems"),
             current_system_name=system_name,
@@ -387,7 +563,7 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
 系统：{system_name}（system_id={system_id}）
 相关域：{", ".join(relevant_domains)}
 材料（可能不完整）：
-{(context or '')[:9000]}
+{context_window}
 
 请只返回JSON（不要解释），格式：
 {{

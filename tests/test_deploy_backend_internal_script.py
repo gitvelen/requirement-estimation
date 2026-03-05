@@ -19,6 +19,12 @@ def test_deploy_script_initializes_users_in_container_without_host_python():
 def test_deploy_script_validates_llm_env_keys_and_runtime_injection():
     script_text = (ROOT_DIR / "deploy-backend-internal.sh").read_text(encoding="utf-8")
 
-    assert "required_env_keys=(\"DASHSCOPE_API_KEY\" \"DASHSCOPE_API_BASE\")" in script_text
+    assert (
+        "required_env_keys=("
+        "\"DASHSCOPE_API_KEY\" \"DASHSCOPE_API_BASE\" "
+        "\"EMBEDDING_API_BASE\" \"EMBEDDING_MODEL\""
+        ")"
+    ) in script_text
     assert "grep -q \"^${key}=\"" in script_text
     assert "docker exec requirement-backend printenv DASHSCOPE_API_BASE" in script_text
+    assert "docker exec requirement-backend printenv EMBEDDING_API_BASE" in script_text

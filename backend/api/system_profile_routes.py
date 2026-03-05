@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 from backend.api import system_routes
 from backend.api.auth import require_roles
 from backend.api.error_utils import build_error_response
+from backend.config.config import settings
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.system_profile_service import get_system_profile_service
 
@@ -60,6 +62,59 @@ def _parsed_to_text(parsed_data: Any) -> str:
         if "text" in parsed_data and isinstance(parsed_data.get("text"), str):
             return str(parsed_data.get("text") or "")
 
+        # DOCX parser output: {"paragraphs": [...], "tables": [...], "metadata": {...}}
+        if "paragraphs" in parsed_data:
+            lines = []
+            for paragraph in parsed_data.get("paragraphs") or []:
+                if isinstance(paragraph, dict):
+                    line = str(paragraph.get("text") or "").strip()
+                else:
+                    line = str(paragraph or "").strip()
+                if line:
+                    lines.append(line)
+
+            for table in parsed_data.get("tables") or []:
+                if not isinstance(table, dict):
+                    continue
+                for row in table.get("data") or []:
+                    if isinstance(row, list):
+                        line = " | ".join(str(cell).strip() for cell in row if cell is not None and str(cell).strip())
+                    elif isinstance(row, dict):
+                        line = " ".join(str(v).strip() for v in row.values() if str(v).strip())
+                    else:
+                        line = str(row or "").strip()
+                    if line:
+                        lines.append(line)
+
+            if lines:
+                return "\n".join(lines)
+
+        # PPTX parser output: {"slides": [...]}
+        if "slides" in parsed_data:
+            lines = []
+            for slide in parsed_data.get("slides") or []:
+                if isinstance(slide, dict):
+                    line = str(slide.get("text") or "").strip()
+                else:
+                    line = str(slide or "").strip()
+                if line:
+                    lines.append(line)
+            if lines:
+                return "\n".join(lines)
+
+        # PDF parser output: {"pages": [...]}
+        if "pages" in parsed_data:
+            lines = []
+            for page in parsed_data.get("pages") or []:
+                if isinstance(page, dict):
+                    line = str(page.get("text") or "").strip()
+                else:
+                    line = str(page or "").strip()
+                if line:
+                    lines.append(line)
+            if lines:
+                return "\n".join(lines)
+
         if parsed_data and all(isinstance(v, list) for v in parsed_data.values()):
             lines = []
             for _, rows in parsed_data.items():
@@ -74,6 +129,11 @@ def _parsed_to_text(parsed_data: Any) -> str:
                             lines.append(line)
             if lines:
                 return "\n".join(lines)
+
+        try:
+            return json.dumps(parsed_data, ensure_ascii=False)
+        except Exception:
+            return str(parsed_data)
 
     return str(parsed_data)
 
@@ -397,8 +457,10 @@ async def import_profile_document(
         if not file_content:
             raise ValueError("文件内容为空")
 
-        if len(file_content) > 50 * 1024 * 1024:
-            raise ValueError("文件大小超过50MB限制")
+        max_bytes = int(getattr(settings, "SYSTEM_PROFILE_IMPORT_MAX_BYTES", 200 * 1024 * 1024))
+        max_mb = max(int(max_bytes // (1024 * 1024)), 1)
+        if len(file_content) > max_bytes:
+            raise ValueError(f"文件大小超过{max_mb}MB限制")
 
         knowledge_service = get_knowledge_service()
         parsed_data = knowledge_service.document_parser.parse(
@@ -660,6 +722,63 @@ async def accept_profile_suggestion(
             status_code=500,
             error_code="PROFILE_ACCEPT_FAILED",
             message="采纳 AI 建议失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/{system_id}/profile/suggestions/ignore")
+async def ignore_profile_suggestion(
+    system_id: str,
+    payload: SuggestionActionPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    forbidden = _ensure_owner_or_backup_for_draft_write(
+        current_user,
+        request=request,
+        system_name=resolved_system_name,
+        system_id=normalized_system_id,
+    )
+    if forbidden:
+        return forbidden
+
+    service = get_system_profile_service()
+    try:
+        profile = service.ignore_ai_suggestion(
+            resolved_system_name,
+            domain=payload.domain,
+            sub_field=payload.sub_field,
+            actor=current_user,
+        )
+        return {"code": 200, "data": profile}
+    except ValueError as exc:
+        if str(exc) == "SUGGESTION_NOT_FOUND":
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="SUGGESTION_NOT_FOUND",
+                message="AI 建议不存在",
+                details={"domain": payload.domain, "sub_field": payload.sub_field},
+            )
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_IGNORE_FAILED",
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("忽略 AI 建议失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_IGNORE_FAILED",
+            message="忽略 AI 建议失败",
             details={"reason": str(exc)},
         )
 

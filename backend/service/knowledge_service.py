@@ -33,9 +33,9 @@ class KnowledgeService:
     TYPE_SYSTEM_PROFILE = "system_profile"  # 系统知识
 
     # 非结构化导入切分策略（本期：本地向量库）
-    UNSTRUCTURED_CHUNK_SIZE = 800
-    UNSTRUCTURED_CHUNK_OVERLAP = 120
-    MAX_UNSTRUCTURED_CHUNKS = 200
+    UNSTRUCTURED_CHUNK_SIZE = max(int(getattr(settings, "KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE", 1000) or 1000), 200)
+    UNSTRUCTURED_CHUNK_OVERLAP = max(int(getattr(settings, "KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP", 150) or 150), 0)
+    MAX_UNSTRUCTURED_CHUNKS = max(int(getattr(settings, "KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS", 2000) or 2000), 100)
 
     def __init__(self):
         """初始化服务"""

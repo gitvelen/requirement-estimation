@@ -13,7 +13,7 @@ dist/
 build/
 .python-version
 
-# UV（忽略缓存目录，但保留 uv.lock）
+# uv cache
 .uv/
 
 # Node
@@ -30,24 +30,22 @@ yarn-error.log
 *.swp
 *.swo
 
-# 项目
+# Runtime data
 logs/
 data/
 uploads/
 *.log
+
+# Git
 .git/
 .gitignore
 
-# 旧版依赖管理（已弃用，保留用于兼容）
-requirements.txt
-
-# 测试
+# Tests
 .pytest_cache/
 .coverage
 htmlcov/
 
-# 文档（排除 docs 目录下的文件，但保留系统清单模板）
-docs/
-!docs/系统清单模板.xlsx
+# Docs
 *.md
 !README.md
+docs/

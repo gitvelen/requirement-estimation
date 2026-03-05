@@ -255,11 +255,16 @@ async def import_esb(
             raise ValueError("ESB文件解析失败或为空")
 
         service = get_esb_service()
+        target_system_aliases = [
+            str((owner_info or {}).get("system_name") or "").strip(),
+            str((owner_info or {}).get("system_abbreviation") or "").strip(),
+        ]
         result = service.import_esb(
             file_content=file_content,
             filename=file.filename,
             mapping_json=mapping_override,
             target_system_id=normalized_system_id,
+            target_system_aliases=target_system_aliases,
             strict_embedding=True,
         )
 

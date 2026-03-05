@@ -267,6 +267,88 @@ def test_profile_suggestion_accept_rollback_and_events(client, monkeypatch):
     assert "ai_suggestion_rollback" in event_types
 
 
+def test_profile_suggestion_ignore_persists_and_records_event(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    owner = _seed_user("owner_profile_ignore", "owner123", ["manager"])
+    _seed_system(owner, system_id="sys_ignore", system_name="IGNORE_CASE")
+    token = _login(client, "owner_profile_ignore", "owner123")
+
+    saved = client.put(
+        "/api/v1/system-profiles/IGNORE_CASE",
+        json={
+            "system_id": "sys_ignore",
+            "profile_data": {
+                "system_positioning": {
+                    "system_description": "当前系统描述",
+                    "target_users": [],
+                    "boundaries": [],
+                },
+                "business_capabilities": {
+                    "module_structure": [],
+                    "core_processes": [],
+                },
+                "integration_interfaces": {
+                    "integration_points": [],
+                    "external_dependencies": [],
+                },
+                "technical_architecture": {
+                    "architecture_positioning": "",
+                    "tech_stack": [],
+                    "performance_profile": {},
+                },
+                "constraints_risks": {
+                    "key_constraints": [],
+                    "known_risks": [],
+                },
+            },
+            "evidence_refs": [],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert saved.status_code == 200
+
+    store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    with open(store_path, "r", encoding="utf-8") as f:
+        rows = json.load(f)
+    assert rows and isinstance(rows, list)
+    rows[0]["ai_suggestions"] = {
+        "system_positioning": {
+            "system_description": "AI建议-系统描述",
+        }
+    }
+    rows[0]["profile_events"] = []
+    with open(store_path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, ensure_ascii=False, indent=2)
+
+    ignored = client.post(
+        "/api/v1/system-profiles/sys_ignore/profile/suggestions/ignore",
+        json={"domain": "system_positioning", "sub_field": "system_description"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert ignored.status_code == 200
+    ignored_data = ignored.json().get("data") or {}
+    ignored_map = ignored_data.get("ai_suggestion_ignored") or {}
+    assert ignored_map.get("system_positioning.system_description") == "AI建议-系统描述"
+
+    fetched = client.get(
+        "/api/v1/system-profiles/IGNORE_CASE",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert fetched.status_code == 200
+    fetched_data = fetched.json().get("data") or {}
+    assert (fetched_data.get("ai_suggestion_ignored") or {}).get("system_positioning.system_description") == "AI建议-系统描述"
+
+    events = client.get(
+        "/api/v1/system-profiles/sys_ignore/profile/events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert events.status_code == 200
+    items = events.json().get("items") or []
+    event_types = [item.get("event_type") for item in items]
+    assert "ai_suggestion_ignore" in event_types
+
+
 def test_profile_events_returns_empty_when_profile_not_created(client, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
 

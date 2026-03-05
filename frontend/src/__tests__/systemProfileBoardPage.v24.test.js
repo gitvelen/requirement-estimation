@@ -397,4 +397,91 @@ describe('SystemProfileBoardPage v2.4', () => {
     expect(screen.queryByText('新增边界说明')).not.toBeInTheDocument();
     expect(screen.queryByText('删除')).not.toBeInTheDocument();
   });
+
+  it('does not show suggestion diff for module_structure when only last_updated differs', async () => {
+    setupAxiosMock({
+      profileOverrides: {
+        profile_data: {
+          ...createProfilePayload().profile_data,
+          business_capabilities: {
+            module_structure: [
+              {
+                module_name: '开户',
+                functions: [{ name: '证件校验', desc: 'OCR' }],
+                last_updated: '2026-03-05T10:00:00',
+              },
+            ],
+            core_processes: ['开户审核'],
+          },
+        },
+        ai_suggestions: {
+          business_capabilities: {
+            module_structure: [
+              {
+                module_name: '开户',
+                functions: [{ name: '证件校验', desc: 'OCR' }],
+              },
+            ],
+          },
+        },
+      },
+      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
+    });
+
+    renderPage();
+    await screen.findByText('保存草稿');
+    fireEvent.click(screen.getByRole('button', { name: /D2 业务能力与流程/ }));
+
+    await screen.findByDisplayValue('开户');
+    expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+  }, 60000);
+
+  it('keeps ignored suggestion hidden after saving draft', async () => {
+    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
+    axios.put.mockResolvedValue({ data: { code: 200 } });
+    axios.post.mockResolvedValue({ data: { code: 200, data: createProfilePayload() } });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('检测到 AI 建议变更')).toBeInTheDocument();
+    }, { timeout: 5000 });
+    const ignoreButton = screen.getByText(/忽\s*略/).closest('button');
+    expect(ignoreButton).not.toBeNull();
+    fireEvent.click(ignoreButton);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      expect(String(axios.post.mock.calls[0][0])).toContain('/profile/suggestions/ignore');
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+    });
+
+    const saveButton = screen.getByText('保存草稿').closest('button');
+    expect(saveButton).not.toBeNull();
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      const activeSaveButton = screen.getByText('保存草稿').closest('button');
+      expect(activeSaveButton).not.toBeNull();
+      expect(activeSaveButton).toHaveClass('ant-btn-loading');
+    });
+
+    await waitFor(() => {
+      const activeSaveButton = screen.getByText('保存草稿').closest('button');
+      expect(activeSaveButton).not.toBeNull();
+      expect(activeSaveButton).not.toHaveClass('ant-btn-loading');
+    });
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledTimes(1);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+    });
+  }, 20000);
+
 });

@@ -1,9 +1,11 @@
 import copy
 import json
+from contextlib import contextmanager
 
 import pytest
 
 from backend.config.config import settings
+from backend.api import system_routes
 from backend.service import profile_summary_service
 from backend.service.system_profile_service import SystemProfileService
 
@@ -164,3 +166,133 @@ def test_set_ai_suggestions_updates_only_relevant_domain_and_keeps_previous(prof
     last_event = events[-1]
     assert last_event.get("event_type") == "document_import"
     assert last_event.get("affected_domains") == ["integration_interfaces"]
+
+
+def test_build_context_collects_esb_entries_by_system_alias(profile_services, monkeypatch):
+    class _DummyEsbService:
+        @contextmanager
+        def _lock(self):
+            yield
+
+        def _load_unlocked(self):
+            return {
+                "entries": [
+                    {
+                        "provider_system_id": "ULCA",
+                        "provider_system_name": "贷款核算",
+                        "consumer_system_id": "CLMP",
+                        "consumer_system_name": "融资中台",
+                        "service_name": "一般贷款开户",
+                        "scenario_code": "3022000701",
+                        "status": "正常使用",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(profile_summary_service, "get_esb_service", lambda: _DummyEsbService())
+    monkeypatch.setattr(
+        system_routes,
+        "resolve_system_owner",
+        lambda **_: {
+            "system_found": True,
+            "system_id": "6d8a1fc0d67e4b7785f1a9a2670d08c6",
+            "system_name": "贷款核算",
+            "system_abbreviation": "ULCA",
+        },
+    )
+
+    summary_service = profile_summary_service.ProfileSummaryService()
+    context = summary_service._build_context(
+        system_id="6d8a1fc0d67e4b7785f1a9a2670d08c6",
+        system_name="贷款核算",
+    )
+
+    assert "【ESB】" in context
+    assert "entries_total=1" in context
+    assert "一般贷款开户" in context
+
+
+def test_build_context_samples_chunks_across_latest_source(profile_services):
+    data_dir = profile_services["data_dir"]
+    store_path = data_dir / "knowledge_store.json"
+
+    rows = []
+    for idx in range(20):
+        rows.append(
+            {
+                "system_name": "贷款核算",
+                "knowledge_type": "document",
+                "content": f"chunk-{idx}",
+                "created_at": f"2026-03-05T09:40:{idx:02d}.000000",
+                "source_file": "v1.docx",
+                "metadata": {
+                    "chunk_index": idx,
+                    "source_filename": "v1.docx",
+                },
+            }
+        )
+
+    with open(store_path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, ensure_ascii=False, indent=2)
+
+    summary_service = profile_summary_service.ProfileSummaryService()
+    context = summary_service._build_context(system_id="sys_hop", system_name="贷款核算")
+
+    assert "【文档/代码材料片段】" in context
+    assert "chunks_total=20" in context
+    assert "chunk-0" in context
+    assert "chunk-10" in context
+    assert "chunk-19" in context
+
+
+def test_call_llm_merges_domain_hints_from_context(monkeypatch):
+    call_counter = {"count": 0}
+    stage2_prompts = []
+
+    def _fake_chat_with_system_prompt(*, system_prompt, user_prompt, temperature, max_tokens):
+        _ = system_prompt
+        _ = temperature
+        _ = max_tokens
+        call_counter["count"] += 1
+        if call_counter["count"] == 1:
+            return json.dumps(
+                {
+                    "relevant_domains": ["system_positioning", "business_capabilities", "integration_interfaces"],
+                    "related_systems": [],
+                },
+                ensure_ascii=False,
+            )
+
+        stage2_prompts.append(user_prompt)
+        return json.dumps(
+            {
+                "suggestions": {
+                    "technical_architecture": {
+                        "architecture_positioning": "微服务架构",
+                        "tech_stack": ["Java", "Redis"],
+                        "performance_profile": {"峰值TPS": "70"},
+                    }
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(
+        profile_summary_service.llm_client,
+        "chat_with_system_prompt",
+        _fake_chat_with_system_prompt,
+    )
+    monkeypatch.setattr(profile_summary_service.llm_client, "extract_json", lambda value: json.loads(value))
+
+    summary_service = profile_summary_service.ProfileSummaryService()
+    context = "系统采用微服务架构，技术栈包含 Java、Redis，应用部署要求高可用。"
+    result = summary_service._call_llm(system_id="sys_hop", system_name="贷款核算", context=context)
+
+    assert stage2_prompts
+    assert "technical_architecture" in stage2_prompts[0]
+    assert "technical_architecture" in result.get("relevant_domains", [])
+    assert (
+        result.get("suggestions", {})
+        .get("technical_architecture", {})
+        .get("tech_stack")
+    ) == ["Java", "Redis"]

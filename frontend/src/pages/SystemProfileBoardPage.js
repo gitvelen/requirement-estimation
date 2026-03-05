@@ -72,6 +72,7 @@ const EVENT_TYPE_LABELS = {
   code_scan: '代码扫描',
   manual_edit: '手动编辑',
   ai_suggestion_accept: '采纳建议',
+  ai_suggestion_ignore: '忽略建议',
   ai_suggestion_rollback: '建议回滚',
   profile_publish: '画像发布',
 };
@@ -263,6 +264,52 @@ const isSameValue = (left, right) => {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 };
 
+const normalizeComparableValue = (domainKey, fieldKey, value) => {
+  const fieldPath = getFieldPath(domainKey, fieldKey);
+  const editorKind = FIELD_EDITOR_KIND[fieldPath];
+
+  if (editorKind === 'module_structure') {
+    // Ignore persistence metadata such as `last_updated` when diffing suggestions.
+    return normalizeModuleStructureDraft(value);
+  }
+  if (editorKind === 'integration_points') {
+    return normalizeIntegrationPointsDraft(value);
+  }
+  if (editorKind === 'key_constraints') {
+    return normalizeKeyConstraintsDraft(value);
+  }
+  if (editorKind === 'performance_profile') {
+    return normalizePerformanceRowsDraft(value)
+      .map((row) => ({
+        key: String(row?.key ?? '').trim(),
+        value: String(row?.value ?? '').trim(),
+      }))
+      .sort((left, right) => `${left.key}:${left.value}`.localeCompare(`${right.key}:${right.value}`));
+  }
+  return value;
+};
+
+const buildIgnoredFieldsMap = (value) => {
+  const ignoredMap = new Map();
+  if (!value || typeof value !== 'object') {
+    return ignoredMap;
+  }
+  Object.entries(value).forEach(([rawFieldPath, rawIgnoredValue]) => {
+    const fieldPath = String(rawFieldPath || '').trim();
+    const separatorIndex = fieldPath.indexOf('.');
+    if (separatorIndex <= 0 || separatorIndex >= fieldPath.length - 1) {
+      return;
+    }
+    const domainKey = fieldPath.slice(0, separatorIndex).trim();
+    const fieldKey = fieldPath.slice(separatorIndex + 1).trim();
+    if (!domainKey || !fieldKey) {
+      return;
+    }
+    ignoredMap.set(fieldPath, normalizeComparableValue(domainKey, fieldKey, rawIgnoredValue));
+  });
+  return ignoredMap;
+};
+
 const buildDraftValues = (profileData) => {
   const draft = {};
   PROFILE_DOMAIN_CONFIG.forEach((domain) => {
@@ -354,6 +401,7 @@ const SystemProfileBoardPage = () => {
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [publishingProfile, setPublishingProfile] = useState(false);
+  const [suggestionMutating, setSuggestionMutating] = useState(false);
 
   const [profileMeta, setProfileMeta] = useState({
     status: 'draft',
@@ -367,7 +415,7 @@ const SystemProfileBoardPage = () => {
   const [draftValues, setDraftValues] = useState({});
   const [aiSuggestions, setAiSuggestions] = useState({});
   const [aiSuggestionsPrevious, setAiSuggestionsPrevious] = useState(null);
-  const [ignoredFields, setIgnoredFields] = useState(new Set());
+  const [ignoredFields, setIgnoredFields] = useState(() => new Map());
   const [activeDomain, setActiveDomain] = useState(PROFILE_DOMAIN_CONFIG[0].key);
 
   const [timelineExpanded, setTimelineExpanded] = useState(true);
@@ -453,7 +501,7 @@ const SystemProfileBoardPage = () => {
     }
   }, []);
 
-  const applyProfilePayload = useCallback((payload, fallbackSystemId = '') => {
+  const applyProfilePayload = useCallback((payload, fallbackSystemId = '', options = {}) => {
     const normalizedProfileData = normalizeProfileData(payload?.profile_data);
     setSavedProfileData(normalizedProfileData);
     setDraftValues(buildDraftValues(normalizedProfileData));
@@ -461,7 +509,20 @@ const SystemProfileBoardPage = () => {
     setAiSuggestionsPrevious(payload?.ai_suggestions_previous && typeof payload.ai_suggestions_previous === 'object'
       ? payload.ai_suggestions_previous
       : null);
-    setIgnoredFields(new Set());
+    const payloadIgnoredFields = buildIgnoredFieldsMap(payload?.ai_suggestion_ignored);
+    if (options?.preserveIgnored) {
+      setIgnoredFields((prev) => {
+        const next = new Map(payloadIgnoredFields);
+        prev.forEach((ignoredValue, fieldPath) => {
+          if (!next.has(fieldPath)) {
+            next.set(fieldPath, ignoredValue);
+          }
+        });
+        return next;
+      });
+    } else {
+      setIgnoredFields(payloadIgnoredFields);
+    }
     setProfileMeta({
       status: payload?.status || 'draft',
       pending_fields: Array.isArray(payload?.pending_fields) ? payload.pending_fields : [],
@@ -510,7 +571,7 @@ const SystemProfileBoardPage = () => {
     }
   }, []);
 
-  const loadProfileDetail = useCallback(async (systemName) => {
+  const loadProfileDetail = useCallback(async (systemName, options = {}) => {
     if (!systemName) {
       return;
     }
@@ -522,7 +583,7 @@ const SystemProfileBoardPage = () => {
       const resolvedSystemId = String(selectedSystem?.id || payload?.system_id || '').trim();
 
       if (payload) {
-        applyProfilePayload(payload, resolvedSystemId);
+        applyProfilePayload(payload, resolvedSystemId, options);
       } else {
         applyProfilePayload(
           {
@@ -535,7 +596,8 @@ const SystemProfileBoardPage = () => {
             is_stale: false,
             system_id: resolvedSystemId,
           },
-          resolvedSystemId
+          resolvedSystemId,
+          options,
         );
       }
 
@@ -852,6 +914,10 @@ const SystemProfileBoardPage = () => {
       message.warning('当前系统为只读，无法保存');
       return;
     }
+    if (suggestionMutating) {
+      message.warning('建议操作进行中，请稍后再保存');
+      return;
+    }
 
     let profileData;
     try {
@@ -869,7 +935,7 @@ const SystemProfileBoardPage = () => {
         evidence_refs: [],
       });
       message.success('系统画像草稿已保存');
-      await loadProfileDetail(selectedSystemName);
+      await loadProfileDetail(selectedSystemName, { preserveIgnored: true });
     } catch (error) {
       message.error(parseErrorMessage(error, '保存系统画像失败'));
     } finally {
@@ -884,6 +950,10 @@ const SystemProfileBoardPage = () => {
     }
     if (!canWrite) {
       message.warning('当前系统为只读，无法发布');
+      return;
+    }
+    if (suggestionMutating) {
+      message.warning('建议操作进行中，请稍后再发布');
       return;
     }
 
@@ -918,8 +988,12 @@ const SystemProfileBoardPage = () => {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
+    if (suggestionMutating) {
+      return;
+    }
 
     try {
+      setSuggestionMutating(true);
       const response = await axios.post(
         `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/accept`,
         { domain: domainKey, sub_field: fieldKey }
@@ -931,6 +1005,8 @@ const SystemProfileBoardPage = () => {
       message.success('已采纳AI建议');
     } catch (error) {
       message.error(parseErrorMessage(error, '采纳AI建议失败'));
+    } finally {
+      setSuggestionMutating(false);
     }
   };
 
@@ -940,8 +1016,12 @@ const SystemProfileBoardPage = () => {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
+    if (suggestionMutating) {
+      return;
+    }
 
     try {
+      setSuggestionMutating(true);
       const response = await axios.post(
         `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/rollback`,
         { domain: domainKey, sub_field: fieldKey }
@@ -958,16 +1038,53 @@ const SystemProfileBoardPage = () => {
         return;
       }
       message.error(parseErrorMessage(error, '恢复上一版建议失败'));
+    } finally {
+      setSuggestionMutating(false);
     }
   };
 
-  const handleIgnoreSuggestion = (domainKey, fieldKey) => {
+  const handleIgnoreSuggestion = async (domainKey, fieldKey) => {
+    const systemId = effectiveSystemId;
+    if (!systemId) {
+      message.error('系统ID缺失，无法执行操作');
+      return;
+    }
+    if (suggestionMutating) {
+      return;
+    }
+
+    const suggestionDomain = aiSuggestions?.[domainKey];
+    if (!suggestionDomain || typeof suggestionDomain !== 'object') {
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(suggestionDomain, fieldKey)) {
+      return;
+    }
     const fieldPath = getFieldPath(domainKey, fieldKey);
+    const ignoredComparableValue = normalizeComparableValue(domainKey, fieldKey, suggestionDomain[fieldKey]);
     setIgnoredFields((prev) => {
-      const next = new Set(prev);
-      next.add(fieldPath);
+      const next = new Map(prev);
+      next.set(fieldPath, ignoredComparableValue);
       return next;
     });
+
+    try {
+      setSuggestionMutating(true);
+      const response = await axios.post(
+        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/ignore`,
+        { domain: domainKey, sub_field: fieldKey }
+      );
+      const payload = response.data?.data;
+      if (payload) {
+        applyProfilePayload(payload, systemId, { preserveIgnored: true });
+      }
+      message.success('已忽略AI建议');
+    } catch (error) {
+      message.error(parseErrorMessage(error, '忽略AI建议失败'));
+      await loadProfileDetail(selectedSystemName);
+    } finally {
+      setSuggestionMutating(false);
+    }
   };
 
   const hasPreviousSuggestion = useCallback((domainKey, fieldKey) => {
@@ -980,9 +1097,6 @@ const SystemProfileBoardPage = () => {
 
   const hasVisibleDiff = useCallback((domainKey, fieldKey) => {
     const fieldPath = getFieldPath(domainKey, fieldKey);
-    if (ignoredFields.has(fieldPath)) {
-      return false;
-    }
     const suggestionDomain = aiSuggestions?.[domainKey];
     if (!suggestionDomain || typeof suggestionDomain !== 'object') {
       return false;
@@ -992,7 +1106,15 @@ const SystemProfileBoardPage = () => {
     }
     const currentValue = savedProfileData?.[domainKey]?.[fieldKey];
     const suggestionValue = suggestionDomain[fieldKey];
-    return !isSameValue(currentValue, suggestionValue);
+    const normalizedSuggestionValue = normalizeComparableValue(domainKey, fieldKey, suggestionValue);
+    const ignoredComparableValue = ignoredFields.get(fieldPath);
+    if (ignoredComparableValue !== undefined && isSameValue(ignoredComparableValue, normalizedSuggestionValue)) {
+      return false;
+    }
+    return !isSameValue(
+      normalizeComparableValue(domainKey, fieldKey, currentValue),
+      normalizedSuggestionValue,
+    );
   }, [aiSuggestions, ignoredFields, savedProfileData]);
 
   const domainHasDiff = useCallback((domainKey) => {
@@ -1137,21 +1259,23 @@ const SystemProfileBoardPage = () => {
                               <Button
                                 size="small"
                                 type="primary"
-                                disabled={!canWrite}
+                                loading={suggestionMutating}
+                                disabled={!canWrite || suggestionMutating}
                                 onClick={() => handleAcceptSuggestion(activeDomainConfig.key, field.key)}
                               >
                                 采纳新建议
                               </Button>
                               <Button
                                 size="small"
-                                disabled={!canWrite}
+                                disabled={!canWrite || suggestionMutating}
                                 onClick={() => handleIgnoreSuggestion(activeDomainConfig.key, field.key)}
                               >
                                 忽略
                               </Button>
                               <Button
                                 size="small"
-                                disabled={!canWrite || !rollbackEnabled}
+                                loading={suggestionMutating}
+                                disabled={!canWrite || suggestionMutating || !rollbackEnabled}
                                 title={rollbackEnabled ? '' : '无历史版本'}
                                 onClick={() => handleRollbackSuggestion(activeDomainConfig.key, field.key)}
                               >
@@ -1170,7 +1294,7 @@ const SystemProfileBoardPage = () => {
                     type="primary"
                     icon={<SaveOutlined />}
                     loading={savingProfile}
-                    disabled={!canWrite}
+                    disabled={!canWrite || suggestionMutating}
                     onClick={handleSaveDraft}
                   >
                     保存草稿
@@ -1178,7 +1302,7 @@ const SystemProfileBoardPage = () => {
                   <Button
                     icon={<SendOutlined />}
                     loading={publishingProfile}
-                    disabled={!canWrite}
+                    disabled={!canWrite || suggestionMutating}
                     onClick={handlePublish}
                   >
                     发布画像

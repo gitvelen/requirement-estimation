@@ -73,13 +73,13 @@ def _login(client: TestClient, username: str, password: str) -> str:
     return response.json()["data"]["token"]
 
 
-def _seed_system_owner(system_name: str, system_id: str, owner_id: str):
+def _seed_system_owner(system_name: str, system_id: str, owner_id: str, abbreviation: str | None = None):
     system_routes._write_systems(
         [
             {
                 "id": system_id,
                 "name": system_name,
-                "abbreviation": system_name,
+                "abbreviation": abbreviation or system_name,
                 "status": "运行中",
                 "extra": {"owner_id": owner_id},
             }
@@ -225,6 +225,45 @@ def test_esb_import_filters_by_system_id_and_updates_completeness(client):
     assert profile
     assert profile.get("completeness", {}).get("esb") is True
     assert int(profile.get("completeness_score") or 0) >= 30
+
+
+def test_esb_import_accepts_system_abbreviation_or_name_when_tab_uses_uuid_system_id(client):
+    owner = _seed_user("esb_owner_uuid_alias", "owner123", ["manager"])
+    system_id = "6d8a1fc0d67e4b7785f1a9a2670d08c6"
+    _seed_system_owner("贷款核算", system_id, owner["id"], abbreviation="ULCA")
+    token = _login(client, "esb_owner_uuid_alias", "owner123")
+
+    service = esb_service.get_esb_service()
+    service.embedding_service = DummyEmbeddingService()
+
+    csv_content = (
+        "提供方系统简称,调用方系统简称,交易名称,状态\n"
+        "ULCA,sys_x,接口A,正常使用\n"
+        "贷款核算,sys_y,接口B,正常使用\n"
+        "OTHER,sys_z,接口C,正常使用\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        data={
+            "system_id": system_id,
+            "mapping_provider_system_id": "提供方系统简称",
+            "mapping_consumer_system_id": "调用方系统简称",
+            "mapping_service_name": "交易名称",
+            "mapping_status": "状态",
+        },
+        files={"file": ("esb_uuid_alias.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] == 2
+    assert payload["skipped"] == 1
+
+    profile = system_profile_service.get_system_profile_service().get_profile("贷款核算")
+    assert profile
+    assert profile.get("completeness", {}).get("esb") is True
 
 
 def test_esb_import_accepts_human_friendly_mapping_fields(client):

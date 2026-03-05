@@ -273,14 +273,57 @@ class EsbService:
             f"交易码:{entry.get('service_code','')}"
         ).strip()
 
-    def _entry_matches_system_id(self, entry: Dict[str, Any], target_system_id: Optional[str]) -> bool:
-        normalized_target = str(target_system_id or "").strip()
-        if not normalized_target:
+    def _normalize_match_value(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return text.casefold()
+
+    def _collect_target_identifiers(
+        self,
+        target_system_id: Optional[str],
+        target_system_aliases: Optional[List[str]] = None,
+    ) -> set[str]:
+        candidates = [target_system_id]
+        if target_system_aliases:
+            candidates.extend(target_system_aliases)
+        normalized_identifiers: set[str] = set()
+        for item in candidates:
+            normalized_item = self._normalize_match_value(item)
+            if normalized_item:
+                normalized_identifiers.add(normalized_item)
+        return normalized_identifiers
+
+    def _entry_matches_system_id(
+        self,
+        entry: Dict[str, Any],
+        target_system_id: Optional[str],
+        target_system_aliases: Optional[List[str]] = None,
+    ) -> bool:
+        normalized_targets = self._collect_target_identifiers(target_system_id, target_system_aliases)
+        if not normalized_targets:
             return True
 
-        provider = str(entry.get("provider_system_id") or "").strip()
-        consumer = str(entry.get("consumer_system_id") or "").strip()
-        return provider == normalized_target or consumer == normalized_target
+        provider = self._normalize_match_value(entry.get("provider_system_id"))
+        consumer = self._normalize_match_value(entry.get("consumer_system_id"))
+        provider_name = self._normalize_match_value(entry.get("provider_system_name"))
+        consumer_name = self._normalize_match_value(entry.get("consumer_system_name"))
+
+        return any(value in normalized_targets for value in (provider, consumer, provider_name, consumer_name) if value)
+
+    def _summary_matches_system_id(
+        self,
+        item: Dict[str, Any],
+        target_system_id: Optional[str],
+        target_system_aliases: Optional[List[str]] = None,
+    ) -> bool:
+        normalized_targets = self._collect_target_identifiers(target_system_id, target_system_aliases)
+        if not normalized_targets:
+            return True
+
+        summary_system_id = self._normalize_match_value(item.get("system_id"))
+        summary_system_name = self._normalize_match_value(item.get("system_name"))
+        return any(value in normalized_targets for value in (summary_system_id, summary_system_name) if value)
 
     def import_esb(
         self,
@@ -288,6 +331,7 @@ class EsbService:
         filename: str,
         mapping_json: Optional[Dict[str, Any]] = None,
         target_system_id: Optional[str] = None,
+        target_system_aliases: Optional[List[str]] = None,
         strict_embedding: bool = False,
     ) -> Dict[str, Any]:
         mapping_json = mapping_json or {}
@@ -296,6 +340,11 @@ class EsbService:
             raise ValueError("ESB文件解析失败或为空")
 
         normalized_target_system_id = str(target_system_id or "").strip()
+        normalized_target_system_aliases = [
+            str(item or "").strip()
+            for item in (target_system_aliases or [])
+            if str(item or "").strip()
+        ]
 
         imported = 0
         skipped = 0
@@ -357,7 +406,11 @@ class EsbService:
                     if not item.get("system_id") or not item.get("system_name"):
                         skipped += 1
                         continue
-                    if normalized_target_system_id and str(item.get("system_id") or "").strip() != normalized_target_system_id:
+                    if normalized_target_system_id and not self._summary_matches_system_id(
+                        item,
+                        normalized_target_system_id,
+                        normalized_target_system_aliases,
+                    ):
                         skipped += 1
                         continue
                     item["source_file"] = filename
@@ -380,7 +433,11 @@ class EsbService:
                         logger.debug(f"  提取结果: {entry}")
                     continue
 
-                if normalized_target_system_id and not self._entry_matches_system_id(entry, normalized_target_system_id):
+                if normalized_target_system_id and not self._entry_matches_system_id(
+                    entry,
+                    normalized_target_system_id,
+                    normalized_target_system_aliases,
+                ):
                     skipped += 1
                     # 记录前3行因系统过滤被跳过的信息
                     if skipped <= 3:
@@ -422,7 +479,11 @@ class EsbService:
             if normalized_target_system_id:
                 retained_entries = [
                     item for item in existing_entries
-                    if not self._entry_matches_system_id(item if isinstance(item, dict) else {}, normalized_target_system_id)
+                    if not self._entry_matches_system_id(
+                        item if isinstance(item, dict) else {},
+                        normalized_target_system_id,
+                        normalized_target_system_aliases,
+                    )
                 ]
                 store["entries"] = retained_entries + entries
             else:
@@ -433,7 +494,11 @@ class EsbService:
                 if normalized_target_system_id:
                     retained_summary = [
                         item for item in existing_summary
-                        if str((item or {}).get("system_id") or "").strip() != normalized_target_system_id
+                        if not self._summary_matches_system_id(
+                            item if isinstance(item, dict) else {},
+                            normalized_target_system_id,
+                            normalized_target_system_aliases,
+                        )
                     ]
                     store["system_summary"] = retained_summary + system_summary
                 else:
