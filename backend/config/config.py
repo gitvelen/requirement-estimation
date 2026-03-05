@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # 阿里云大模型配置
     DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
     DASHSCOPE_API_BASE: str = os.getenv("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    DASHSCOPE_EMBEDDING_API_BASE: str = os.getenv("DASHSCOPE_EMBEDDING_API_BASE", "").strip()
     LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo")
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4000"))

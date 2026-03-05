@@ -376,8 +376,9 @@ def _parse_subsystem_sheet(ws) -> List[Dict[str, Any]]:
 
 def _reload_system_identification_cache() -> None:
     try:
-        from backend.agent.system_identification_agent import system_identification_agent
+        from backend.agent.system_identification_agent import get_system_identification_agent
 
+        system_identification_agent = get_system_identification_agent()
         system_identification_agent.system_list = system_identification_agent._load_system_list()
         system_identification_agent.subsystem_mapping = system_identification_agent._load_subsystem_mapping()
     except Exception:

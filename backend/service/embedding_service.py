@@ -3,11 +3,38 @@ Embedding生成服务
 使用阿里云DashScope的text-embedding-v2模型
 """
 import logging
-from typing import List, Union
+from typing import List
 import dashscope
 from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_base_url(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def _resolve_dashscope_embedding_base() -> str:
+    """
+    解析 Embedding SDK 的 HTTP base URL。
+
+    优先级：
+    1. DASHSCOPE_EMBEDDING_API_BASE（显式覆盖）
+    2. DASHSCOPE_API_BASE（兼容模式地址自动改写为 /api/v1）
+    3. dashscope SDK 默认值
+    """
+    explicit_base = _normalize_base_url(getattr(settings, "DASHSCOPE_EMBEDDING_API_BASE", ""))
+    if explicit_base:
+        return explicit_base
+
+    llm_base = _normalize_base_url(settings.DASHSCOPE_API_BASE)
+    if not llm_base:
+        return dashscope.base_http_api_url
+
+    if llm_base.endswith("/compatible-mode/v1"):
+        return llm_base[: -len("/compatible-mode/v1")] + "/api/v1"
+
+    return llm_base
 
 
 class EmbeddingService:
@@ -24,7 +51,10 @@ class EmbeddingService:
             raise ValueError("DASHSCOPE_API_KEY未配置")
 
         dashscope.api_key = self.api_key
-        logger.info(f"Embedding服务初始化完成，模型: {self.MODEL}")
+        dashscope.base_http_api_url = _resolve_dashscope_embedding_base()
+        logger.info(
+            f"Embedding服务初始化完成，模型: {self.MODEL}, base: {dashscope.base_http_api_url}"
+        )
 
     def generate_embedding(self, text: str) -> List[float]:
         """
