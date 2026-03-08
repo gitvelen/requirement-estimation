@@ -6,14 +6,14 @@ _run_status: running
 _change_status: in_progress
 _change_level: major
 _review_round: 0
-_phase: Proposal
+_phase: Requirements
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.5 |
 | 变更目录 | `docs/v2.5/` |
-| 当前阶段 | Proposal |
+| 当前阶段 | Requirements |
 | 变更状态 | In Progress |
 | 变更分级 | major |
 | 基线版本（对比口径） | v2.4 |
