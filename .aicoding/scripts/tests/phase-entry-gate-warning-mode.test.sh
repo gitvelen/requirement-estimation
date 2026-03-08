@@ -35,6 +35,7 @@ _phase: Implementation
 EOF
 
 output=$(
+  cd "$tmp_dir"
   rm -f /tmp/aicoding-reads-test-entry-warn.log 2>/dev/null || true
   rm -f /tmp/aicoding-entry-passed-*test-entry-warn* 2>/dev/null || true
   CLAUDE_PROJECT_DIR="$tmp_dir" \

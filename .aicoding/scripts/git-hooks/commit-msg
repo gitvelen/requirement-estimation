@@ -3,8 +3,16 @@
 # Git commit-msg dispatcher: Git-Hook 1 (格式校验) + Git-Hook 2 (CR-ID 校验)
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=../lib/common.sh
-source "${SCRIPT_DIR}/../lib/common.sh"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# 优先使用绝对路径（生产环境），回退到相对路径（测试环境）
+if [ -f "${REPO_ROOT}/.aicoding/scripts/lib/common.sh" ]; then
+  # shellcheck source=../../lib/common.sh
+  source "${REPO_ROOT}/.aicoding/scripts/lib/common.sh"
+else
+  # shellcheck source=../lib/common.sh
+  source "${SCRIPT_DIR}/../lib/common.sh"
+fi
 
 # --- Git-Hook 1: commit-msg 阶段前缀校验 ---
 MSG=$(head -1 "$1")

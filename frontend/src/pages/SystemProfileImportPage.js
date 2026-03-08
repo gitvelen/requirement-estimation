@@ -14,9 +14,13 @@ import {
   Upload,
 } from 'antd';
 import {
+  CheckCircleFilled,
   CloudUploadOutlined,
+  CloseCircleFilled,
   DownOutlined,
+  ExclamationCircleFilled,
   FileTextOutlined,
+  InfoCircleFilled,
   PlayCircleOutlined,
   ReloadOutlined,
   RightOutlined,
@@ -32,6 +36,15 @@ import { extractErrorMessage } from '../utils/errorMessage';
 const { Text } = Typography;
 
 const DOC_TYPE_ESB = 'esb';
+const DOC_TYPE_HISTORY_REPORT = 'history_report';
+const DOC_TEMPLATE_TYPE_MAP = {
+  [DOC_TYPE_HISTORY_REPORT]: 'history_report',
+  [DOC_TYPE_ESB]: 'esb_document',
+};
+const DOC_TEMPLATE_FILE_NAME_MAP = {
+  [DOC_TYPE_HISTORY_REPORT]: '工作量评估模板.xlsx',
+  [DOC_TYPE_ESB]: '接口申请模板.xlsx',
+};
 
 const DOC_TYPE_CONFIGS = [
   { value: 'requirements', label: '需求文档', description: '需求规格说明、用户故事等' },
@@ -41,16 +54,125 @@ const DOC_TYPE_CONFIGS = [
   { value: DOC_TYPE_ESB, label: 'ESB服务治理文档', description: 'ESB接口申请模板（xlsx/csv）' },
 ];
 
-const EXTRACTION_POLL_INTERVAL = 3000;
+const EXTRACTION_POLL_INTERVAL = 5000;
+const EXTRACTION_POLL_MAX_ATTEMPTS = 10;
+const WS_HEARTBEAT_INTERVAL = 30000;
+
+const normalizeExtractionStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+  if (normalized === 'pending' || normalized === 'processing' || normalized === 'extraction_started') {
+    return 'extraction_started';
+  }
+  if (normalized === 'completed' || normalized === 'extraction_completed') {
+    return 'extraction_completed';
+  }
+  if (normalized === 'failed' || normalized === 'extraction_failed') {
+    return 'extraction_failed';
+  }
+  return normalized;
+};
+
+const isTerminalExtractionStatus = (status) => {
+  const normalized = normalizeExtractionStatus(status);
+  return normalized === 'extraction_completed' || normalized === 'extraction_failed' || normalized === 'timeout';
+};
+
+const extractDownloadFileName = (headers, fallback) => {
+  const contentDisposition = String(headers?.['content-disposition'] || headers?.['Content-Disposition'] || '').trim();
+  const matched = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  if (!matched || !matched[1]) {
+    return fallback;
+  }
+  try {
+    return decodeURIComponent(matched[1].replace(/"/g, '').trim()) || fallback;
+  } catch (error) {
+    return matched[1].replace(/"/g, '').trim() || fallback;
+  }
+};
+
+const buildSystemProfileWsUrl = (systemName, authToken) => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const base = `${protocol}//${window.location.host}`;
+  return `${base}/ws/system-profile/${encodeURIComponent(systemName)}?token=${encodeURIComponent(authToken)}`;
+};
+
+const formatExtractionNotification = (notification) => {
+  if (typeof notification === 'string') {
+    return notification.trim();
+  }
+  if (!notification || typeof notification !== 'object') {
+    return '';
+  }
+
+  const messageText = String(notification.message || '').trim();
+  if (messageText) {
+    return messageText;
+  }
+
+  const systems = Array.isArray(notification.systems)
+    ? notification.systems.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (systems.length > 0) {
+    return `检测到文档中还包含系统 ${systems.join('、')} 的信息，如需更新请前往对应系统操作`;
+  }
+
+  const typeText = String(notification.type || '').trim();
+  if (typeText) {
+    return typeText;
+  }
+
+  try {
+    const serialized = JSON.stringify(notification);
+    return serialized === '{}' ? '' : serialized;
+  } catch (error) {
+    return '';
+  }
+};
+
+const formatExtractionNotifications = (notifications) => (
+  Array.isArray(notifications)
+    ? notifications.map(formatExtractionNotification).filter(Boolean)
+    : []
+);
+
+const EXTRACTION_STATUS_STYLES = {
+  info: {
+    icon: InfoCircleFilled,
+    color: '#1677ff',
+    background: '#f3f8ff',
+    border: '#d6e4ff',
+  },
+  success: {
+    icon: CheckCircleFilled,
+    color: '#389e0d',
+    background: '#f6ffed',
+    border: '#b7eb8f',
+  },
+  warning: {
+    icon: ExclamationCircleFilled,
+    color: '#d48806',
+    background: '#fffbe6',
+    border: '#ffe58f',
+  },
+  error: {
+    icon: CloseCircleFilled,
+    color: '#cf1322',
+    background: '#fff2f0',
+    border: '#ffccc7',
+  },
+};
 
 const SystemProfileImportPage = () => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const { isManager } = usePermission();
   const location = useLocation();
   const navigate = useNavigate();
 
   const [systems, setSystems] = useState([]);
-  const [selectedSystemName, setSelectedSystemName] = useState('');
+  const [selectedSystemName, setSelectedSystemName] = useState(() => String(new URLSearchParams(location.search).get('system_name') || '').trim());
 
   const [scanRepoPath, setScanRepoPath] = useState('');
   const [scanArchiveFiles, setScanArchiveFiles] = useState([]);
@@ -67,10 +189,23 @@ const SystemProfileImportPage = () => {
   const [extractionStatus, setExtractionStatus] = useState(null);
 
   const pollTimerRef = useRef(null);
+  const pollAttemptRef = useRef(0);
+  const wsRef = useRef(null);
+  const wsHeartbeatTimerRef = useRef(null);
+  const manualWsCloseRef = useRef(false);
+  const trackedTaskRef = useRef({ taskId: '', systemId: '', systemName: '' });
+  const extractionStatusRef = useRef(null);
 
   const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
 
-  const responsibleSystems = useMemo(() => filterResponsibleSystems(systems, user), [systems, user]);
+  const ownershipUser = useMemo(() => ({
+    id: user?.id,
+    username: user?.username,
+    displayName: user?.displayName,
+    display_name: user?.display_name,
+  }), [user?.id, user?.username, user?.displayName, user?.display_name]);
+
+  const responsibleSystems = useMemo(() => filterResponsibleSystems(systems, ownershipUser), [systems, ownershipUser]);
 
   const selectedSystem = useMemo(
     () => responsibleSystems.find((item) => item.name === selectedSystemName),
@@ -81,13 +216,335 @@ const SystemProfileImportPage = () => {
     if (!isManager || !selectedSystem) {
       return false;
     }
-    return resolveSystemOwnership(selectedSystem, user).canWrite;
-  }, [isManager, selectedSystem, user]);
+    return resolveSystemOwnership(selectedSystem, ownershipUser).canWrite;
+  }, [isManager, ownershipUser, selectedSystem]);
+
+  const selectedSystemId = useMemo(() => String(selectedSystem?.id || '').trim(), [selectedSystem?.id]);
 
   const scanJobStorageKey = useMemo(() => {
-    const keyPart = selectedSystem?.id || selectedSystemName;
+    const keyPart = selectedSystemId || selectedSystemName;
     return keyPart ? `systemProfile:lastScanJobId:${keyPart}` : '';
-  }, [selectedSystem?.id, selectedSystemName]);
+  }, [selectedSystemId, selectedSystemName]);
+
+
+  useEffect(() => {
+    extractionStatusRef.current = extractionStatus;
+  }, [extractionStatus]);
+
+  const loadImportHistory = useCallback(async (systemId) => {
+    try {
+      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/import-history`, {
+        params: { limit: 50, offset: 0 },
+      });
+      const records = response.data?.items || response.data?.records || [];
+      setImportHistory(Array.isArray(records) ? records : []);
+    } catch (error) {
+      setImportHistory([]);
+    }
+  }, []);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const clearWsHeartbeatTimer = useCallback(() => {
+    if (wsHeartbeatTimerRef.current) {
+      clearInterval(wsHeartbeatTimerRef.current);
+      wsHeartbeatTimerRef.current = null;
+    }
+  }, []);
+
+  const closeRealtimeSocket = useCallback(() => {
+    clearWsHeartbeatTimer();
+    if (wsRef.current) {
+      manualWsCloseRef.current = true;
+      try {
+        wsRef.current.close();
+      } catch (error) {
+        manualWsCloseRef.current = false;
+      }
+      wsRef.current = null;
+    }
+  }, [clearWsHeartbeatTimer]);
+
+  const updateTrackedTask = useCallback((taskId, systemId, systemName) => {
+    trackedTaskRef.current = {
+      taskId: String(taskId || '').trim(),
+      systemId: String(systemId || '').trim(),
+      systemName: String(systemName || '').trim(),
+    };
+  }, []);
+
+  const refreshProfileAfterExtraction = useCallback(async (systemId, systemName) => {
+    if (systemName) {
+      try {
+        await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemName)}`);
+      } catch (error) {
+        // 页面不直接展示画像内容，刷新失败不阻断导入页状态更新
+      }
+    }
+    if (systemId) {
+      await loadImportHistory(systemId);
+    }
+  }, [loadImportHistory]);
+
+  const applyExtractionUpdate = useCallback(async (payload, source = 'ws') => {
+    const fallbackTask = trackedTaskRef.current;
+    const nextTaskId = String(payload?.task_id || fallbackTask.taskId || '').trim();
+    const nextSystemId = String(payload?.system_id || fallbackTask.systemId || '').trim();
+    const nextSystemName = String(payload?.system_name || fallbackTask.systemName || selectedSystemName || '').trim();
+    const nextStatus = normalizeExtractionStatus(payload?.status);
+
+    updateTrackedTask(nextTaskId, nextSystemId, nextSystemName);
+    setExtractionStatus({
+      task_id: nextTaskId,
+      system_id: nextSystemId,
+      system_name: nextSystemName,
+      status: nextStatus,
+      error: payload?.error || null,
+      notifications: Array.isArray(payload?.notifications) ? payload.notifications : [],
+      other_systems: Array.isArray(payload?.other_systems) ? payload.other_systems : [],
+      source,
+      poll_attempts: pollAttemptRef.current,
+    });
+
+    if (isTerminalExtractionStatus(nextStatus)) {
+      clearPollTimer();
+      pollAttemptRef.current = 0;
+      if (nextStatus === 'extraction_completed') {
+        await refreshProfileAfterExtraction(nextSystemId, nextSystemName);
+      }
+    }
+  }, [clearPollTimer, refreshProfileAfterExtraction, selectedSystemName, updateTrackedTask]);
+
+  const pollTaskStatus = useCallback(async (taskId, systemId, systemName) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) {
+      return;
+    }
+
+    pollAttemptRef.current += 1;
+    try {
+      const response = await axios.get(`/api/v1/system-profiles/task-status/${encodeURIComponent(normalizedTaskId)}`);
+      const payload = response.data || {};
+      await applyExtractionUpdate(
+        {
+          ...payload,
+          task_id: payload?.task_id || normalizedTaskId,
+          system_id: payload?.system_id || systemId,
+          system_name: payload?.system_name || systemName,
+        },
+        'poll'
+      );
+
+      if (isTerminalExtractionStatus(payload?.status)) {
+        return;
+      }
+
+      if (pollAttemptRef.current >= EXTRACTION_POLL_MAX_ATTEMPTS) {
+        setExtractionStatus({
+          task_id: normalizedTaskId,
+          system_id: String(systemId || '').trim(),
+          system_name: String(systemName || '').trim(),
+          status: 'timeout',
+          error: null,
+          notifications: [],
+          other_systems: [],
+          source: 'poll',
+          poll_attempts: pollAttemptRef.current,
+        });
+        clearPollTimer();
+        return;
+      }
+
+      pollTimerRef.current = setTimeout(() => {
+        pollTaskStatus(normalizedTaskId, systemId, systemName);
+      }, EXTRACTION_POLL_INTERVAL);
+    } catch (error) {
+      setExtractionStatus({
+        task_id: normalizedTaskId,
+        system_id: String(systemId || '').trim(),
+        system_name: String(systemName || '').trim(),
+        status: 'extraction_failed',
+        error: extractErrorMessage(error, '任务状态查询失败'),
+        notifications: [],
+        other_systems: [],
+        source: 'poll',
+        poll_attempts: pollAttemptRef.current,
+      });
+      clearPollTimer();
+    }
+  }, [applyExtractionUpdate, clearPollTimer]);
+
+  const startPollingFallback = useCallback((reason = 'WebSocket 不可用') => {
+    const { taskId, systemId, systemName } = trackedTaskRef.current;
+    if (!taskId || isTerminalExtractionStatus(extractionStatusRef.current?.status)) {
+      return;
+    }
+
+    clearPollTimer();
+    pollAttemptRef.current = 0;
+    setExtractionStatus((prev) => ({
+      task_id: taskId,
+      system_id: systemId,
+      system_name: systemName,
+      status: normalizeExtractionStatus(prev?.status) || 'extraction_started',
+      error: prev?.error || null,
+      notifications: Array.isArray(prev?.notifications) ? prev.notifications : [],
+      other_systems: Array.isArray(prev?.other_systems) ? prev.other_systems : [],
+      source: 'poll',
+      poll_attempts: 0,
+      fallback_reason: reason,
+    }));
+    pollTimerRef.current = setTimeout(() => {
+      pollTaskStatus(taskId, systemId, systemName);
+    }, EXTRACTION_POLL_INTERVAL);
+  }, [clearPollTimer, pollTaskStatus]);
+
+  const connectRealtimeSocket = useCallback((systemName, systemId) => {
+    const authToken = String(token || localStorage.getItem('AUTH_TOKEN') || '').trim();
+    const normalizedSystemName = String(systemName || '').trim();
+    if (!normalizedSystemName || !authToken || typeof window === 'undefined' || typeof window.WebSocket !== 'function') {
+      return;
+    }
+
+    closeRealtimeSocket();
+
+    const socket = new window.WebSocket(buildSystemProfileWsUrl(normalizedSystemName, authToken));
+    wsRef.current = socket;
+
+    socket.onopen = () => {
+      clearWsHeartbeatTimer();
+      wsHeartbeatTimerRef.current = setInterval(() => {
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify({ event: 'ping' }));
+        }
+      }, WS_HEARTBEAT_INTERVAL);
+    };
+
+    socket.onmessage = async (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (String(payload?.event || '').trim().toLowerCase() === 'pong') {
+          return;
+        }
+        const payloadSystemName = String(payload?.system_name || normalizedSystemName).trim();
+        if (payloadSystemName && payloadSystemName !== normalizedSystemName) {
+          return;
+        }
+        await applyExtractionUpdate(
+          {
+            ...payload,
+            system_id: payload?.system_id || systemId,
+            system_name: payloadSystemName || normalizedSystemName,
+          },
+          'ws'
+        );
+      } catch (error) {
+        // 忽略无法解析的消息，避免阻塞后续状态推送
+      }
+    };
+
+    socket.onerror = () => {
+      if (trackedTaskRef.current.taskId) {
+        startPollingFallback('WebSocket 连接失败，已切换为 5 秒轮询');
+      }
+    };
+
+    socket.onclose = () => {
+      clearWsHeartbeatTimer();
+      if (manualWsCloseRef.current) {
+        manualWsCloseRef.current = false;
+        return;
+      }
+      if (trackedTaskRef.current.taskId && !isTerminalExtractionStatus(extractionStatusRef.current?.status)) {
+        startPollingFallback('WebSocket 已断开，已切换为 5 秒轮询');
+      }
+    };
+  }, [applyExtractionUpdate, clearWsHeartbeatTimer, closeRealtimeSocket, startPollingFallback, token]);
+
+  const loadCurrentExtractionStatus = useCallback(async (systemId, systemName) => {
+    const normalizedSystemId = String(systemId || '').trim();
+    if (!normalizedSystemId) {
+      return;
+    }
+    try {
+      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(normalizedSystemId)}/profile/extraction-status`);
+      const payload = response.data || {};
+      const nextTaskId = String(payload?.task_id || '').trim();
+      const nextStatus = normalizeExtractionStatus(payload?.status);
+      if (!nextTaskId) {
+        updateTrackedTask('', normalizedSystemId, systemName);
+        setExtractionStatus(null);
+        return;
+      }
+
+      updateTrackedTask(nextTaskId, normalizedSystemId, systemName);
+      setExtractionStatus({
+        task_id: nextTaskId,
+        system_id: normalizedSystemId,
+        system_name: String(systemName || '').trim(),
+        status: nextStatus,
+        error: payload?.error || null,
+        notifications: Array.isArray(payload?.notifications) ? payload.notifications : [],
+        other_systems: Array.isArray(payload?.other_systems) ? payload.other_systems : [],
+        source: 'resume',
+        poll_attempts: 0,
+      });
+    } catch (error) {
+      setExtractionStatus(null);
+    }
+  }, [updateTrackedTask]);
+
+  const handleDownloadTemplate = useCallback(async (docType) => {
+    const templateType = DOC_TEMPLATE_TYPE_MAP[docType];
+    if (!templateType) {
+      return;
+    }
+
+    setDocStates((prev) => ({
+      ...prev,
+      [docType]: {
+        ...prev[docType],
+        templateDownloading: true,
+        templateFeedback: null,
+      },
+    }));
+
+    try {
+      const response = await axios.get(`/api/v1/system-profiles/template/${templateType}`, { responseType: 'blob' });
+      const blob = response.data instanceof Blob ? response.data : new Blob([response.data]);
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = extractDownloadFileName(response.headers, DOC_TEMPLATE_FILE_NAME_MAP[docType] || 'template.xlsx');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setDocStates((prev) => ({
+        ...prev,
+        [docType]: {
+          ...prev[docType],
+          templateDownloading: false,
+          templateFeedback: { type: 'success', message: '模板下载成功' },
+        },
+      }));
+    } catch (error) {
+      setDocStates((prev) => ({
+        ...prev,
+        [docType]: {
+          ...prev[docType],
+          templateDownloading: false,
+          templateFeedback: { type: 'error', message: '模板下载失败' },
+        },
+      }));
+    }
+  }, []);
 
   const loadSystems = useCallback(async () => {
     try {
@@ -162,6 +619,8 @@ const SystemProfileImportPage = () => {
     setHistoryExpanded(false);
     setExtractionStatus(null);
     setStoredScanJobId('');
+    clearPollTimer();
+    updateTrackedTask('', selectedSystemId, selectedSystemName);
 
     if (!scanJobStorageKey) {
       setScanJob(null);
@@ -180,36 +639,36 @@ const SystemProfileImportPage = () => {
       return;
     }
     fetchScanJob(stored);
-  }, [fetchScanJob, scanJobStorageKey]);
-
-  const loadImportHistory = useCallback(async (systemId) => {
-    try {
-      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/import-history`, {
-        params: { limit: 50, offset: 0 },
-      });
-      const records = response.data?.records || [];
-      setImportHistory(records);
-    } catch (error) {
-      setImportHistory([]);
-    }
-  }, []);
+  }, [clearPollTimer, fetchScanJob, scanJobStorageKey, selectedSystemId, selectedSystemName, updateTrackedTask]);
 
   useEffect(() => {
-    const systemId = String(selectedSystem?.id || '').trim();
+    const systemId = selectedSystemId;
     if (!systemId) {
       return;
     }
     loadImportHistory(systemId);
-  }, [selectedSystem, loadImportHistory]);
+    loadCurrentExtractionStatus(systemId, selectedSystemName);
+  }, [loadCurrentExtractionStatus, loadImportHistory, selectedSystemId, selectedSystemName]);
+
+  useEffect(() => {
+    const systemId = selectedSystemId;
+    if (!selectedSystemName || !systemId) {
+      closeRealtimeSocket();
+      return undefined;
+    }
+
+    connectRealtimeSocket(selectedSystemName, systemId);
+    return () => {
+      closeRealtimeSocket();
+    };
+  }, [closeRealtimeSocket, connectRealtimeSocket, selectedSystemId, selectedSystemName]);
 
   useEffect(() => {
     return () => {
-      if (pollTimerRef.current) {
-        clearTimeout(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
+      clearPollTimer();
+      closeRealtimeSocket();
     };
-  }, []);
+  }, [clearPollTimer, closeRealtimeSocket]);
 
   const handleSystemTabChange = (systemName) => {
     const nextName = String(systemName || '').trim();
@@ -229,31 +688,6 @@ const SystemProfileImportPage = () => {
     navigate({ pathname: location.pathname, search: `?${nextParams.toString()}` }, { replace: true });
     setSelectedSystemName(nextName);
   };
-
-  const pollExtractionStatus = useCallback(async (systemId) => {
-    if (!systemId) {
-      return;
-    }
-    try {
-      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/extraction-status`);
-      const status = response.data || {};
-      setExtractionStatus(status);
-
-      if (status.status === 'processing') {
-        pollTimerRef.current = setTimeout(() => {
-          pollExtractionStatus(systemId);
-        }, EXTRACTION_POLL_INTERVAL);
-      } else if (status.status === 'completed') {
-        if (pollTimerRef.current) {
-          clearTimeout(pollTimerRef.current);
-          pollTimerRef.current = null;
-        }
-        loadImportHistory(systemId);
-      }
-    } catch (error) {
-      setExtractionStatus(null);
-    }
-  }, [loadImportHistory]);
 
   const handleDocImport = useCallback(async (docType) => {
     const systemId = String(selectedSystem?.id || '').trim();
@@ -305,11 +739,27 @@ const SystemProfileImportPage = () => {
         },
       }));
 
-      message.success('文档导入完成');
+      message.success(result.extraction_task_id ? '文档已上传，正在分析' : '文档导入完成');
       loadImportHistory(systemId);
 
       if (result.extraction_task_id) {
-        pollExtractionStatus(systemId);
+        clearPollTimer();
+        pollAttemptRef.current = 0;
+        updateTrackedTask(result.extraction_task_id, systemId, selectedSystemName);
+        setExtractionStatus({
+          task_id: result.extraction_task_id,
+          system_id: systemId,
+          system_name: selectedSystemName,
+          status: 'extraction_started',
+          error: null,
+          notifications: [],
+          other_systems: [],
+          source: wsRef.current ? 'ws' : 'submitted',
+          poll_attempts: 0,
+        });
+        if (!wsRef.current) {
+          startPollingFallback('WebSocket 不可用，已切换为 5 秒轮询');
+        }
       }
     } catch (error) {
       setDocStates((prev) => ({
@@ -318,7 +768,7 @@ const SystemProfileImportPage = () => {
       }));
       message.error(extractErrorMessage(error, '文档导入失败'));
     }
-  }, [selectedSystem, selectedSystemName, docStates, loadImportHistory, pollExtractionStatus]);
+  }, [clearPollTimer, docStates, loadImportHistory, selectedSystem, selectedSystemName, startPollingFallback, updateTrackedTask]);
 
   const handleRunScan = async () => {
     if (!selectedSystemName) {
@@ -389,7 +839,7 @@ const SystemProfileImportPage = () => {
       const systemId = String(selectedSystem?.id || '').trim();
       if (systemId) {
         loadImportHistory(systemId);
-        pollExtractionStatus(systemId);
+        loadCurrentExtractionStatus(systemId, selectedSystemName);
       }
     } catch (error) {
       message.error(extractErrorMessage(error, '扫描结果入库失败'));
@@ -403,7 +853,7 @@ const SystemProfileImportPage = () => {
     if (!systemId) {
       return;
     }
-    navigate(`/system-profile/board?system_id=${encodeURIComponent(systemId)}&system_name=${encodeURIComponent(selectedSystemName)}`);
+    navigate(`/system-profiles/board?system_id=${encodeURIComponent(systemId)}&system_name=${encodeURIComponent(selectedSystemName)}`);
   }, [selectedSystem, selectedSystemName, navigate]);
 
   const renderDocTypeCard = (config) => {
@@ -412,6 +862,9 @@ const SystemProfileImportPage = () => {
     const files = state.files || [];
     const submitting = state.submitting || false;
     const lastResult = state.lastResult || null;
+    const templateDownloading = state.templateDownloading || false;
+    const templateFeedback = state.templateFeedback || null;
+    const templateType = DOC_TEMPLATE_TYPE_MAP[docType];
 
     const isEsb = docType === DOC_TYPE_ESB;
     const accept = isEsb ? '.xlsx,.csv' : undefined;
@@ -455,6 +908,16 @@ const SystemProfileImportPage = () => {
                 {isEsb ? '选择ESB文件（xlsx/csv）' : '选择文档文件'}
               </Button>
             </Upload>
+            {templateType && (
+              <Button
+                loading={templateDownloading}
+                disabled={!canWrite}
+                aria-label={`下载${label}模板`}
+                onClick={() => handleDownloadTemplate(docType)}
+              >
+                下载模板
+              </Button>
+            )}
             {canWrite && (
               <Button
                 type="primary"
@@ -466,6 +929,10 @@ const SystemProfileImportPage = () => {
               </Button>
             )}
           </Space>
+
+          {templateFeedback && (
+            <Alert type={templateFeedback.type} showIcon message={templateFeedback.message} />
+          )}
 
           {lastResult && (
             <Space direction="vertical" style={{ width: '100%' }} size={4}>
@@ -519,6 +986,100 @@ const SystemProfileImportPage = () => {
     return importHistory.slice(0, 3);
   }, [importHistory, historyExpanded]);
 
+  const extractionAlert = useMemo(() => {
+    const status = normalizeExtractionStatus(extractionStatus?.status);
+    if (!status) {
+      return null;
+    }
+
+    const notifications = formatExtractionNotifications(extractionStatus?.notifications);
+    const otherSystems = Array.isArray(extractionStatus?.other_systems)
+      ? extractionStatus.other_systems.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const source = String(extractionStatus?.source || '').trim();
+
+    if (status === 'extraction_started') {
+      return {
+        type: 'info',
+        message: 'AI 正在分析文档',
+        description: source === 'poll'
+          ? `${extractionStatus?.fallback_reason || 'WebSocket 不可用'}（已轮询 ${extractionStatus?.poll_attempts || 0}/${EXTRACTION_POLL_MAX_ATTEMPTS} 次）`
+          : '系统正在提取文档中的结构化信息，完成后将自动刷新画像与导入历史。',
+      };
+    }
+
+    if (status === 'extraction_completed') {
+      return {
+        type: 'success',
+        message: 'AI 已完成分析',
+        description: notifications.join('；') || '画像与导入历史已自动刷新。',
+      };
+    }
+
+    if (status === 'extraction_failed') {
+      return {
+        type: 'error',
+        message: 'AI 分析失败',
+        description: String(extractionStatus?.error || '').trim() || notifications.join('；') || '请稍后重试。',
+      };
+    }
+
+    if (status === 'timeout') {
+      return {
+        type: 'warning',
+        message: '任务处理超时，请稍后手动刷新',
+        description: `已按 5 秒间隔轮询 ${EXTRACTION_POLL_MAX_ATTEMPTS} 次，仍未收到终态。`,
+      };
+    }
+
+    if (otherSystems.length > 0) {
+      return {
+        type: 'warning',
+        message: '检测到其他系统信息',
+        description: `文档中还包含以下系统的信息：${otherSystems.join('、')}。如需更新请前往对应系统操作。`,
+      };
+    }
+
+    return null;
+  }, [extractionStatus]);
+
+  const extractionStatusStrip = useMemo(() => {
+    if (!extractionAlert) {
+      return null;
+    }
+
+    const tone = EXTRACTION_STATUS_STYLES[extractionAlert.type] || EXTRACTION_STATUS_STYLES.info;
+    const StatusIcon = tone.icon;
+
+    return (
+      <div
+        data-testid="extraction-status-strip"
+        role="status"
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 8,
+          padding: '8px 12px',
+          borderRadius: 8,
+          border: `1px solid ${tone.border}`,
+          background: tone.background,
+        }}
+      >
+        <StatusIcon style={{ color: tone.color, fontSize: 16, lineHeight: '20px', marginTop: 2 }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ color: 'rgba(0, 0, 0, 0.88)', fontWeight: 500, lineHeight: '20px' }}>
+            {extractionAlert.message}
+          </div>
+          {extractionAlert.description ? (
+            <Text type="secondary" style={{ display: 'block', marginTop: 2, lineHeight: '20px' }}>
+              {extractionAlert.description}
+            </Text>
+          ) : null}
+        </div>
+      </div>
+    );
+  }, [extractionAlert]);
+
   return (
     <div>
       {responsibleSystems.length === 0 ? (
@@ -539,23 +1100,7 @@ const SystemProfileImportPage = () => {
             )}
           </Space>
 
-          {extractionStatus?.status === 'processing' && (
-            <Alert
-              type="info"
-              showIcon
-              message="AI 正在分析文档"
-              description="系统正在提取文档中的结构化信息，请稍后刷新查看结果。"
-            />
-          )}
-
-          {extractionStatus?.other_systems && extractionStatus.other_systems.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message="检测到其他系统信息"
-              description={`文档中还包含以下系统的信息：${extractionStatus.other_systems.join('、')}。如需更新请前往对应系统操作。`}
-            />
-          )}
+          {extractionStatusStrip}
 
           <Card
             title="代码扫描"
@@ -649,9 +1194,11 @@ const SystemProfileImportPage = () => {
             </Space>
           </Card>
 
-          <Space direction="vertical" style={{ width: '100%' }} size={12}>
-            {DOC_TYPE_CONFIGS.map((config) => renderDocTypeCard(config))}
-          </Space>
+          <Card title="文档导入">
+            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              {DOC_TYPE_CONFIGS.map((config) => renderDocTypeCard(config))}
+            </Space>
+          </Card>
 
           {importHistory.length > 0 && (
             <Card

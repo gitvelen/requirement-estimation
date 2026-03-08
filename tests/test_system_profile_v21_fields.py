@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -79,7 +80,19 @@ def test_system_profile_v21_only_four_fields(client, monkeypatch):
             "system_id": "sys_hop",
             "fields": {
                 "system_scope": "账户系统",
-                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
+                "module_structure": [
+                    {
+                        "module_name": "账户",
+                        "description": "账户核心域",
+                        "children": [
+                            {
+                                "module_name": "开户子模块",
+                                "description": "处理开户",
+                                "children": [{"module_name": "开户校验", "description": "校验资料"}],
+                            }
+                        ],
+                    }
+                ],
                 "integration_points": "核心账务",
                 "key_constraints": "高可用",
                 "in_scope": "legacy",
@@ -93,6 +106,10 @@ def test_system_profile_v21_only_four_fields(client, monkeypatch):
     assert response.status_code == 200
     fields = (response.json().get("data") or {}).get("fields") or {}
     assert set(fields.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
+    assert fields["module_structure"][0]["module_name"] == "账户"
+    assert fields["module_structure"][0]["children"][0]["module_name"] == "开户子模块"
+    assert fields["module_structure"][0]["children"][0]["children"][0]["module_name"] == "开户校验"
+    assert "functions" not in fields["module_structure"][0]
 
 
 def test_system_profile_module_structure_must_be_array(client, monkeypatch):
@@ -119,6 +136,35 @@ def test_system_profile_module_structure_must_be_array(client, monkeypatch):
     payload = response.json()
     assert payload.get("error_code") == "invalid_module_structure"
     assert payload.get("request_id") == "req_invalid_module_structure"
+
+
+def test_system_profile_legacy_functions_are_converted_to_children(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    owner = _seed_user("manager_v21_legacy", "pwd123", ["manager"])
+    _seed_system(owner["id"], system_id="sys_hop_legacy", system_name="HOP_LEGACY")
+    token = _login(client, "manager_v21_legacy", "pwd123")
+
+    response = client.put(
+        "/api/v1/system-profiles/HOP_LEGACY",
+        json={
+            "system_id": "sys_hop_legacy",
+            "fields": {
+                "system_scope": "账户系统",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户", "desc": "开户流程"}]}],
+            },
+            "evidence_refs": [],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    fields = (response.json().get("data") or {}).get("fields") or {}
+    modules = fields.get("module_structure") or []
+    assert len(modules) == 1
+    assert modules[0]["module_name"] == "账户"
+    assert modules[0]["children"] == [{"module_name": "开户", "description": "开户流程", "children": []}]
+    assert "functions" not in modules[0]
 
 
 def test_system_profile_admin_has_global_write_permission(client, monkeypatch):
@@ -198,7 +244,7 @@ def test_system_profile_service_startup_migrates_legacy_fields_to_profile_data(t
     module_structure = profile_data["business_capabilities"]["module_structure"]
     assert isinstance(module_structure, list) and len(module_structure) == 1
     assert module_structure[0]["module_name"] == "账户"
-    assert module_structure[0]["functions"] == [{"name": "开户", "desc": ""}]
+    assert module_structure[0]["children"] == [{"module_name": "开户", "description": "", "children": []}]
     assert isinstance(module_structure[0].get("last_updated"), str) and module_structure[0]["last_updated"]
     assert profile_data["integration_interfaces"]["integration_points"] == [{"description": "核心账务"}]
     assert profile_data["constraints_risks"]["key_constraints"] == [{"category": "通用", "description": "高可用"}]
@@ -236,3 +282,30 @@ def test_system_profile_service_startup_migration_is_idempotent(tmp_path):
     assert second_data.get("_migrated") is True
     assert second_data.get("_migrated_at") == first_migrated_at
     assert second_data.get("profile_data") == first_profile_data
+
+
+def test_module_structure_depth_over_three_is_truncated_and_logged(tmp_path, caplog):
+    service = SystemProfileService(store_path=str(tmp_path / "profiles.json"))
+    deep_structure = [
+        {
+            "module_name": "L1",
+            "children": [
+                {
+                    "module_name": "L2",
+                    "children": [
+                        {
+                            "module_name": "L3",
+                            "children": [{"module_name": "L4", "children": [{"module_name": "L5"}]}],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        normalized = service._normalize_module_structure(deep_structure, strict=False)
+
+    assert normalized[0]["children"][0]["children"][0]["module_name"] == "L3"
+    assert normalized[0]["children"][0]["children"][0]["children"] == []
+    assert any("module_structure depth exceeds limit" in record.message for record in caplog.records)

@@ -12,6 +12,7 @@ from backend.app import app
 from backend.config.config import settings
 from backend.service import user_service
 from backend.api import system_routes
+from backend.api import system_profile_routes
 from backend.service import system_profile_service
 
 
@@ -249,3 +250,71 @@ def test_system_profile_completeness_api_formula(client, monkeypatch):
     missing_payload = missing.json()
     assert missing_payload.get("exists") is False
     assert missing_payload.get("completeness_score") == 0
+
+
+def test_profile_template_download_requires_manager_role(client, tmp_path):
+    manager = _seed_user("template_manager_acl", "pwd123", ["manager"])
+    admin = _seed_user("template_admin_acl", "pwd123", ["admin"])
+    manager_token = _login(client, "template_manager_acl", "pwd123")
+    admin_token = _login(client, "template_admin_acl", "pwd123")
+
+    history_template = tmp_path / "工作量评估模板.xlsx"
+    history_template.write_bytes(b"template")
+    system_profile_routes.TEMPLATE_FILE_MAPPING = {"history_report": str(history_template)}
+
+    manager_response = client.get(
+        "/api/v1/system-profiles/template/history_report",
+        headers={"Authorization": f"Bearer {manager_token}"},
+    )
+    assert manager_response.status_code == 200
+
+    admin_response = client.get(
+        "/api/v1/system-profiles/template/history_report",
+        headers={"Authorization": f"Bearer {admin_token}", "X-Request-ID": "req_template_admin_forbidden"},
+    )
+    assert admin_response.status_code == 403
+
+    no_auth = client.get("/api/v1/system-profiles/template/history_report")
+    assert no_auth.status_code == 401
+
+
+def test_profile_task_status_requires_manager_role(client):
+    manager = _seed_user("task_manager_acl", "pwd123", ["manager"])
+    admin = _seed_user("task_admin_acl", "pwd123", ["admin"])
+    manager_token = _login(client, "task_manager_acl", "pwd123")
+    admin_token = _login(client, "task_admin_acl", "pwd123")
+
+    system_routes._write_systems(
+        [
+            {
+                "id": "sys_hop",
+                "name": "HOP",
+                "abbreviation": "HOP",
+                "status": "运行中",
+                "extra": {"owner_id": manager["id"]},
+            }
+        ]
+    )
+
+    service = system_profile_service.get_system_profile_service()
+    service.upsert_extraction_task(
+        "sys_hop",
+        task_id="task_acl_001",
+        status="pending",
+        trigger="document_import",
+    )
+
+    manager_response = client.get(
+        "/api/v1/system-profiles/task-status/task_acl_001",
+        headers={"Authorization": f"Bearer {manager_token}"},
+    )
+    assert manager_response.status_code == 200
+
+    admin_response = client.get(
+        "/api/v1/system-profiles/task-status/task_acl_001",
+        headers={"Authorization": f"Bearer {admin_token}", "X-Request-ID": "req_task_admin_forbidden"},
+    )
+    assert admin_response.status_code == 403
+
+    no_auth = client.get("/api/v1/system-profiles/task-status/task_acl_001")
+    assert no_auth.status_code == 401

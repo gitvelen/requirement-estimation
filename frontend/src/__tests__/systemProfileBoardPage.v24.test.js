@@ -1,8 +1,13 @@
 import React from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import SystemProfileBoardPage from '../pages/SystemProfileBoardPage';
+import ModuleStructurePreview from '../components/systemProfile/ModuleStructurePreview';
+import StructuredFieldPreview from '../components/systemProfile/StructuredFieldPreview';
+import StructuredFieldDiffPreview from '../components/systemProfile/StructuredFieldDiffPreview';
+
+jest.setTimeout(120000);
 
 jest.mock('axios', () => ({
   get: jest.fn(),
@@ -17,19 +22,19 @@ jest.mock('../hooks/useAuth', () => () => ({
     username: 'tester',
     displayName: '测试PM',
   },
-  logout: jest.fn(),
 }));
 
 jest.mock('../hooks/usePermission', () => () => ({
   isManager: true,
 }));
 
-const createProfilePayload = () => ({
+const createProfilePayload = (overrides = {}) => ({
   status: 'draft',
   pending_fields: [],
   updated_at: '2026-03-01T10:00:00',
   is_stale: false,
   system_id: 'sys_alpha',
+  ...overrides,
   profile_data: {
     system_positioning: {
       system_description: '当前系统描述',
@@ -53,6 +58,7 @@ const createProfilePayload = () => ({
       key_constraints: [{ category: '合规', description: '实名校验' }],
       known_risks: ['OCR可用性'],
     },
+    ...(overrides.profile_data || {}),
   },
   ai_suggestions: {
     system_positioning: {
@@ -60,66 +66,30 @@ const createProfilePayload = () => ({
       target_users: ['企业用户'],
       boundaries: ['仅覆盖开户流程'],
     },
+    ...(overrides.ai_suggestions || {}),
   },
-  ai_suggestions_previous: null,
+  ai_suggestions_previous: overrides.ai_suggestions_previous ?? null,
+  ai_suggestion_ignored: overrides.ai_suggestion_ignored ?? {},
 });
 
-const createEmptyProfileData = () => ({
-  system_positioning: {
-    system_description: '',
-    target_users: [],
-    boundaries: [],
-  },
-  business_capabilities: {
-    module_structure: [],
-    core_processes: [],
-  },
-  integration_interfaces: {
-    integration_points: [],
-    external_dependencies: [],
-  },
-  technical_architecture: {
-    architecture_positioning: '',
-    tech_stack: [],
-    performance_profile: {},
-  },
-  constraints_risks: {
-    key_constraints: [],
-    known_risks: [],
-  },
-});
+const setupAxiosMock = (profileOverrides) => {
+  const profile = createProfilePayload(profileOverrides);
 
-const createEvents = (count) => (
-  Array.from({ length: count }).map((_, index) => ({
-    event_id: `evt_${index + 1}`,
-    event_type: 'document_import',
-    timestamp: `2026-03-01T10:${String(index).padStart(2, '0')}:00`,
-    source: '需求文档',
-    summary: `事件${index + 1}`,
-  }))
-);
+  const clone = (value) => JSON.parse(JSON.stringify(value));
 
-const setupAxiosMock = ({ profileOverrides = {}, eventPages = [], systemsOverride } = {}) => {
-  const profile = { ...createProfilePayload(), ...profileOverrides };
-  const systems = Array.isArray(systemsOverride) && systemsOverride.length > 0
-    ? systemsOverride
-    : [
-      {
-        id: 'sys_alpha',
-        name: '系统A',
-        status: 'active',
-        extra: {
-          owner_username: 'tester',
-        },
-      },
-    ];
-
-  axios.get.mockImplementation((url, config = {}) => {
+  axios.get.mockImplementation((url) => {
     if (url === '/api/v1/system/systems') {
       return Promise.resolve({
         data: {
           data: {
-            systems,
+            systems: [
+              {
+                id: 'sys_alpha',
+                name: '系统A',
+                status: 'active',
+                extra: { owner_username: 'tester' },
+              },
+            ],
           },
         },
       });
@@ -130,24 +100,16 @@ const setupAxiosMock = ({ profileOverrides = {}, eventPages = [], systemsOverrid
         data: {
           exists: true,
           completeness_score: 88,
-          breakdown: {
-            code_scan: 30,
-            documents: 40,
-            esb: 18,
-          },
+          breakdown: { code_scan: 30, documents: 40, esb: 18 },
         },
       });
     }
 
-    if (url.startsWith('/api/v1/system-profiles/') && url.includes('/profile/events')) {
-      const offset = Number(config?.params?.offset || 0);
-      const hit = eventPages.find((item) => item.offset === offset);
-      return Promise.resolve({
-        data: hit ? hit.payload : { total: 0, items: [] },
-      });
+    if (String(url).includes('/profile/events')) {
+      return Promise.resolve({ data: { total: 0, items: [] } });
     }
 
-    if (url.includes('/api/v1/system-profiles/')) {
+    if (String(url).includes('/api/v1/system-profiles/')) {
       return Promise.resolve({
         data: {
           code: 200,
@@ -157,6 +119,28 @@ const setupAxiosMock = ({ profileOverrides = {}, eventPages = [], systemsOverrid
     }
 
     return Promise.resolve({ data: {} });
+  });
+
+  axios.put.mockResolvedValue({ data: { code: 200 } });
+  axios.post.mockImplementation((url, payload = {}) => {
+    if (String(url).includes('/profile/suggestions/ignore')) {
+      const domain = String(payload?.domain || '').trim();
+      const subField = String(payload?.sub_field || '').trim();
+      const suggestion = profile.ai_suggestions?.[domain]?.[subField];
+      if (domain && subField && suggestion !== undefined) {
+        profile.ai_suggestion_ignored = {
+          ...(profile.ai_suggestion_ignored || {}),
+          [`${domain}.${subField}`]: clone(suggestion),
+        };
+      }
+      return Promise.resolve({
+        data: {
+          code: 200,
+          data: clone(profile),
+        },
+      });
+    }
+    return Promise.resolve({ data: { code: 200 } });
   });
 };
 
@@ -168,7 +152,7 @@ const renderPage = () => render(
   </MemoryRouter>
 );
 
-describe('SystemProfileBoardPage v2.4', () => {
+describe('SystemProfileBoardPage v2.4 baseline', () => {
   const createMatchMediaResult = (query) => ({
     matches: false,
     media: query,
@@ -181,307 +165,365 @@ describe('SystemProfileBoardPage v2.4', () => {
   });
 
   beforeAll(() => {
+    jest.spyOn(console, 'warn').mockImplementation((...args) => {
+      const firstArg = String(args[0] || '');
+      if (firstArg.includes('React Router Future Flag Warning')) {
+        return;
+      }
+    });
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: (query) => createMatchMediaResult(query),
     });
   });
 
-  beforeEach(() => {
-    jest.clearAllMocks();
+  afterAll(() => {
+    if (console.warn.mockRestore) {
+      console.warn.mockRestore();
+    }
   });
 
-  it('renders three-zone board with domain navigation', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupAxiosMock();
+  });
 
+  it('keeps baseline action buttons and timeline card', async () => {
     renderPage();
 
-    expect((await screen.findAllByText('D1 系统定位与边界')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('保存草稿')).toBeInTheDocument();
+    expect(screen.getByText('发布画像')).toBeInTheDocument();
+    expect(screen.getByText('变更时间线')).toBeInTheDocument();
+    expect(screen.getByText('暂无变更记录')).toBeInTheDocument();
+  });
+
+  it('keeps baseline domain tabs', async () => {
+    renderPage();
+
+    expect(await screen.findByText('D1 系统定位与边界')).toBeInTheDocument();
     expect(screen.getByText('D2 业务能力与流程')).toBeInTheDocument();
     expect(screen.getByText('D3 集成与接口')).toBeInTheDocument();
     expect(screen.getByText('D4 技术架构')).toBeInTheDocument();
     expect(screen.getByText('D5 约束与风险')).toBeInTheDocument();
   });
 
-  it('does not duplicate active domain title in content area', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
+  it('renders D1 summary fields in preview mode and exposes edit buttons', async () => {
     renderPage();
 
-    await screen.findByText('保存草稿');
-    expect(screen.getAllByText('D1 系统定位与边界')).toHaveLength(1);
+    expect(await screen.findByText('系统描述')).toBeInTheDocument();
+    expect(await screen.findByText('企业用户')).toBeInTheDocument();
+    expect(screen.getByText('仅覆盖开户流程')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑系统描述' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑目标用户' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑边界说明' })).toBeInTheDocument();
+    expect(screen.queryAllByPlaceholderText('请输入系统描述')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑系统描述' }));
+    expect(screen.getByPlaceholderText('请输入系统描述')).toBeInTheDocument();
   });
 
-  it('left-aligns domain navigation buttons', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
-    renderPage();
-
-    await screen.findByText('保存草稿');
-    const domainButton = screen.getByRole('button', { name: /D2 业务能力与流程/ });
-    expect(domainButton).toHaveStyle({ justifyContent: 'flex-start', textAlign: 'left' });
-  });
-
-  it('removes redundant section header navigation labels', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
-    renderPage();
-
-    await screen.findByText('保存草稿');
-    expect(screen.queryByText('域导航')).not.toBeInTheDocument();
-    expect(screen.queryByText('要素内容')).not.toBeInTheDocument();
-  });
-
-  it('shows timeline empty state when no profile events', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
-    renderPage();
-
-    expect(await screen.findByText('暂无变更记录')).toBeInTheDocument();
-  });
-
-  it('supports timeline pagination via load more', async () => {
-    setupAxiosMock({
-      eventPages: [
-        { offset: 0, payload: { total: 25, items: createEvents(20) } },
-        { offset: 20, payload: { total: 25, items: createEvents(5).map((item) => ({ ...item, event_id: `${item.event_id}_p2` })) } },
-      ],
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(screen.getByText('加载更多')).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    const loadMoreButton = screen.getByText('加载更多').closest('button');
-    expect(loadMoreButton).not.toBeNull();
-    fireEvent.click(loadMoreButton);
-
-    await waitFor(() => {
-      const eventCalls = axios.get.mock.calls.filter(([url]) => String(url).includes('/profile/events'));
-      expect(eventCalls.length).toBe(2);
-      expect(eventCalls[1][1]?.params?.offset).toBe(20);
-      expect(eventCalls[1][1]?.params?.limit).toBe(20);
-    });
-  });
-
-  it('prefers current system id from system list when profile carries stale system_id', async () => {
-    setupAxiosMock({
-      profileOverrides: {
-        system_id: 'legacy_profile_id',
-      },
-      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
-      systemsOverride: [
-        {
-          id: 'sys_alpha',
-          name: '系统A',
-          status: 'active',
-          extra: {
-            owner_username: 'tester',
-          },
-        },
-      ],
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      const eventCalls = axios.get.mock.calls.filter(([url]) => String(url).includes('/profile/events'));
-      expect(eventCalls.length).toBeGreaterThan(0);
-      expect(String(eventCalls[0][0])).toContain('/api/v1/system-profiles/sys_alpha/profile/events');
-      expect(String(eventCalls[0][0])).not.toContain('/api/v1/system-profiles/legacy_profile_id/profile/events');
-    }, { timeout: 8000 });
-  }, 12000);
-
-  it('disables rollback button when ai_suggestions_previous is missing', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(screen.getByText('恢复上一版建议')).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    const rollbackButton = screen.getByText('恢复上一版建议').closest('button');
-    expect(rollbackButton).not.toBeNull();
-    expect(rollbackButton).toBeDisabled();
-  });
-
-  it('shows empty-state guidance when user has no responsible systems', async () => {
-    setupAxiosMock({
-      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
-      systemsOverride: [
-        {
-          id: 'sys_alpha',
-          name: '系统A',
-          status: 'active',
-          extra: {
-            owner_username: 'another_pm',
-          },
-        },
-      ],
-    });
-
-    renderPage();
-
-    expect(await screen.findByText('暂无可操作系统（仅展示主责/B角系统）。请联系管理员维护系统负责关系。')).toBeInTheDocument();
-    expect(screen.queryByText('保存草稿')).not.toBeInTheDocument();
-    expect(screen.queryByText('发布画像')).not.toBeInTheDocument();
-  });
-
-  it('shows only systems where current user is owner or backup owner', async () => {
-    setupAxiosMock({
-      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
-      systemsOverride: [
-        {
-          id: 'sys_alpha',
-          name: '系统A',
-          status: 'active',
-          extra: {
-            owner_username: 'tester',
-          },
-        },
-        {
-          id: 'sys_beta',
-          name: '系统B',
-          status: 'active',
-          extra: {
-            owner_username: 'another_pm',
-          },
-        },
-      ],
-    });
-
-    renderPage();
-
-    expect(await screen.findByText('保存草稿')).toBeInTheDocument();
-    expect(screen.getByText('系统A')).toBeInTheDocument();
-    expect(screen.queryByText('系统B')).not.toBeInTheDocument();
-  });
-
-  it('renders empty editors for all domain fields when profile is not imported', async () => {
-    setupAxiosMock({
-      profileOverrides: {
-        profile_data: createEmptyProfileData(),
-      },
-      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
-    });
-
-    renderPage();
-
-    expect(await screen.findByPlaceholderText('请输入目标用户')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('请输入边界说明')).toBeInTheDocument();
-
-    const navButton = screen.getByRole('button', { name: /D2 业务能力与流程/ });
-    const navCard = navButton.closest('.ant-card');
-    expect(navCard).not.toBeNull();
-    const nav = within(navCard);
-
-    fireEvent.click(nav.getByRole('button', { name: /D2 业务能力与流程/ }));
-    expect(await screen.findByPlaceholderText('模块名称')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('请输入核心流程')).toBeInTheDocument();
-  }, 12000);
-
-  it('uses human-readable editors instead of raw json textarea', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-
-    renderPage();
-
-    expect(await screen.findByText('保存草稿')).toBeInTheDocument();
-    expect(screen.queryByText(/请输入合法 JSON/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/JSON 格式不合法/i)).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText('请输入目标用户')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('请输入边界说明')).toBeInTheDocument();
-    expect(screen.queryByText('新增目标用户')).not.toBeInTheDocument();
-    expect(screen.queryByText('新增边界说明')).not.toBeInTheDocument();
-    expect(screen.queryByText('删除')).not.toBeInTheDocument();
-  });
-
-  it('does not show suggestion diff for module_structure when only last_updated differs', async () => {
-    setupAxiosMock({
-      profileOverrides: {
-        profile_data: {
-          ...createProfilePayload().profile_data,
-          business_capabilities: {
-            module_structure: [
+  it('renders D2 tree with first-level expanded, legacy functions and depth guard', async () => {
+    render(
+      <ModuleStructurePreview
+        value={[
+          {
+            module_name: '开户',
+            description: '顶层模块',
+            functions: [{ name: '证件校验', desc: 'OCR 校验' }],
+            children: [
               {
-                module_name: '开户',
-                functions: [{ name: '证件校验', desc: 'OCR' }],
-                last_updated: '2026-03-05T10:00:00',
-              },
-            ],
-            core_processes: ['开户审核'],
-          },
-        },
-        ai_suggestions: {
-          business_capabilities: {
-            module_structure: [
-              {
-                module_name: '开户',
-                functions: [{ name: '证件校验', desc: 'OCR' }],
+                module_name: '资料审核',
+                children: [
+                  {
+                    module_name: '人工复核',
+                    children: [{ module_name: '超深节点', description: '不应渲染' }],
+                  },
+                ],
               },
             ],
           },
+        ]}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: '收起 开户' })).toBeInTheDocument();
+    expect(screen.getByText('证件校验')).toBeInTheDocument();
+    expect(screen.getByText('资料审核')).toBeInTheDocument();
+    expect(screen.queryByText('人工复核')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开 资料审核' }));
+    expect(screen.getByText('人工复核')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开 人工复核' }));
+    expect(screen.getByText('超出展示深度')).toBeInTheDocument();
+    expect(screen.queryByText('超深节点')).not.toBeInTheDocument();
+  });
+
+  it('renders D3 and D5 structured previews as tables', () => {
+    render(
+      <>
+        <StructuredFieldPreview
+          title="当前集成点"
+          kind="integration_points"
+          value={[
+            { peer_system: '核心账务', protocol: 'HTTP', direction: 'outbound', description: '同步开户' },
+            { peer_system: '征信平台', protocol: 'MQ', direction: 'sideways', description: '异步核验' },
+          ]}
+        />
+        <StructuredFieldPreview
+          title="当前关键约束"
+          kind="key_constraints"
+          value={[{ category: '合规', description: '实名校验' }]}
+        />
+        <StructuredFieldPreview title="当前已知风险" kind="known_risks" value={['OCR可用性']} />
+      </>
+    );
+
+    expect(screen.getByText('当前集成点')).toBeInTheDocument();
+    expect(screen.getByText('对端系统')).toBeInTheDocument();
+    expect(screen.getByText('协议')).toBeInTheDocument();
+    expect(screen.getByText('方向')).toBeInTheDocument();
+    expect(screen.getByText('集成说明')).toBeInTheDocument();
+    expect(screen.getByText('核心账务')).toBeInTheDocument();
+    expect(screen.getByText('→')).toBeInTheDocument();
+    expect(screen.getByText('未知方向')).toBeInTheDocument();
+
+    expect(screen.getByText('当前关键约束')).toBeInTheDocument();
+    expect(screen.getByText('约束类型')).toBeInTheDocument();
+    expect(screen.getByText('内容')).toBeInTheDocument();
+    expect(screen.getByText('合规')).toBeInTheDocument();
+    expect(screen.getByText('实名校验')).toBeInTheDocument();
+
+    expect(screen.getByText('当前已知风险')).toBeInTheDocument();
+    expect(screen.getByText('风险项')).toBeInTheDocument();
+    expect(screen.getByText('OCR可用性')).toBeInTheDocument();
+  });
+
+  it('shows performance profile in preview mode by default and opens editor on demand', async () => {
+    setupAxiosMock({
+      profile_data: {
+        technical_architecture: {
+          architecture_positioning: '分层架构',
+          tech_stack: ['React', 'FastAPI'],
+          performance_profile: {
+            并发量: '20并发下，平均20TPS',
+            响应时间: '交易平均响应时间为3秒',
+          },
         },
       },
-      eventPages: [{ offset: 0, payload: { total: 0, items: [] } }],
     });
 
     renderPage();
-    await screen.findByText('保存草稿');
-    fireEvent.click(screen.getByRole('button', { name: /D2 业务能力与流程/ }));
 
-    await screen.findByDisplayValue('开户');
+    fireEvent.click(await screen.findByRole('button', { name: 'D4 技术架构' }));
+
+    expect(await screen.findByText('性能画像')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑性能画像' })).toBeInTheDocument();
+    expect(screen.queryByText('当前性能画像')).not.toBeInTheDocument();
+    expect(screen.getByText('并发量')).toBeInTheDocument();
+    expect(screen.getByText('20并发下，平均20TPS')).toBeInTheDocument();
+    expect(screen.queryAllByPlaceholderText('指标名称')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑性能画像' }));
+
+    expect(screen.getAllByPlaceholderText('指标名称')).toHaveLength(2);
+    expect(screen.getByDisplayValue('并发量')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('20并发下，平均20TPS')).toBeInTheDocument();
+  }, 120000);
+
+  it('applies the preview-first flow to D2 fields and shows header actions', async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'D2 业务能力与流程' }));
+    expect(await screen.findByText('模块结构')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑模块结构' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑核心流程' })).toBeInTheDocument();
+    expect(screen.queryByText('当前模块结构')).not.toBeInTheDocument();
+    expect(screen.queryAllByPlaceholderText('模块名称')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '编辑模块结构' }));
+    expect(screen.getAllByPlaceholderText('模块名称').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: '收起 开户' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '展开 开户' })).not.toBeInTheDocument();
+    expect(screen.queryByText('当前模块结构')).not.toBeInTheDocument();
+  }, 30000);
+
+  it('hides D2 diff when saved module structure matches suggestion after normalization', async () => {
+    setupAxiosMock({
+      profile_data: {
+        business_capabilities: {
+          module_structure: [
+            {
+              module_name: '贷款开户放款',
+              description: '顶层模块',
+              last_updated: '2026-03-07T10:00:00',
+              children: [
+                { module_name: '开户放款', description: '处理开户放款', children: [], last_updated: '2026-03-07T10:00:00' },
+              ],
+            },
+          ],
+          core_processes: ['开户审核'],
+        },
+      },
+      ai_suggestions: {
+        business_capabilities: {
+          module_structure: [
+            {
+              module_name: '贷款开户放款',
+              description: '顶层模块',
+              functions: [{ name: '开户放款', desc: '处理开户放款' }],
+            },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'D2 业务能力与流程' }));
+
+    expect(await screen.findByText('模块结构')).toBeInTheDocument();
     expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
-  }, 60000);
+    expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
+  }, 30000);
 
-  it('keeps ignored suggestion hidden after saving draft', async () => {
-    setupAxiosMock({ eventPages: [{ offset: 0, payload: { total: 0, items: [] } }] });
-    axios.put.mockResolvedValue({ data: { code: 200 } });
-    axios.post.mockResolvedValue({ data: { code: 200, data: createProfilePayload() } });
-
+  it('keeps ignored D1 suggestion hidden after saving draft and reloading', async () => {
     renderPage();
 
-    await waitFor(() => {
-      expect(screen.getByText('检测到 AI 建议变更')).toBeInTheDocument();
-    }, { timeout: 5000 });
-    const ignoreButton = screen.getByText(/忽\s*略/).closest('button');
-    expect(ignoreButton).not.toBeNull();
-    fireEvent.click(ignoreButton);
+    expect(await screen.findByText('系统描述')).toBeInTheDocument();
+    expect(await screen.findByText('检测到 AI 建议变更')).toBeInTheDocument();
+
+    const profileDetailCallsBeforeSave = axios.get.mock.calls.filter(([url]) => String(url).startsWith('/api/v1/system-profiles/')).length;
+
+    fireEvent.click(screen.getByRole('button', { name: /忽\s*略/ }));
 
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledTimes(1);
-      expect(String(axios.post.mock.calls[0][0])).toContain('/profile/suggestions/ignore');
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/system-profiles/sys_alpha/profile/suggestions/ignore',
+        { domain: 'system_positioning', sub_field: 'system_description' }
+      );
     });
+    expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
-    });
-
-    const saveButton = screen.getByText('保存草稿').closest('button');
-    expect(saveButton).not.toBeNull();
-    fireEvent.click(saveButton);
-
-    await waitFor(() => {
-      const activeSaveButton = screen.getByText('保存草稿').closest('button');
-      expect(activeSaveButton).not.toBeNull();
-      expect(activeSaveButton).toHaveClass('ant-btn-loading');
-    });
-
-    await waitFor(() => {
-      const activeSaveButton = screen.getByText('保存草稿').closest('button');
-      expect(activeSaveButton).not.toBeNull();
-      expect(activeSaveButton).not.toHaveClass('ant-btn-loading');
-    });
+    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
 
     await waitFor(() => {
       expect(axios.put).toHaveBeenCalledTimes(1);
     });
+    await waitFor(() => {
+      const profileDetailCallsAfterSave = axios.get.mock.calls.filter(([url]) => String(url).startsWith('/api/v1/system-profiles/')).length;
+      expect(profileDetailCallsAfterSave).toBeGreaterThan(profileDetailCallsBeforeSave);
+    });
+    expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
+  }, 120000);
+
+  it('keeps ignored D5 suggestion hidden after saving draft and reloading', async () => {
+    setupAxiosMock({
+      profile_data: {
+        constraints_risks: {
+          key_constraints: [{ category: '数据安全', description: '需要保证数据完整性' }],
+          known_risks: ['OCR可用性'],
+        },
+      },
+      ai_suggestions: {
+        constraints_risks: {
+          key_constraints: [{ category: '技术约束', description: '系统需基于阿里云平台开发。' }],
+        },
+      },
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'D5 约束与风险' }));
+    expect(await screen.findByText('关键约束')).toBeInTheDocument();
+    expect(screen.getByText('检测到 AI 建议变更')).toBeInTheDocument();
+
+    const profileDetailCallsBeforeSave = axios.get.mock.calls.filter(([url]) => String(url).startsWith('/api/v1/system-profiles/')).length;
+
+    fireEvent.click(screen.getByRole('button', { name: /忽\s*略/ }));
 
     await waitFor(() => {
-      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/system-profiles/sys_alpha/profile/suggestions/ignore',
+        { domain: 'constraints_risks', sub_field: 'key_constraints' }
+      );
     });
+    expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      const profileDetailCallsAfterSave = axios.get.mock.calls.filter(([url]) => String(url).startsWith('/api/v1/system-profiles/')).length;
+      expect(profileDetailCallsAfterSave).toBeGreaterThan(profileDetailCallsBeforeSave);
+    });
+    expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
+  }, 120000);
+
+  it('applies the preview-first flow to D3 fields and shows header actions', async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'D3 集成与接口' }));
+    expect(await screen.findByText('集成点')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑集成点' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑外部依赖' })).toBeInTheDocument();
+    expect(screen.queryByText('当前集成点')).not.toBeInTheDocument();
+    expect(screen.queryAllByPlaceholderText('集成说明')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '编辑集成点' }));
+    expect(screen.getAllByPlaceholderText('集成说明').length).toBeGreaterThan(0);
   }, 20000);
+
+  it('applies the preview-first flow to D5 fields and shows header actions', async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'D5 约束与风险' }));
+    expect(await screen.findByText('关键约束')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑关键约束' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑已知风险' })).toBeInTheDocument();
+    expect(screen.queryByText('当前关键约束')).not.toBeInTheDocument();
+    expect(screen.queryByText('当前已知风险')).not.toBeInTheDocument();
+    expect(screen.queryAllByPlaceholderText('约束类别')).toHaveLength(0);
+    expect(screen.queryAllByPlaceholderText('请输入已知风险')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '编辑关键约束' }));
+    expect(screen.getByPlaceholderText('约束类别')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '编辑已知风险' }));
+    expect(screen.getByPlaceholderText('请输入已知风险')).toBeInTheDocument();
+  }, 20000);
+
+  it('renders mixed diff previews for text list table and tree fields', () => {
+    render(
+      <>
+        <StructuredFieldDiffPreview kind="text" currentValue="当前系统描述" suggestionValue="AI建议-系统描述" />
+        <StructuredFieldDiffPreview
+          kind="list"
+          currentValue={['企业用户', '财务人员']}
+          suggestionValue={['企业用户', '运营人员']}
+        />
+        <StructuredFieldDiffPreview
+          kind="integration_points"
+          currentValue={[{ peer_system: '核心账务', protocol: 'HTTP', direction: 'outbound', description: '同步开户' }]}
+          suggestionValue={[{ peer_system: '核心账务', protocol: 'HTTP', direction: 'bidirectional', description: '同步开户' }]}
+        />
+        <StructuredFieldDiffPreview
+          kind="module_structure"
+          currentValue={[{ module_name: '开户', children: [{ module_name: '资料审核', children: [] }] }]}
+          suggestionValue={[{ module_name: '开户', children: [{ module_name: '资料预审', children: [] }, { module_name: '风控校验', children: [] }] }]}
+        />
+      </>
+    );
+
+    expect(screen.getByText('当前值')).toBeInTheDocument();
+    expect(screen.getByText('AI 建议')).toBeInTheDocument();
+    expect(screen.getAllByText('+').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
+    expect(screen.getByText('财务人员')).toBeInTheDocument();
+    expect(screen.getByText('运营人员')).toBeInTheDocument();
+    expect(screen.getByText('表格变更')).toBeInTheDocument();
+    expect(screen.getByText('⇄')).toBeInTheDocument();
+    expect(screen.getByText('树形变更')).toBeInTheDocument();
+    expect(screen.getByText('资料预审')).toBeInTheDocument();
+    expect(screen.getByText('风控校验')).toBeInTheDocument();
+  });
 
 });

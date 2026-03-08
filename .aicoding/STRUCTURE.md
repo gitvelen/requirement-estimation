@@ -46,7 +46,7 @@
 1. 分析变更描述，给出建议（参考下表）
 2. 询问用户确认："这是 v1.0 的补丁修复，还是要开始 v1.1 新版本？"
 3. 用户明确指定后，执行对应流程
-4. 所有变更都必须创建 CR，进入 Phase 00 澄清流程
+4. 版本内变更必须创建 CR，进入 Phase 00 澄清流程；新版本启动直接从 Proposal 开始
 
 | 变更性质 | AI 建议参考（关键词） | 操作方式 |
 |---------|---------------------|---------|
@@ -76,7 +76,8 @@
 
 ### CR 创建规则
 
-- **所有变更都必须创建 CR**（无论是补丁还是新版本）
+- **版本内的范围调整**必须创建 CR（已测试/已完成后的新需求）
+- **新版本启动**不需要 CR，直接从 Proposal 开始
 - CR 必须经过 Phase 00 澄清流程（范围、验收、影响面、风险）
 - CR 状态从 Idea → Accepted → In Progress → Implemented
 
@@ -84,7 +85,7 @@
 
 > 用户无需手动操作 Git。AI 按以下原则自动管理，确保可追溯、可回滚。
 
-**AI 必须遵循的规则**：
+**AI 行为规范**（依赖 AI 自觉执行，部分规则无硬校验）：
 1. **不在主分支直接开发**：开始工作前从主分支（`main`/`master`）切出工作分支（命名：`feat/<描述>` 或 `cr/<CR-ID>`）
 2. **频繁提交**：每完成一个有意义的步骤就提交，消息格式 `<type>: <描述>`（type：feat/fix/docs/test/refactor/chore），有 CR 时加前缀 `[CR-ID]`
 3. **完成后打 tag**：部署完成后在主分支（`main`/`master`）上打版本 tag（如 `v1.0`），作为下次迭代的基线
@@ -94,6 +95,8 @@
 5. **禁止危险操作**：`push --force`、`reset --hard`、`branch -D` 等必须经用户授权
 6. **远端同步**：非 PR 的主分支操作（打 tag、hotfix 合入等）完成后，须将 commit 和 tag 一并 push 到远端，确认 `ahead_by=0`
 7. **Commit message 自动生成**：AI 根据 diff 按现有格式规范（`<type>: <描述>`，有 CR 时加 `[CR-ID]`）自动生成，无需询问用户
+
+> **注意**：上述规则 1/3/4/6 属于 AI 行为约束，难以在 Git hooks 中硬校验。可选增强：在 `pre-push` 中增加"禁止直接 push 到 main/master"的拦截。
 
 ## 变更单（CR）
 - 适用：已完成/已测试后出现新需求或范围调整
@@ -124,7 +127,6 @@
 | 实现检查清单 | `templates/implementation_checklist_template.md` |
 | 审查模板 | `templates/review_template.md` |
 | Minor 审查模板 | `templates/review_minor_template.md` |
-| 人类抽检模板 | `templates/spotcheck_template.md` |
 | 变更单（CR） | `templates/cr_template.md` |
 
 ## ID 前缀约定

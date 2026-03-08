@@ -29,7 +29,11 @@ from backend.api.auth_routes import router as auth_router
 from backend.api.profile_routes import router as profile_router
 from backend.api.department_routes import router as department_router
 from backend.api.system_list_routes import router as system_list_router
-from backend.api.system_profile_routes import router as system_profile_router
+from backend.api.system_profile_routes import (
+    compat_router as system_profile_compat_router,
+    router as system_profile_router,
+    ws_router as system_profile_ws_router,
+)
 from backend.api.code_scan_routes import router as code_scan_router
 from backend.api.esb_routes import router as esb_router
 from backend.api.error_utils import ApiError, build_error_payload
@@ -109,6 +113,8 @@ app.include_router(profile_router)
 app.include_router(department_router)
 app.include_router(system_list_router)
 app.include_router(system_profile_router)
+app.include_router(system_profile_compat_router)
+app.include_router(system_profile_ws_router)
 app.include_router(code_scan_router)
 app.include_router(esb_router)
 

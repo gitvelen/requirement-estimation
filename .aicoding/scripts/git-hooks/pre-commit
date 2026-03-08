@@ -3,10 +3,20 @@
 # Git pre-commit dispatcher: Git-Hook 3 (.env拦截) + Git-Hook 4 (YAML校验) + Git-Hook 7（阶段出口门禁）+ Git-Hook 6（交付关口条件拦截）+ Git-Hook 5 (git config防篡改)
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=../lib/review_gate_common.sh
-source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
-# shellcheck source=../lib/common.sh
-source "${SCRIPT_DIR}/../lib/common.sh"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# 优先使用绝对路径（生产环境），回退到相对路径（测试环境）
+if [ -f "${REPO_ROOT}/.aicoding/scripts/lib/review_gate_common.sh" ]; then
+  # shellcheck source=../../lib/review_gate_common.sh
+  source "${REPO_ROOT}/.aicoding/scripts/lib/review_gate_common.sh"
+  # shellcheck source=../../lib/common.sh
+  source "${REPO_ROOT}/.aicoding/scripts/lib/common.sh"
+else
+  # shellcheck source=../lib/review_gate_common.sh
+  source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
+  # shellcheck source=../lib/common.sh
+  source "${SCRIPT_DIR}/../lib/common.sh"
+fi
 
 STAGED=$(git diff --cached --name-only)
 aicoding_load_config
@@ -850,9 +860,23 @@ if [ -n "$STATUS_FILES" ]; then
 
     run_result_gates_for_transition "$OLD_PHASE" "$CURRENT_PHASE" "$f" || exit 1
 
+    # Hotfix 硬门禁：禁止修改 _phase 和 _workflow_mode
     if [ "$CHANGE_LEVEL" = "hotfix" ]; then
       if [ "$OLD_PHASE" != "$CURRENT_PHASE" ]; then
         echo "❌ ${f}: hotfix 不允许推进阶段（${OLD_PHASE} → ${CURRENT_PHASE}）"
+        echo "   hotfix 可修改字段：_run_status, _change_status, _review_round"
+        echo "   hotfix 禁止修改：_phase, _workflow_mode"
+        exit 1
+      fi
+      # 检查 _workflow_mode 是否被修改
+      OLD_WF_MODE=$(git show "HEAD:$f" 2>/dev/null | awk '
+        NR==1 && $0!="---" {exit}
+        NR==1 {in_front=1; next}
+        in_front && $0=="---" {exit}
+        in_front && /^_workflow_mode:/ {sub(/^_workflow_mode:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}
+      ')
+      if [ -n "$OLD_WF_MODE" ] && [ "$OLD_WF_MODE" != "$WORKFLOW_MODE" ]; then
+        echo "❌ ${f}: hotfix 不允许修改 _workflow_mode（${OLD_WF_MODE} → ${WORKFLOW_MODE}）"
         exit 1
       fi
       continue
@@ -870,6 +894,19 @@ if [ -n "$STATUS_FILES" ]; then
     done < <(aicoding_phase_exit_required "$OLD_PHASE" "$CHANGE_LEVEL")
 
     case "$OLD_PHASE" in
+      ChangeManagement)
+        # 质量债务硬门禁：ChangeManagement → Proposal 推进时检查
+        if [ "$CURRENT_PHASE" = "Proposal" ]; then
+          if [ -x "${SCRIPT_DIR}/../check_quality_debt.sh" ]; then
+            echo "🔍 检查质量债务（ChangeManagement → Proposal 阶段推进）..."
+            "${SCRIPT_DIR}/../check_quality_debt.sh" || {
+              echo "❌ 质量债务检查失败，阻断阶段推进"
+              echo "   请先偿还高风险债务或降低债务总量后再启动新版本"
+              exit 1
+            }
+          fi
+        fi
+        ;;
       Requirements)
         aicoding_run_gate critical "phase-exit:requirements" validate_constraints_confirmation "${VERSION_DIR}review_requirements.md" "${VERSION_DIR}requirements.md" "${VERSION_DIR}proposal.md" || exit 1
         aicoding_run_gate critical "phase-exit:proposal-coverage" validate_proposal_coverage "${VERSION_DIR}proposal.md" "${VERSION_DIR}requirements.md" || exit 1
@@ -1067,6 +1104,12 @@ fi
 if echo "$STAGED" | grep -qE '(^|/)\.gitconfig$|(^|/)\.gitmodules$'; then
   echo "❌ 检测到 git 配置文件变更，需人工确认"
   exit 1
+fi
+
+# --- Git-Hook 8: 质量债务门禁 ---
+# 在 ChangeManagement 阶段检查债务总量，超过阈值时阻断新版本启动
+if [ -x "${SCRIPT_DIR}/../check_quality_debt.sh" ]; then
+  "${SCRIPT_DIR}/../check_quality_debt.sh" || exit 1
 fi
 
 aicoding_gate_log_pass "pre-commit"

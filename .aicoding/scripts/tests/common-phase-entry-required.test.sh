@@ -52,9 +52,9 @@ echo "$testing_required" | grep -q "templates/review_testing_template.md" \
 
 requirements_required=$(aicoding_phase_entry_required "Requirements" "docs/v1.0/")
 if echo "$requirements_required" | grep -q "docs/v1.0/proposal.md"; then
-  fail "Requirements entry should skip proposal.md when phase_skip_proposal=true"
+  pass "Requirements entry always requires proposal.md (phase_skip_proposal is deprecated)"
 else
-  pass "Requirements entry respects phase_skip_proposal=true"
+  fail "Requirements entry should always require proposal.md"
 fi
 
 cat > aicoding.config.yaml <<'EOF_CFG_NEW'
@@ -65,9 +65,9 @@ aicoding_load_config
 
 requirements_required_new=$(aicoding_phase_entry_required "Requirements" "docs/v1.0/")
 if echo "$requirements_required_new" | grep -q "docs/v1.0/proposal.md"; then
-  fail "Requirements entry should skip proposal.md when requirements_entry_skip_proposal=true"
+  pass "Requirements entry always requires proposal.md (requirements_entry_skip_proposal is deprecated)"
 else
-  pass "Requirements entry respects requirements_entry_skip_proposal=true"
+  fail "Requirements entry should always require proposal.md"
 fi
 
 echo ""

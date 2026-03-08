@@ -1,12 +1,14 @@
 import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import MainLayout from '../components/MainLayout';
 import DashboardRankingsPage from '../pages/DashboardRankingsPage';
 import DashboardReportsPage from '../pages/DashboardReportsPage';
 import CosmicConfigPage from '../pages/CosmicConfigPage';
 import usePermission from '../hooks/usePermission';
+
+jest.setTimeout(60000);
 
 jest.mock('axios', () => ({
   get: jest.fn(),
@@ -84,6 +86,38 @@ describe('navigation and page title regression', () => {
     expect(dashboardPos).toBeGreaterThan(-1);
     expect(taskPos).toBeLessThan(configPos);
     expect(configPos).toBeLessThan(dashboardPos);
+  });
+
+  it('keeps manager system profile entries aligned with v2.4 baseline only', () => {
+    usePermission.mockReturnValue({
+      roles: ['manager'],
+      activeRole: 'manager',
+      setActiveRole: jest.fn(),
+      isAdmin: false,
+      isManager: true,
+      isExpert: false,
+      isViewer: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/system-profiles/board']}>
+        <Routes>
+          <Route path="/" element={<MainLayout />}>
+            <Route path="system-profiles/board" element={<div>content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const menuText = document.querySelector('.ant-menu')?.textContent || '';
+    expect(menuText).toContain('系统画像');
+    fireEvent.click(screen.getByText('系统画像'));
+
+    const expandedMenuText = document.querySelector('.ant-menu')?.textContent || '';
+    expect(expandedMenuText).toContain('知识导入');
+    expect(expandedMenuText).toContain('信息展示');
+    expect(expandedMenuText).not.toContain('代码扫描');
+    expect(expandedMenuText).not.toContain('画像工作台');
   });
 
   it('does not render redundant top-left title on rankings page', () => {

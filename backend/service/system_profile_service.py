@@ -12,7 +12,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import fcntl
@@ -60,6 +60,7 @@ class SystemProfileService:
         self.import_history_store_path = os.path.join(settings.REPORT_DIR, "import_history.json")
         self.extraction_task_store_path = os.path.join(settings.REPORT_DIR, "extraction_tasks.json")
         self._mutex = threading.RLock()
+        self._extraction_task_listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._run_startup_migration()
 
     @contextmanager
@@ -118,6 +119,99 @@ class SystemProfileService:
                 return item
         return None
 
+    def _normalize_module_node(
+        self,
+        node: Any,
+        *,
+        strict: bool,
+        depth: int,
+        max_depth: int,
+    ) -> tuple[Optional[Dict[str, Any]], bool]:
+        if not isinstance(node, dict):
+            if strict:
+                raise ValueError("invalid_module_structure")
+            return None, False
+
+        module_name = str(node.get("module_name") or "").strip()
+        if not module_name:
+            if strict:
+                raise ValueError("invalid_module_structure")
+            return None, False
+
+        description = "" if node.get("description") is None else str(node.get("description")).strip()
+        normalized_node: Dict[str, Any] = {
+            "module_name": module_name,
+            "description": description,
+            "children": [],
+        }
+        depth_truncated = False
+        normalized_children: List[Dict[str, Any]] = []
+
+        raw_children = node.get("children")
+        if raw_children is not None:
+            if not isinstance(raw_children, list):
+                if strict:
+                    raise ValueError("invalid_module_structure")
+            elif depth >= max_depth:
+                if raw_children:
+                    depth_truncated = True
+            else:
+                for child_item in raw_children:
+                    child_node, child_truncated = self._normalize_module_node(
+                        child_item,
+                        strict=strict,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                    )
+                    if child_node is not None:
+                        normalized_children.append(child_node)
+                    depth_truncated = depth_truncated or child_truncated
+
+        raw_functions = node.get("functions")
+        if raw_functions is not None:
+            if not isinstance(raw_functions, list):
+                if strict:
+                    raise ValueError("invalid_module_structure")
+            elif depth >= max_depth:
+                if raw_functions:
+                    depth_truncated = True
+            else:
+                seen_child_names = {
+                    str(child.get("module_name") or "").strip()
+                    for child in normalized_children
+                    if isinstance(child, dict)
+                }
+                for function_item in raw_functions:
+                    if isinstance(function_item, dict):
+                        function_name = str(function_item.get("name") or "").strip()
+                        function_desc = "" if function_item.get("desc") is None else str(function_item.get("desc")).strip()
+                    elif isinstance(function_item, str):
+                        function_name = function_item.strip()
+                        function_desc = ""
+                    else:
+                        if strict:
+                            raise ValueError("invalid_module_structure")
+                        continue
+
+                    if not function_name:
+                        if strict:
+                            raise ValueError("invalid_module_structure")
+                        continue
+                    if function_name in seen_child_names:
+                        continue
+
+                    normalized_children.append(
+                        {
+                            "module_name": function_name,
+                            "description": function_desc,
+                            "children": [],
+                        }
+                    )
+                    seen_child_names.add(function_name)
+
+        normalized_node["children"] = normalized_children
+        return normalized_node, depth_truncated
+
     def _normalize_module_structure(self, value: Any, *, strict: bool) -> List[Dict[str, Any]]:
         if value is None:
             return []
@@ -141,51 +235,26 @@ class SystemProfileService:
 
         normalized_modules: List[Dict[str, Any]] = []
         now = datetime.now().isoformat()
+        max_depth = 3
+        has_depth_truncated = False
 
         for module_item in parsed_value:
-            if not isinstance(module_item, dict):
-                if strict:
-                    raise ValueError("invalid_module_structure")
+            normalized_module, depth_truncated = self._normalize_module_node(
+                module_item,
+                strict=strict,
+                depth=1,
+                max_depth=max_depth,
+            )
+            if normalized_module is None:
                 continue
+            normalized_module["last_updated"] = str(module_item.get("last_updated") or "").strip() or now
+            normalized_modules.append(normalized_module)
+            has_depth_truncated = has_depth_truncated or depth_truncated
 
-            module_name = str(module_item.get("module_name") or "").strip()
-            raw_functions = module_item.get("functions")
-            if (not module_name) or (not isinstance(raw_functions, list)):
-                if strict:
-                    raise ValueError("invalid_module_structure")
-                continue
-
-            normalized_functions: List[Dict[str, str]] = []
-            seen_function_names = set()
-            for function_item in raw_functions:
-                if not isinstance(function_item, dict):
-                    if strict:
-                        raise ValueError("invalid_module_structure")
-                    continue
-
-                function_name = str(function_item.get("name") or "").strip()
-                if not function_name:
-                    if strict:
-                        raise ValueError("invalid_module_structure")
-                    continue
-
-                if function_name in seen_function_names:
-                    continue
-
-                function_desc = "" if function_item.get("desc") is None else str(function_item.get("desc")).strip()
-                normalized_functions.append({
-                    "name": function_name,
-                    "desc": function_desc,
-                })
-                seen_function_names.add(function_name)
-
-            last_updated = str(module_item.get("last_updated") or "").strip() or now
-            normalized_modules.append(
-                {
-                    "module_name": module_name,
-                    "functions": normalized_functions,
-                    "last_updated": last_updated,
-                }
+        if has_depth_truncated:
+            logger.warning(
+                "module_structure depth exceeds limit(%s), extra levels were truncated",
+                max_depth,
             )
 
         return normalized_modules
@@ -894,6 +963,29 @@ class SystemProfileService:
                 "items": records[safe_offset : safe_offset + safe_limit],
             }
 
+    def register_extraction_task_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
+        if not callable(listener):
+            return
+        with self._lock():
+            if listener in self._extraction_task_listeners:
+                return
+            self._extraction_task_listeners.append(listener)
+
+    def _notify_extraction_task_listeners(self, system_id: str, task: Dict[str, Any]) -> None:
+        listeners = list(self._extraction_task_listeners)
+        if not listeners:
+            return
+
+        payload = {
+            "system_id": str(system_id or "").strip(),
+            "task": dict(task or {}),
+        }
+        for listener in listeners:
+            try:
+                listener(payload)
+            except Exception as exc:
+                logger.warning("通知 extraction task listener 失败: %s", exc)
+
     def upsert_extraction_task(
         self,
         system_id: str,
@@ -944,7 +1036,9 @@ class SystemProfileService:
 
             payload[normalized_system_id] = task
             self._save_object_file_unlocked(self.extraction_task_store_path, payload)
-            return dict(task)
+            result = dict(task)
+        self._notify_extraction_task_listeners(normalized_system_id, result)
+        return result
 
     def update_extraction_task_status(
         self,
@@ -999,7 +1093,9 @@ class SystemProfileService:
 
             payload[normalized_system_id] = existing
             self._save_object_file_unlocked(self.extraction_task_store_path, payload)
-            return dict(existing)
+            result = dict(existing)
+        self._notify_extraction_task_listeners(normalized_system_id, result)
+        return result
 
     def get_extraction_task(self, system_id: str) -> Optional[Dict[str, Any]]:
         normalized_system_id = str(system_id or "").strip()
@@ -1012,6 +1108,27 @@ class SystemProfileService:
             if not isinstance(task, dict):
                 return None
             return dict(task)
+
+    def get_extraction_task_by_task_id(self, task_id: str) -> Optional[Dict[str, Any]]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            raise ValueError("task_id不能为空")
+
+        with self._lock():
+            payload = self._load_object_file_unlocked(self.extraction_task_store_path)
+            if not isinstance(payload, dict):
+                return None
+
+            for system_id, task in payload.items():
+                if not isinstance(task, dict):
+                    continue
+                if str(task.get("task_id") or "").strip() != normalized_task_id:
+                    continue
+                return {
+                    "system_id": str(system_id or "").strip(),
+                    "task": dict(task),
+                }
+        return None
 
     def get_profile(self, system_name: str) -> Optional[Dict[str, Any]]:
         name = str(system_name or "").strip()
@@ -1647,18 +1764,50 @@ class SystemProfileService:
 
         return [field for field in filled_fields if field not in covered]
 
+    def _collect_module_leaf_names(self, node: Dict[str, Any], *, limit: int = 20) -> List[str]:
+        if limit <= 0 or (not isinstance(node, dict)):
+            return []
+
+        names: List[str] = []
+        children = node.get("children") if isinstance(node.get("children"), list) else []
+
+        if children:
+            for child in children:
+                if len(names) >= limit or (not isinstance(child, dict)):
+                    continue
+                child_name = str(child.get("module_name") or "").strip()
+                nested_children = child.get("children") if isinstance(child.get("children"), list) else []
+                if nested_children:
+                    nested_names = self._collect_module_leaf_names(child, limit=limit - len(names))
+                    if nested_names:
+                        names.extend(nested_names)
+                    elif child_name:
+                        names.append(child_name)
+                elif child_name:
+                    names.append(child_name)
+            return names[:limit]
+
+        raw_functions = node.get("functions") if isinstance(node.get("functions"), list) else []
+        for function_item in raw_functions:
+            if len(names) >= limit:
+                break
+            if isinstance(function_item, dict):
+                function_name = str(function_item.get("name") or "").strip()
+            elif isinstance(function_item, str):
+                function_name = function_item.strip()
+            else:
+                function_name = ""
+            if function_name:
+                names.append(function_name)
+        return names[:limit]
+
     def _build_profile_text(self, profile: Dict[str, Any]) -> str:
         fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
         module_structure = self._normalize_module_structure(fields.get("module_structure"), strict=False)
         module_segments: List[str] = []
         for module_item in module_structure[:20]:
             module_name = str(module_item.get("module_name") or "").strip()
-            functions = module_item.get("functions") if isinstance(module_item.get("functions"), list) else []
-            function_names = [
-                str(function_item.get("name") or "").strip()
-                for function_item in functions
-                if isinstance(function_item, dict) and str(function_item.get("name") or "").strip()
-            ]
+            function_names = self._collect_module_leaf_names(module_item, limit=20)
             if module_name and function_names:
                 module_segments.append(f"{module_name}({ '、'.join(function_names[:20]) })")
             elif module_name:

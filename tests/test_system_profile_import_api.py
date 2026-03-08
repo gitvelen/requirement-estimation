@@ -1,15 +1,18 @@
 import os
 import sys
+import threading
 from typing import Any, Dict, List
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from backend.app import app
+from backend.api import system_profile_routes
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import knowledge_service as ks
@@ -77,6 +80,18 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(user_service, "USER_STORE_LOCK_PATH", str(data_dir / "users.json.lock"))
     monkeypatch.setattr(system_routes, "CSV_PATH", str(tmp_path / "system_list.csv"))
     monkeypatch.setattr(ks, "get_embedding_service", lambda: DummyEmbeddingService())
+    history_template = tmp_path / "工作量评估模板.xlsx"
+    esb_template = tmp_path / "接口申请模板.xlsx"
+    history_template.write_bytes(b"history-template")
+    esb_template.write_bytes(b"esb-template")
+    monkeypatch.setattr(
+        system_profile_routes,
+        "TEMPLATE_FILE_MAPPING",
+        {
+            "history_report": str(history_template),
+            "esb_document": str(esb_template),
+        },
+    )
 
     ks._knowledge_service = None
     system_profile_service._system_profile_service = None
@@ -121,6 +136,26 @@ def _seed_system(system_name: str, system_id: str, owner_id: str = ""):
             }
         ]
     )
+
+
+def _receive_json_with_timeout(websocket, timeout: float = 3.0):
+    result: Dict[str, Any] = {}
+    error: Dict[str, Exception] = {}
+
+    def _reader():
+        try:
+            result["payload"] = websocket.receive_json()
+        except Exception as exc:  # pragma: no cover - raised back to main thread
+            error["exc"] = exc
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    reader.join(timeout=timeout)
+    if reader.is_alive():
+        raise AssertionError("websocket receive timeout")
+    if "exc" in error:
+        raise error["exc"]
+    return result["payload"]
 
 
 def test_profile_import_success_returns_task_id_and_records_history(client, monkeypatch):
@@ -290,3 +325,131 @@ def test_profile_import_rejects_invalid_doc_type(client):
     payload = response.json()
     assert payload["error_code"] == "PROFILE_IMPORT_FAILED"
     assert payload["request_id"] == "req_import_bad_doc_type"
+
+
+def test_profile_template_download_supports_main_and_alias_paths(client):
+    manager = _seed_user("template_owner", "pwd123", ["manager"])
+    token = _login(client, "template_owner", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    main_response = client.get(
+        "/api/v1/system-profiles/template/history_report",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert main_response.status_code == 200
+    assert main_response.content == b"history-template"
+
+    alias_response = client.get(
+        "/api/system-profile/template/esb_document",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert alias_response.status_code == 200
+    assert alias_response.content == b"esb-template"
+
+
+def test_profile_template_download_rejects_invalid_type(client):
+    manager = _seed_user("template_invalid", "pwd123", ["manager"])
+    token = _login(client, "template_invalid", "pwd123")
+
+    response = client.get(
+        "/api/v1/system-profiles/template/unknown",
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_template_invalid"},
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "TEMPLATE_TYPE_INVALID"
+    assert payload["request_id"] == "req_template_invalid"
+
+
+def test_profile_task_status_by_task_id_supports_alias_and_state_mapping(client):
+    manager = _seed_user("task_status_owner", "pwd123", ["manager"])
+    token = _login(client, "task_status_owner", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    service = system_profile_service.get_system_profile_service()
+    service.upsert_extraction_task(
+        "sys_hop",
+        task_id="summary_task_001",
+        status="pending",
+        trigger="document_import",
+    )
+
+    started_response = client.get(
+        "/api/v1/system-profiles/task-status/summary_task_001",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert started_response.status_code == 200
+    started_payload = started_response.json()
+    assert started_payload["task_id"] == "summary_task_001"
+    assert started_payload["status"] == "extraction_started"
+    assert started_payload["system_name"] == "HOP"
+
+    service.update_extraction_task_status(
+        "sys_hop",
+        task_id="summary_task_001",
+        status="completed",
+    )
+
+    completed_response = client.get(
+        "/api/system-profile/task-status/summary_task_001",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert completed_response.status_code == 200
+    completed_payload = completed_response.json()
+    assert completed_payload["status"] == "extraction_completed"
+
+
+def test_profile_task_status_by_task_id_returns_404_when_missing(client):
+    manager = _seed_user("task_status_missing", "pwd123", ["manager"])
+    token = _login(client, "task_status_missing", "pwd123")
+
+    response = client.get(
+        "/api/v1/system-profiles/task-status/task_not_exists",
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_task_missing"},
+    )
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["error_code"] == "TASK_NOT_FOUND"
+    assert payload["request_id"] == "req_task_missing"
+
+
+def test_profile_task_websocket_ping_pong_and_status_push(client):
+    manager = _seed_user("ws_owner", "pwd123", ["manager"])
+    token = _login(client, "ws_owner", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    with client.websocket_connect(f"/ws/system-profile/HOP?token={token}") as websocket:
+        websocket.send_json({"event": "ping"})
+        pong_payload = _receive_json_with_timeout(websocket)
+        assert pong_payload["event"] == "pong"
+        assert pong_payload["system_name"] == "HOP"
+
+        service = system_profile_service.get_system_profile_service()
+        service.upsert_extraction_task(
+            "sys_hop",
+            task_id="summary_task_ws",
+            status="pending",
+            trigger="document_import",
+        )
+        started_payload = _receive_json_with_timeout(websocket)
+        assert started_payload["task_id"] == "summary_task_ws"
+        assert started_payload["status"] == "extraction_started"
+        assert started_payload["system_name"] == "HOP"
+
+        service.update_extraction_task_status(
+            "sys_hop",
+            task_id="summary_task_ws",
+            status="completed",
+        )
+        completed_payload = _receive_json_with_timeout(websocket)
+        assert completed_payload["task_id"] == "summary_task_ws"
+        assert completed_payload["status"] == "extraction_completed"
+
+
+def test_profile_task_websocket_requires_manager_role(client):
+    admin = _seed_user("ws_admin", "pwd123", ["admin"])
+    token = _login(client, "ws_admin", "pwd123")
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/ws/system-profile/HOP?token={token}"):
+            pass

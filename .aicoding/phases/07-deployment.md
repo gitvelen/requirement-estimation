@@ -26,11 +26,17 @@
 | 必读文件 | 用途 | 强制级别 |
 |---------|------|---------|
 | `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
-| `docs/<版本号>/test_report.md` | 测试结果确认 | 🔴 CC-7 强制 |
+| `docs/<版本号>/test_report.md` | 测试结果确认（major 必须；minor 可用 status.md 内 TEST-RESULT 块替代） | 🔴 CC-7 强制（major）/ 🟡 可选（minor） |
 | `docs/<版本号>/design.md` | 部署方案参考 | 🔴 CC-7 强制 |
 | `docs/<版本号>/requirements.md` | 需求与验收依据 | 🔴 CC-7 强制 |
 | `.aicoding/phases/07-deployment.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
 | `.aicoding/templates/deployment_template.md` | 部署文档模板 | 🔴 CC-7 强制 |
+
+**Minor 测试证据说明**：Minor 变更在 Testing 阶段可选择以下任一方式提供测试证据：
+- 方式 1：创建 `test_report.md`（标准路径）
+- 方式 2：在 `status.md` 中内联 `TEST-RESULT` 块（简化路径）
+
+Deployment 阶段入口时，pre-commit 的 `validate_minor_test_evidence` 会检查至少存在其中一种证据。
 
 ## 本阶段特有规则
 1. `deployment.md` 必须明确目标环境（STAGING / PROD）。
@@ -122,7 +128,7 @@
 1. **分析变更描述**，给出建议（"建议作为 v1.0 补丁" 或 "建议创建 v1.1 新版本"）
 2. **询问用户确认**："这是 v1.0 的补丁修复，还是要开始 v1.1 新版本？"
 3. **按用户指定执行**：参考 `phases/00-change-management.md` 的"部署完成后的变更启动"规则
-4. **所有变更都必须创建 CR**，进入 Phase 00 澄清流程
+4. **版本内变更必须创建 CR**，进入 Phase 00 澄清流程；**新版本启动直接从 Proposal 开始**
 
 ## 完成条件
 1. `deployment.md` 存在，且部署文档与回滚方案完整。
