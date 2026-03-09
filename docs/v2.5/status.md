@@ -2,7 +2,7 @@
 _baseline: v2.4
 _current: HEAD
 _workflow_mode: manual
-_run_status: running
+_run_status: wait_confirm
 _change_status: in_progress
 _change_level: major
 _review_round: 0
