@@ -18,7 +18,7 @@
 | 必读文件 | 用途 | 强制级别 |
 |---------|------|---------|
 | `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
-| `docs/<版本号>/proposal.md` | 上一阶段产出（输入） | 🔴 CC-7 强制 |
+| `docs/<版本号>/proposal.md` | 上一阶段产出（输入） | 🔴 CC-7 强制（不可跳过，确保需求覆盖完整） |
 | `.aicoding/phases/02-requirements.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
 | `.aicoding/templates/requirements_template.md` | 产出物模板 | 🔴 CC-7 强制 |
 | `docs/系统功能说明书.md`（如存在） | 存量系统功能基线 | 🟡 推荐（CC-7 不强制） |

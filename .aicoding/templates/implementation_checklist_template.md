@@ -30,3 +30,22 @@
 - [ ] 对照验收标准自测并记录证据（命令输出/日志/截图）
 - [ ] 文档同步更新（如有变更）：requirements/design/plan/操作说明
 - [ ] 敏感信息检查：不提交/不记录 secret、生产数据、个人信息
+
+## 契约与集成验证（🔴 MUST，进入 Testing 前）
+
+### API 契约一致性
+- [ ] 运行 `bash scripts/validate_api_contracts.sh`，无不匹配
+- [ ] 前后端数据结构已对齐（通过 design.md 中的契约定义）
+- [ ] 所有新增 API 已在 design.md 5.4 节定义
+
+### 集成测试准备
+- [ ] 所有 [Integration Required] 的 REQ 已编写集成测试脚本
+- [ ] 测试脚本覆盖：API 调用 → 数据验证 → 存储验证
+- [ ] 测试脚本可独立执行（如 `pytest tests/integration/`）
+- [ ] 测试脚本已验证通过（提供执行日志）
+
+### 人类验证准备（关键流程）
+- [ ] 关键流程已产出人类验证清单（Markdown 文档）
+- [ ] 验证清单包含：前置条件、操作步骤、预期结果、验证记录表格
+- [ ] 验证清单已记录到 `test_report.md` 的"人类验证结果"表格
+

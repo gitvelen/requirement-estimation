@@ -4,26 +4,50 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.api import system_routes
-from backend.api.auth import require_roles
+from backend.api.auth import decode_access_token, require_roles
 from backend.api.error_utils import build_error_response
 from backend.config.config import settings
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.system_profile_service import get_system_profile_service
+from backend.service import user_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/system-profiles", tags=["系统画像"])
+compat_router = APIRouter(prefix="/api/system-profile", tags=["系统画像"])
+ws_router = APIRouter(tags=["系统画像"])
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TEMPLATE_FILE_MAPPING = {
+    "history_report": os.path.join(PROJECT_ROOT, "data", "工作量评估模板.xlsx"),
+    "esb_document": os.path.join(PROJECT_ROOT, "data", "接口申请模板.xlsx"),
+}
+TASK_STATUS_MAPPING = {
+    "pending": "extraction_started",
+    "processing": "extraction_started",
+    "completed": "extraction_completed",
+    "failed": "extraction_failed",
+}
+WS_HEARTBEAT_EVENT = "ping"
+WS_HEARTBEAT_RESPONSE = "pong"
+
+_ws_connections: Dict[str, List[WebSocket]] = {}
+_ws_registry_lock = threading.RLock()
+_ws_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 SUPPORTED_IMPORT_DOC_TYPES = {
     "requirement_doc",
@@ -214,6 +238,206 @@ def _system_not_found_response(request: Request, *, system_name: str, system_id:
     )
 
 
+def _map_task_status(raw_status: Any) -> str:
+    normalized = str(raw_status or "").strip().lower()
+    return TASK_STATUS_MAPPING.get(normalized, "extraction_started")
+
+
+def _resolve_task_system_name(system_id: str) -> str:
+    owner_info = system_routes.resolve_system_owner(system_id=system_id)
+    return str(owner_info.get("system_name") or "").strip()
+
+
+def _build_task_status_payload(*, system_id: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_system_id = str(system_id or "").strip()
+    task_id = str(task.get("task_id") or "").strip()
+    status_name = _map_task_status(task.get("status"))
+    system_name = _resolve_task_system_name(normalized_system_id)
+    updated_at = str(task.get("completed_at") or task.get("created_at") or datetime.now().isoformat())
+
+    payload = {
+        "task_id": task_id,
+        "system_id": normalized_system_id,
+        "system_name": system_name,
+        "status": status_name,
+        "updated_at": updated_at,
+        "error": task.get("error"),
+    }
+    if isinstance(task.get("notifications"), list):
+        payload["notifications"] = task.get("notifications")
+    return payload
+
+
+def _resolve_template_path(template_type: str) -> Tuple[str, str]:
+    normalized_type = str(template_type or "").strip()
+    if normalized_type not in TEMPLATE_FILE_MAPPING:
+        raise ValueError("TEMPLATE_TYPE_INVALID")
+
+    file_path = str(TEMPLATE_FILE_MAPPING.get(normalized_type) or "").strip()
+    if not file_path or not os.path.exists(file_path):
+        raise FileNotFoundError("TEMPLATE_NOT_FOUND")
+
+    return file_path, os.path.basename(file_path)
+
+
+async def _download_template_impl(template_type: str, request: Request) -> Any:
+    try:
+        template_path, file_name = _resolve_template_path(template_type)
+    except ValueError:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="TEMPLATE_TYPE_INVALID",
+            message="模板类型无效",
+            details={"template_type": str(template_type or "").strip()},
+        )
+    except FileNotFoundError:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="TEMPLATE_NOT_FOUND",
+            message="模板文件不存在",
+            details={"template_type": str(template_type or "").strip()},
+        )
+
+    return FileResponse(
+        template_path,
+        filename=file_name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _task_not_found_response(request: Request, *, task_id: str):
+    return build_error_response(
+        request=request,
+        status_code=404,
+        error_code="TASK_NOT_FOUND",
+        message="任务不存在",
+        details={"task_id": task_id},
+    )
+
+
+def _get_current_task_by_task_id(task_id: str) -> Optional[Dict[str, Any]]:
+    service = get_system_profile_service()
+    record = service.get_extraction_task_by_task_id(task_id)
+    if not isinstance(record, dict):
+        return None
+    system_id = str(record.get("system_id") or "").strip()
+    task = record.get("task") if isinstance(record.get("task"), dict) else {}
+    if not system_id or not task:
+        return None
+    return _build_task_status_payload(system_id=system_id, task=task)
+
+
+async def _get_task_status_impl(task_id: str, request: Request) -> Any:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return _task_not_found_response(request, task_id=normalized_task_id)
+
+    payload = _get_current_task_by_task_id(normalized_task_id)
+    if payload is None:
+        return _task_not_found_response(request, task_id=normalized_task_id)
+    return payload
+
+
+def _resolve_ws_user(websocket: WebSocket) -> Optional[Dict[str, Any]]:
+    auth_header = str(websocket.headers.get("authorization") or "").strip()
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = str(websocket.query_params.get("token") or "").strip()
+    if not token:
+        return None
+
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        return None
+
+    user_id = str(payload.get("user_id") or "").strip()
+    if not user_id:
+        return None
+
+    users = user_service.list_users()
+    user = next((item for item in users if str(item.get("id") or "").strip() == user_id), None)
+    if not user or not user.get("is_active"):
+        return None
+    return user
+
+
+def _register_ws_connection(system_name: str, websocket: WebSocket) -> None:
+    with _ws_registry_lock:
+        connections = _ws_connections.get(system_name) or []
+        if websocket not in connections:
+            connections.append(websocket)
+        _ws_connections[system_name] = connections
+
+
+def _remove_ws_connection(system_name: str, websocket: WebSocket) -> None:
+    with _ws_registry_lock:
+        connections = list(_ws_connections.get(system_name) or [])
+        if websocket in connections:
+            connections.remove(websocket)
+        if connections:
+            _ws_connections[system_name] = connections
+        else:
+            _ws_connections.pop(system_name, None)
+
+
+async def _broadcast_ws_event(system_name: str, payload: Dict[str, Any]) -> None:
+    with _ws_registry_lock:
+        targets = list(_ws_connections.get(system_name) or [])
+
+    disconnected: List[WebSocket] = []
+    for websocket in targets:
+        try:
+            await websocket.send_json(payload)
+        except Exception:
+            disconnected.append(websocket)
+
+    if disconnected:
+        with _ws_registry_lock:
+            active = list(_ws_connections.get(system_name) or [])
+            for socket in disconnected:
+                if socket in active:
+                    active.remove(socket)
+            if active:
+                _ws_connections[system_name] = active
+            else:
+                _ws_connections.pop(system_name, None)
+
+
+def _schedule_ws_event(system_name: str, payload: Dict[str, Any]) -> None:
+    event_loop = _ws_event_loop
+    if event_loop is None or event_loop.is_closed():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_broadcast_ws_event(system_name, payload), event_loop)
+    except Exception as exc:
+        logger.warning("调度 WebSocket 推送失败: %s", exc)
+
+
+def _on_extraction_task_event(event: Dict[str, Any]) -> None:
+    if not isinstance(event, dict):
+        return
+    system_id = str(event.get("system_id") or "").strip()
+    task = event.get("task") if isinstance(event.get("task"), dict) else {}
+    if not system_id or not task:
+        return
+
+    payload = _build_task_status_payload(system_id=system_id, task=task)
+    system_name = str(payload.get("system_name") or "").strip()
+    if not system_name:
+        return
+    _schedule_ws_event(system_name, payload)
+
+
+def _ensure_extraction_listener_registered() -> None:
+    service = get_system_profile_service()
+    service.register_extraction_task_listener(_on_extraction_task_event)
+
+
 def _ensure_owner_or_backup_for_draft_write(
     current_user: Dict[str, Any],
     *,
@@ -362,6 +586,88 @@ async def get_profile_completeness(
         "breakdown": breakdown,
         "document_count": document_count,
     }
+
+
+@router.get("/template/{template_type}")
+async def download_profile_template(
+    template_type: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    return await _download_template_impl(template_type, request)
+
+
+@compat_router.get("/template/{template_type}")
+async def download_profile_template_alias(
+    template_type: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    return await _download_template_impl(template_type, request)
+
+
+@router.get("/task-status/{task_id}")
+async def get_profile_task_status_by_task_id(
+    task_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    return await _get_task_status_impl(task_id, request)
+
+
+@compat_router.get("/task-status/{task_id}")
+async def get_profile_task_status_by_task_id_alias(
+    task_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager"])),
+):
+    return await _get_task_status_impl(task_id, request)
+
+
+@ws_router.websocket("/ws/system-profile/{system_name}")
+async def system_profile_task_websocket(websocket: WebSocket, system_name: str):
+    normalized_system_name = str(system_name or "").strip()
+    if not normalized_system_name:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    current_user = _resolve_ws_user(websocket)
+    if not current_user or ("manager" not in (current_user.get("roles") or [])):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    _ensure_extraction_listener_registered()
+
+    global _ws_event_loop
+    _ws_event_loop = asyncio.get_running_loop()
+    _register_ws_connection(normalized_system_name, websocket)
+
+    try:
+        while True:
+            message_text = await websocket.receive_text()
+            event_name = str(message_text or "").strip().lower()
+            try:
+                parsed = json.loads(message_text)
+                if isinstance(parsed, dict):
+                    event_name = str(parsed.get("event") or event_name).strip().lower()
+            except Exception:
+                pass
+
+            if event_name == WS_HEARTBEAT_EVENT:
+                await websocket.send_json(
+                    {
+                        "event": WS_HEARTBEAT_RESPONSE,
+                        "system_name": normalized_system_name,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("system profile websocket 连接异常: %s", exc)
+    finally:
+        _remove_ws_connection(normalized_system_name, websocket)
 
 
 @router.get("/{system_name}")

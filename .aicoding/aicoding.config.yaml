@@ -33,12 +33,15 @@ result_gate_build_command: "cd frontend && npm run build"
 result_gate_typecheck_command: "uv run python scripts/incremental_static_gate.py"
 
 # 入口门禁模式（M2）
-# entry_gate_mode: 入口门禁模式（如 warn/block）。建议先 warn 观测，再逐步收紧。
-entry_gate_mode: warn
+# entry_gate_mode: 入口门禁模式（warn/block）
+#   - warn：首次写入时检查必读文件，未读取时告警并标记已通过，后续同阶段不再检查（一次性提醒）
+#   - block（默认）：首次写入时检查必读文件，未读取时阻断写入，直到读取后才允许继续（持续约束）
+# 建议：生产环境使用 block 确保流程合规，开发环境可用 warn 观测 AI 行为
+entry_gate_mode: block
 
-# Requirements 入口读取覆盖（未配置默认 false）
-# requirements_entry_skip_proposal: 是否在 Requirements 阶段跳过 proposal.md 的“入口必读”检查。
-# 仅影响入口必读，不改变 _phase 顺序推进规则（仍禁止跳阶段）。
+# Requirements 入口读取覆盖（已废弃，保留仅为向后兼容）
+# requirements_entry_skip_proposal: 已废弃。Requirements 阶段必须读取 proposal.md 以确保需求覆盖完整。
+# 此配置项不再生效，proposal.md 始终为入口必读文件。
 requirements_entry_skip_proposal: false
 # phase_skip_proposal: 兼容旧键（已弃用），语义同 requirements_entry_skip_proposal。
 phase_skip_proposal: false
@@ -47,13 +50,18 @@ phase_skip_proposal: false
 # gwt_id_regex: GWT-ID 正则。必须与团队真实 ID 规则一致，否则会误判。
 gwt_id_regex: ^GWT-REQ-C?[0-9]+-[0-9]+$
 
-# P4: 可选框架引用（latest 或 commit-hash）
-# framework_ref: 框架版本引用。建议固定到 commit，避免 latest 带来规则漂移。
-# ⚠️ 尚未被门禁消费，仅预留
-framework_ref: latest
-
 # 高风险审查关键词（语义门禁辅助）
 # 来源：lessons_learned 2026-02-24 — 高风险项不得留到后续阶段
 # 当 design/plan 文档包含这些关键词时，w28 会检查对应 GWT 是否有充分证据
 # high_risk_review_patterns: 逗号分隔的关键词列表。按项目实际风险点调整。
 high_risk_review_patterns: "兼容,回滚,权限,REQ-C,deprecated,confirm,迁移,越权,鉴权,安全"
+
+# 质量债务管理（M3）
+# quality_debt_max_total: 质量债务总数上限（Open 状态）。超过此值时阻断新版本启动。
+quality_debt_max_total: 10
+# quality_debt_high_risk_max: 高风险质量债务数量上限。超过此值时阻断新版本启动。
+quality_debt_high_risk_max: 5
+# quality_debt_high_risk_payback_ratio: 高风险债务强制偿还比例（0-100）。新版本启动前必须偿还的比例。
+quality_debt_high_risk_payback_ratio: 50
+# tech_debt_max_total: 技术债务总数上限（Open 状态）。超过此值时告警。
+tech_debt_max_total: 15

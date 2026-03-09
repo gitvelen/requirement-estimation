@@ -17,6 +17,10 @@ import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
+import ModuleStructurePreview from '../components/systemProfile/ModuleStructurePreview';
+import StructuredFieldPreview from '../components/systemProfile/StructuredFieldPreview';
+import StructuredFieldDiffPreview from '../components/systemProfile/StructuredFieldDiffPreview';
+import { normalizeModuleStructureNodes, sanitizeModuleStructureNodes } from '../utils/systemProfileModuleStructure';
 
 const { Text } = Typography;
 
@@ -72,7 +76,6 @@ const EVENT_TYPE_LABELS = {
   code_scan: '代码扫描',
   manual_edit: '手动编辑',
   ai_suggestion_accept: '采纳建议',
-  ai_suggestion_ignore: '忽略建议',
   ai_suggestion_rollback: '建议回滚',
   profile_publish: '画像发布',
 };
@@ -87,6 +90,12 @@ const FIELD_EDITOR_KIND = {
   [getFieldPath('technical_architecture', 'performance_profile')]: 'performance_profile',
   [getFieldPath('constraints_risks', 'key_constraints')]: 'key_constraints',
 };
+
+const MODULE_STRUCTURE_FIELD_PATH = getFieldPath('business_capabilities', 'module_structure');
+const INTEGRATION_POINTS_FIELD_PATH = getFieldPath('integration_interfaces', 'integration_points');
+const PERFORMANCE_PROFILE_FIELD_PATH = getFieldPath('technical_architecture', 'performance_profile');
+const KEY_CONSTRAINTS_FIELD_PATH = getFieldPath('constraints_risks', 'key_constraints');
+const KNOWN_RISKS_FIELD_PATH = getFieldPath('constraints_risks', 'known_risks');
 
 const normalizeStringList = (value) => {
   if (Array.isArray(value)) {
@@ -103,24 +112,6 @@ const normalizeStringList = (value) => {
   return [];
 };
 
-const normalizeModuleStructureDraft = (value) => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.map((moduleItem) => {
-    const moduleName = String(moduleItem?.module_name ?? '').trim();
-    const functions = Array.isArray(moduleItem?.functions)
-      ? moduleItem.functions.map((functionItem) => ({
-        name: String(functionItem?.name ?? '').trim(),
-        desc: String(functionItem?.desc ?? '').trim(),
-      }))
-      : [];
-    return {
-      module_name: moduleName,
-      functions,
-    };
-  });
-};
 
 const normalizeIntegrationPointsDraft = (value) => {
   if (typeof value === 'string') {
@@ -183,47 +174,6 @@ const performanceRowsToObject = (rows) => {
   return profile;
 };
 
-const renderHumanValuePreview = (value) => {
-  if (value === undefined || value === null) {
-    return <Text type="secondary">—</Text>;
-  }
-
-  if (Array.isArray(value)) {
-    if (!value.length) {
-      return <Text type="secondary">—</Text>;
-    }
-    return (
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        {value.map((item, index) => (
-          <Card key={`preview-item-${index}`} size="small" bodyStyle={{ padding: 8 }}>
-            {renderHumanValuePreview(item)}
-          </Card>
-        ))}
-      </Space>
-    );
-  }
-
-  if (typeof value === 'object') {
-    const entries = Object.entries(value);
-    if (!entries.length) {
-      return <Text type="secondary">—</Text>;
-    }
-    return (
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        {entries.map(([key, itemValue]) => (
-          <div key={`preview-kv-${key}`}>
-            <Text strong>{key}</Text>
-            <div style={{ marginTop: 2, paddingLeft: 8 }}>{renderHumanValuePreview(itemValue)}</div>
-          </div>
-        ))}
-      </Space>
-    );
-  }
-
-  const text = String(value).trim();
-  return text ? <span>{text}</span> : <Text type="secondary">—</Text>;
-};
-
 const buildEmptyProfileData = () => {
   const result = {};
   PROFILE_DOMAIN_CONFIG.forEach((domain) => {
@@ -260,55 +210,35 @@ const parseErrorMessage = (error, fallback) => {
   return responseData?.message || responseData?.detail || fallback;
 };
 
-const isSameValue = (left, right) => {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-};
-
 const normalizeComparableValue = (domainKey, fieldKey, value) => {
   const fieldPath = getFieldPath(domainKey, fieldKey);
-  const editorKind = FIELD_EDITOR_KIND[fieldPath];
+  const editorKind = FIELD_EDITOR_KIND[fieldPath] || PROFILE_DOMAIN_BY_KEY?.[domainKey]?.fields?.find((field) => field.key === fieldKey)?.type;
 
   if (editorKind === 'module_structure') {
-    // Ignore persistence metadata such as `last_updated` when diffing suggestions.
-    return normalizeModuleStructureDraft(value);
+    return sanitizeModuleStructureNodes(value);
   }
   if (editorKind === 'integration_points') {
-    return normalizeIntegrationPointsDraft(value);
+    return sanitizeIntegrationPointsForPersist(value);
   }
   if (editorKind === 'key_constraints') {
-    return normalizeKeyConstraintsDraft(value);
+    return sanitizeKeyConstraintsForPersist(value);
   }
   if (editorKind === 'performance_profile') {
-    return normalizePerformanceRowsDraft(value)
-      .map((row) => ({
-        key: String(row?.key ?? '').trim(),
-        value: String(row?.value ?? '').trim(),
-      }))
-      .sort((left, right) => `${left.key}:${left.value}`.localeCompare(`${right.key}:${right.value}`));
+    return performanceRowsToObject(normalizePerformanceRowsDraft(value));
   }
-  return value;
+  if (editorKind === 'list') {
+    return normalizeStringList(value);
+  }
+  if (editorKind === 'text') {
+    return String(value ?? '').trim();
+  }
+  return value ?? null;
 };
 
-const buildIgnoredFieldsMap = (value) => {
-  const ignoredMap = new Map();
-  if (!value || typeof value !== 'object') {
-    return ignoredMap;
-  }
-  Object.entries(value).forEach(([rawFieldPath, rawIgnoredValue]) => {
-    const fieldPath = String(rawFieldPath || '').trim();
-    const separatorIndex = fieldPath.indexOf('.');
-    if (separatorIndex <= 0 || separatorIndex >= fieldPath.length - 1) {
-      return;
-    }
-    const domainKey = fieldPath.slice(0, separatorIndex).trim();
-    const fieldKey = fieldPath.slice(separatorIndex + 1).trim();
-    if (!domainKey || !fieldKey) {
-      return;
-    }
-    ignoredMap.set(fieldPath, normalizeComparableValue(domainKey, fieldKey, rawIgnoredValue));
-  });
-  return ignoredMap;
-};
+const isSameValue = (domainKey, fieldKey, left, right) => (
+  JSON.stringify(normalizeComparableValue(domainKey, fieldKey, left))
+  === JSON.stringify(normalizeComparableValue(domainKey, fieldKey, right))
+);
 
 const buildDraftValues = (profileData) => {
   const draft = {};
@@ -323,7 +253,7 @@ const buildDraftValues = (profileData) => {
       } else if (editorKind === 'list') {
         draft[path] = normalizeStringList(currentValue);
       } else if (editorKind === 'module_structure') {
-        draft[path] = normalizeModuleStructureDraft(currentValue);
+        draft[path] = normalizeModuleStructureNodes(currentValue);
       } else if (editorKind === 'integration_points') {
         draft[path] = normalizeIntegrationPointsDraft(currentValue);
       } else if (editorKind === 'performance_profile') {
@@ -338,16 +268,6 @@ const buildDraftValues = (profileData) => {
   return draft;
 };
 
-const sanitizeModuleStructureForPersist = (value) => (
-  normalizeModuleStructureDraft(value)
-    .map((moduleItem) => ({
-      module_name: moduleItem.module_name,
-      functions: (moduleItem.functions || []).filter((functionItem) => (
-        Boolean(functionItem?.name) || Boolean(functionItem?.desc)
-      )),
-    }))
-    .filter((moduleItem) => moduleItem.module_name || (moduleItem.functions || []).length > 0)
-);
 
 const sanitizeIntegrationPointsForPersist = (value) => (
   normalizeIntegrationPointsDraft(value)
@@ -374,7 +294,7 @@ const parseDraftToProfileData = (draftValues) => {
       } else if (editorKind === 'list') {
         nextProfileData[domain.key][field.key] = normalizeStringList(rawValue);
       } else if (editorKind === 'module_structure') {
-        nextProfileData[domain.key][field.key] = sanitizeModuleStructureForPersist(rawValue);
+        nextProfileData[domain.key][field.key] = sanitizeModuleStructureNodes(rawValue);
       } else if (editorKind === 'integration_points') {
         nextProfileData[domain.key][field.key] = sanitizeIntegrationPointsForPersist(rawValue);
       } else if (editorKind === 'performance_profile') {
@@ -401,7 +321,6 @@ const SystemProfileBoardPage = () => {
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [publishingProfile, setPublishingProfile] = useState(false);
-  const [suggestionMutating, setSuggestionMutating] = useState(false);
 
   const [profileMeta, setProfileMeta] = useState({
     status: 'draft',
@@ -413,9 +332,10 @@ const SystemProfileBoardPage = () => {
 
   const [savedProfileData, setSavedProfileData] = useState(buildEmptyProfileData());
   const [draftValues, setDraftValues] = useState({});
+  const [editingFields, setEditingFields] = useState({});
   const [aiSuggestions, setAiSuggestions] = useState({});
   const [aiSuggestionsPrevious, setAiSuggestionsPrevious] = useState(null);
-  const [ignoredFields, setIgnoredFields] = useState(() => new Map());
+  const [ignoredSuggestions, setIgnoredSuggestions] = useState({});
   const [activeDomain, setActiveDomain] = useState(PROFILE_DOMAIN_CONFIG[0].key);
 
   const [timelineExpanded, setTimelineExpanded] = useState(true);
@@ -501,28 +421,18 @@ const SystemProfileBoardPage = () => {
     }
   }, []);
 
-  const applyProfilePayload = useCallback((payload, fallbackSystemId = '', options = {}) => {
+  const applyProfilePayload = useCallback((payload, fallbackSystemId = '') => {
     const normalizedProfileData = normalizeProfileData(payload?.profile_data);
     setSavedProfileData(normalizedProfileData);
     setDraftValues(buildDraftValues(normalizedProfileData));
+    setEditingFields({});
     setAiSuggestions(payload?.ai_suggestions && typeof payload.ai_suggestions === 'object' ? payload.ai_suggestions : {});
     setAiSuggestionsPrevious(payload?.ai_suggestions_previous && typeof payload.ai_suggestions_previous === 'object'
       ? payload.ai_suggestions_previous
       : null);
-    const payloadIgnoredFields = buildIgnoredFieldsMap(payload?.ai_suggestion_ignored);
-    if (options?.preserveIgnored) {
-      setIgnoredFields((prev) => {
-        const next = new Map(payloadIgnoredFields);
-        prev.forEach((ignoredValue, fieldPath) => {
-          if (!next.has(fieldPath)) {
-            next.set(fieldPath, ignoredValue);
-          }
-        });
-        return next;
-      });
-    } else {
-      setIgnoredFields(payloadIgnoredFields);
-    }
+    setIgnoredSuggestions(payload?.ai_suggestion_ignored && typeof payload.ai_suggestion_ignored === 'object'
+      ? payload.ai_suggestion_ignored
+      : {});
     setProfileMeta({
       status: payload?.status || 'draft',
       pending_fields: Array.isArray(payload?.pending_fields) ? payload.pending_fields : [],
@@ -571,7 +481,7 @@ const SystemProfileBoardPage = () => {
     }
   }, []);
 
-  const loadProfileDetail = useCallback(async (systemName, options = {}) => {
+  const loadProfileDetail = useCallback(async (systemName) => {
     if (!systemName) {
       return;
     }
@@ -583,7 +493,7 @@ const SystemProfileBoardPage = () => {
       const resolvedSystemId = String(selectedSystem?.id || payload?.system_id || '').trim();
 
       if (payload) {
-        applyProfilePayload(payload, resolvedSystemId, options);
+        applyProfilePayload(payload, resolvedSystemId);
       } else {
         applyProfilePayload(
           {
@@ -596,8 +506,7 @@ const SystemProfileBoardPage = () => {
             is_stale: false,
             system_id: resolvedSystemId,
           },
-          resolvedSystemId,
-          options,
+          resolvedSystemId
         );
       }
 
@@ -659,11 +568,69 @@ const SystemProfileBoardPage = () => {
     setDraftValues((prev) => ({ ...prev, [path]: value }));
   };
 
-  const renderListEditor = (fieldPath, value, itemLabel = '条目') => {
+  const toggleFieldEditMode = (fieldPath) => {
+    setEditingFields((prev) => ({ ...prev, [fieldPath]: !prev[fieldPath] }));
+  };
+
+  const renderFieldPreview = (field, fieldPath, value) => {
+    if (fieldPath === MODULE_STRUCTURE_FIELD_PATH) {
+      return (
+        <Card size="small">
+          <ModuleStructurePreview value={value} />
+        </Card>
+      );
+    }
+    if (fieldPath === INTEGRATION_POINTS_FIELD_PATH) {
+      return <StructuredFieldPreview kind="integration_points" value={value} />;
+    }
+    if (fieldPath === KEY_CONSTRAINTS_FIELD_PATH) {
+      return <StructuredFieldPreview kind="key_constraints" value={value} />;
+    }
+    if (fieldPath === KNOWN_RISKS_FIELD_PATH) {
+      return <StructuredFieldPreview kind="known_risks" value={value} />;
+    }
+    if (fieldPath === PERFORMANCE_PROFILE_FIELD_PATH) {
+      return <StructuredFieldPreview kind="performance_profile" value={value} />;
+    }
+
+    if (field.type === 'text') {
+      const text = String(value ?? '').trim();
+      return (
+        <Card size="small">
+          {text ? (
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{text}</div>
+          ) : (
+            <Text type="secondary">—</Text>
+          )}
+        </Card>
+      );
+    }
+
+    if (field.type === 'list') {
+      const items = normalizeStringList(value);
+      return (
+        <Card size="small">
+          {items.length > 0 ? (
+            <Space wrap size={[6, 6]}>
+              {items.map((item, index) => <Tag key={`${fieldPath}-preview-${index}`}>{item}</Tag>)}
+            </Space>
+          ) : (
+            <Text type="secondary">—</Text>
+          )}
+        </Card>
+      );
+    }
+
+    return null;
+  };
+
+  const renderListEditor = (fieldPath, value, itemLabel = '条目', { showPreview = true } = {}) => {
     const items = normalizeStringList(value);
     const visibleItems = items.length > 0 ? items : [''];
+    const preview = showPreview ? null : null;
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 6 }}>
+      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
+        {preview}
         {visibleItems.map((item, index) => (
           <Space key={`${fieldPath}-list-${index}`} style={{ width: '100%' }}>
             <Input
@@ -682,65 +649,105 @@ const SystemProfileBoardPage = () => {
     );
   };
 
-  const renderModuleStructureEditor = (fieldPath, value) => {
-    const modules = normalizeModuleStructureDraft(value);
-    const visibleModules = modules.length > 0 ? modules : [{ module_name: '', functions: [] }];
-    return (
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 6 }}>
-        {visibleModules.map((moduleItem, moduleIndex) => (
-          <Card key={`${fieldPath}-module-${moduleIndex}`} size="small" bodyStyle={{ padding: 10 }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space style={{ width: '100%' }}>
-                <Input
-                  value={moduleItem.module_name}
-                  placeholder="模块名称"
-                  disabled={!canWrite}
-                  onChange={(event) => {
-                    const next = deepClone(visibleModules);
-                    next[moduleIndex].module_name = event.target.value;
-                    handleDraftValueChange(fieldPath, next);
-                  }}
-                />
-              </Space>
+  const renderModuleStructureEditor = (fieldPath, value, { showPreview = true } = {}) => {
+    const modules = normalizeModuleStructureNodes(value);
+    const visibleModules = modules.length > 0 ? modules : [{ module_name: '', description: '', children: [] }];
 
-              {((moduleItem.functions || []).length > 0 ? moduleItem.functions : [{ name: '', desc: '' }]).map((functionItem, functionIndex) => (
-                <Space key={`${fieldPath}-module-${moduleIndex}-fn-${functionIndex}`} style={{ width: '100%' }} align="start">
+    const updateModuleNode = (nodes, pathIndexes, updater) => {
+      const next = deepClone(nodes);
+      let cursor = next;
+      for (let index = 0; index < pathIndexes.length - 1; index += 1) {
+        cursor = cursor[pathIndexes[index]].children;
+      }
+      const targetIndex = pathIndexes[pathIndexes.length - 1];
+      cursor[targetIndex] = updater(cursor[targetIndex]);
+      return next;
+    };
+
+    const renderEditors = (nodes, pathIndexes = [], depth = 1) => (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        {nodes.map((moduleItem, moduleIndex) => {
+          const currentPath = [...pathIndexes, moduleIndex];
+          return (
+            <div
+              key={`${fieldPath}-module-${currentPath.join('-')}`}
+              style={{
+                marginLeft: Math.max(0, depth - 1) * 14,
+                paddingLeft: depth > 1 ? 8 : 0,
+                borderLeft: depth > 1 ? '3px solid #d9d9d9' : 'none',
+              }}
+            >
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(140px, 200px) minmax(0, 1fr)',
+                    gap: 4,
+                    alignItems: 'start',
+                    padding: '4px 0',
+                  }}
+                >
                   <Input
-                    value={functionItem.name}
-                    placeholder="功能名称"
+                    size="small"
+                    value={moduleItem.module_name}
+                    placeholder="模块名称"
                     disabled={!canWrite}
                     onChange={(event) => {
-                      const next = deepClone(visibleModules);
-                      next[moduleIndex].functions[functionIndex].name = event.target.value;
-                      handleDraftValueChange(fieldPath, next);
+                      handleDraftValueChange(
+                        fieldPath,
+                        updateModuleNode(visibleModules, currentPath, (currentNode) => ({
+                          ...currentNode,
+                          module_name: event.target.value,
+                        }))
+                      );
                     }}
                   />
-                  <Input
-                    value={functionItem.desc}
-                    placeholder="功能说明"
+                  <Input.TextArea
+                    autoSize={{ minRows: 1, maxRows: 2 }}
+                    value={moduleItem.description}
+                    placeholder="模块说明（可选）"
                     disabled={!canWrite}
                     onChange={(event) => {
-                      const next = deepClone(visibleModules);
-                      next[moduleIndex].functions[functionIndex].desc = event.target.value;
-                      handleDraftValueChange(fieldPath, next);
+                      handleDraftValueChange(
+                        fieldPath,
+                        updateModuleNode(visibleModules, currentPath, (currentNode) => ({
+                          ...currentNode,
+                          description: event.target.value,
+                        }))
+                      );
                     }}
                   />
-                </Space>
-              ))}
-            </Space>
+                </div>
+                {(Array.isArray(moduleItem.children) && moduleItem.children.length > 0)
+                  ? renderEditors(moduleItem.children, currentPath, depth + 1)
+                  : null}
+              </Space>
+            </div>
+          );
+        })}
+      </Space>
+    );
+
+    return (
+      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
+        {showPreview && (
+          <Card size="small">
+            <ModuleStructurePreview value={value} />
           </Card>
-        ))}
+        )}
+        {renderEditors(visibleModules)}
       </Space>
     );
   };
 
-  const renderIntegrationPointsEditor = (fieldPath, value) => {
+  const renderIntegrationPointsEditor = (fieldPath, value, { showPreview = true } = {}) => {
     const points = normalizeIntegrationPointsDraft(value);
     const visiblePoints = points.length > 0 ? points : [{ peer_system: '', protocol: '', direction: '', description: '' }];
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 6 }}>
+      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
+        {showPreview && <StructuredFieldPreview kind="integration_points" value={value} />}
         {visiblePoints.map((point, index) => (
-          <Card key={`${fieldPath}-point-${index}`} size="small" bodyStyle={{ padding: 10 }}>
+          <Card key={`${fieldPath}-point-${index}`} size="small" styles={{ body: { padding: 10 } }}>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               <Space style={{ width: '100%' }} align="start">
                 <Input
@@ -793,11 +800,12 @@ const SystemProfileBoardPage = () => {
     );
   };
 
-  const renderKeyConstraintsEditor = (fieldPath, value) => {
+  const renderKeyConstraintsEditor = (fieldPath, value, { showPreview = true } = {}) => {
     const constraints = normalizeKeyConstraintsDraft(value);
     const visibleConstraints = constraints.length > 0 ? constraints : [{ category: '', description: '' }];
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 6 }}>
+      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
+        {showPreview && <StructuredFieldPreview kind="key_constraints" value={value} />}
         {visibleConstraints.map((constraint, index) => (
           <Space key={`${fieldPath}-constraint-${index}`} style={{ width: '100%' }}>
             <Input
@@ -826,11 +834,12 @@ const SystemProfileBoardPage = () => {
     );
   };
 
-  const renderPerformanceProfileEditor = (fieldPath, value) => {
+  const renderPerformanceProfileEditor = (fieldPath, value, { showPreview = true } = {}) => {
     const metrics = normalizePerformanceRowsDraft(value);
     const visibleMetrics = metrics.length > 0 ? metrics : [{ key: '', value: '' }];
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 6 }}>
+      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
+        {showPreview && <StructuredFieldPreview kind="performance_profile" value={value} />}
         {visibleMetrics.map((metric, index) => (
           <Space key={`${fieldPath}-metric-${index}`} style={{ width: '100%' }}>
             <Input
@@ -862,6 +871,12 @@ const SystemProfileBoardPage = () => {
   const renderFieldEditor = (field, fieldPath) => {
     const value = draftValues[fieldPath];
     const editorKind = FIELD_EDITOR_KIND[fieldPath] || field.type;
+    const preview = renderFieldPreview(field, fieldPath, value);
+    const editing = canWrite && Boolean(editingFields[fieldPath]);
+
+    if (!editing && preview) {
+      return <div style={{ marginTop: 6 }}>{preview}</div>;
+    }
 
     if (editorKind === 'text') {
       return (
@@ -881,16 +896,16 @@ const SystemProfileBoardPage = () => {
     }
 
     if (editorKind === 'module_structure') {
-      return renderModuleStructureEditor(fieldPath, value);
+      return renderModuleStructureEditor(fieldPath, value, { showPreview: false });
     }
     if (editorKind === 'integration_points') {
-      return renderIntegrationPointsEditor(fieldPath, value);
+      return renderIntegrationPointsEditor(fieldPath, value, { showPreview: false });
     }
     if (editorKind === 'key_constraints') {
-      return renderKeyConstraintsEditor(fieldPath, value);
+      return renderKeyConstraintsEditor(fieldPath, value, { showPreview: false });
     }
     if (editorKind === 'performance_profile') {
-      return renderPerformanceProfileEditor(fieldPath, value);
+      return renderPerformanceProfileEditor(fieldPath, value, { showPreview: false });
     }
 
     return (
@@ -905,6 +920,17 @@ const SystemProfileBoardPage = () => {
     );
   };
 
+  const renderDiffPreview = (fieldPath, fieldType, currentValue, suggestionValue) => {
+    const editorKind = FIELD_EDITOR_KIND[fieldPath] || fieldType;
+    return (
+      <StructuredFieldDiffPreview
+        kind={fieldPath === KNOWN_RISKS_FIELD_PATH ? 'known_risks' : editorKind}
+        currentValue={currentValue}
+        suggestionValue={suggestionValue}
+      />
+    );
+  };
+
   const handleSaveDraft = async () => {
     if (!selectedSystemName) {
       message.warning('请先选择系统');
@@ -912,10 +938,6 @@ const SystemProfileBoardPage = () => {
     }
     if (!canWrite) {
       message.warning('当前系统为只读，无法保存');
-      return;
-    }
-    if (suggestionMutating) {
-      message.warning('建议操作进行中，请稍后再保存');
       return;
     }
 
@@ -935,7 +957,7 @@ const SystemProfileBoardPage = () => {
         evidence_refs: [],
       });
       message.success('系统画像草稿已保存');
-      await loadProfileDetail(selectedSystemName, { preserveIgnored: true });
+      await loadProfileDetail(selectedSystemName);
     } catch (error) {
       message.error(parseErrorMessage(error, '保存系统画像失败'));
     } finally {
@@ -950,10 +972,6 @@ const SystemProfileBoardPage = () => {
     }
     if (!canWrite) {
       message.warning('当前系统为只读，无法发布');
-      return;
-    }
-    if (suggestionMutating) {
-      message.warning('建议操作进行中，请稍后再发布');
       return;
     }
 
@@ -988,12 +1006,8 @@ const SystemProfileBoardPage = () => {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
-    if (suggestionMutating) {
-      return;
-    }
 
     try {
-      setSuggestionMutating(true);
       const response = await axios.post(
         `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/accept`,
         { domain: domainKey, sub_field: fieldKey }
@@ -1005,8 +1019,6 @@ const SystemProfileBoardPage = () => {
       message.success('已采纳AI建议');
     } catch (error) {
       message.error(parseErrorMessage(error, '采纳AI建议失败'));
-    } finally {
-      setSuggestionMutating(false);
     }
   };
 
@@ -1016,12 +1028,8 @@ const SystemProfileBoardPage = () => {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
-    if (suggestionMutating) {
-      return;
-    }
 
     try {
-      setSuggestionMutating(true);
       const response = await axios.post(
         `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/rollback`,
         { domain: domainKey, sub_field: fieldKey }
@@ -1038,8 +1046,6 @@ const SystemProfileBoardPage = () => {
         return;
       }
       message.error(parseErrorMessage(error, '恢复上一版建议失败'));
-    } finally {
-      setSuggestionMutating(false);
     }
   };
 
@@ -1049,41 +1055,24 @@ const SystemProfileBoardPage = () => {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
-    if (suggestionMutating) {
-      return;
-    }
-
-    const suggestionDomain = aiSuggestions?.[domainKey];
-    if (!suggestionDomain || typeof suggestionDomain !== 'object') {
-      return;
-    }
-    if (!Object.prototype.hasOwnProperty.call(suggestionDomain, fieldKey)) {
-      return;
-    }
-    const fieldPath = getFieldPath(domainKey, fieldKey);
-    const ignoredComparableValue = normalizeComparableValue(domainKey, fieldKey, suggestionDomain[fieldKey]);
-    setIgnoredFields((prev) => {
-      const next = new Map(prev);
-      next.set(fieldPath, ignoredComparableValue);
-      return next;
-    });
 
     try {
-      setSuggestionMutating(true);
       const response = await axios.post(
         `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/ignore`,
         { domain: domainKey, sub_field: fieldKey }
       );
       const payload = response.data?.data;
       if (payload) {
-        applyProfilePayload(payload, systemId, { preserveIgnored: true });
+        applyProfilePayload(payload, systemId);
       }
       message.success('已忽略AI建议');
     } catch (error) {
+      const code = error?.response?.data?.error_code;
+      if (code === 'SUGGESTION_NOT_FOUND') {
+        message.warning('AI 建议不存在');
+        return;
+      }
       message.error(parseErrorMessage(error, '忽略AI建议失败'));
-      await loadProfileDetail(selectedSystemName);
-    } finally {
-      setSuggestionMutating(false);
     }
   };
 
@@ -1096,7 +1085,6 @@ const SystemProfileBoardPage = () => {
   }, [aiSuggestionsPrevious]);
 
   const hasVisibleDiff = useCallback((domainKey, fieldKey) => {
-    const fieldPath = getFieldPath(domainKey, fieldKey);
     const suggestionDomain = aiSuggestions?.[domainKey];
     if (!suggestionDomain || typeof suggestionDomain !== 'object') {
       return false;
@@ -1106,16 +1094,13 @@ const SystemProfileBoardPage = () => {
     }
     const currentValue = savedProfileData?.[domainKey]?.[fieldKey];
     const suggestionValue = suggestionDomain[fieldKey];
-    const normalizedSuggestionValue = normalizeComparableValue(domainKey, fieldKey, suggestionValue);
-    const ignoredComparableValue = ignoredFields.get(fieldPath);
-    if (ignoredComparableValue !== undefined && isSameValue(ignoredComparableValue, normalizedSuggestionValue)) {
+    const ignoredKey = `${domainKey}.${fieldKey}`;
+    if (Object.prototype.hasOwnProperty.call(ignoredSuggestions, ignoredKey)
+      && isSameValue(domainKey, fieldKey, ignoredSuggestions[ignoredKey], suggestionValue)) {
       return false;
     }
-    return !isSameValue(
-      normalizeComparableValue(domainKey, fieldKey, currentValue),
-      normalizedSuggestionValue,
-    );
-  }, [aiSuggestions, ignoredFields, savedProfileData]);
+    return !isSameValue(domainKey, fieldKey, currentValue, suggestionValue);
+  }, [aiSuggestions, ignoredSuggestions, savedProfileData]);
 
   const domainHasDiff = useCallback((domainKey) => {
     const domain = PROFILE_DOMAIN_BY_KEY[domainKey];
@@ -1223,59 +1208,52 @@ const SystemProfileBoardPage = () => {
                   );
                   const currentValue = savedProfileData?.[activeDomainConfig.key]?.[field.key];
                   const suggestionValue = hasSuggestion ? suggestionDomain[field.key] : undefined;
-                  const shouldShowDiff = hasVisibleDiff(activeDomainConfig.key, field.key);
-                  const rollbackEnabled = hasPreviousSuggestion(activeDomainConfig.key, field.key);
+                    const shouldShowDiff = hasVisibleDiff(activeDomainConfig.key, field.key);
+                    const rollbackEnabled = hasPreviousSuggestion(activeDomainConfig.key, field.key);
+                    const editing = canWrite && Boolean(editingFields[fieldPath]);
 
                   return (
                     <div key={fieldPath}>
-                      <Text strong>{field.label}</Text>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <Text strong>{field.label}</Text>
+                        {canWrite && (
+                          <Button
+                            size="small"
+                            type="link"
+                            aria-label={`${editing ? '收起编辑' : '编辑'}${field.label}`}
+                            style={{ paddingInline: 0 }}
+                            onClick={() => toggleFieldEditMode(fieldPath)}
+                          >
+                            {editing ? '收起编辑' : '编辑'}
+                          </Button>
+                        )}
+                      </div>
                       {renderFieldEditor(field, fieldPath)}
 
                       {shouldShowDiff && (
                         <Card size="small" style={{ marginTop: 8, background: '#fafcff' }}>
                           <Space direction="vertical" size={8} style={{ width: '100%' }}>
                             <Text strong>检测到 AI 建议变更</Text>
-                            <div
-                              style={{
-                                display: 'grid',
-                                gap: 8,
-                                gridTemplateColumns: '1fr 1fr',
-                              }}
-                            >
-                              <div>
-                                <Text type="secondary">当前值</Text>
-                                <div style={{ marginTop: 4, padding: 8, borderRadius: 4, background: '#fff' }}>
-                                  {renderHumanValuePreview(currentValue)}
-                                </div>
-                              </div>
-                              <div>
-                                <Text type="secondary">AI 建议</Text>
-                                <div style={{ marginTop: 4, padding: 8, borderRadius: 4, background: '#fff' }}>
-                                  {renderHumanValuePreview(suggestionValue)}
-                                </div>
-                              </div>
-                            </div>
+                            {renderDiffPreview(fieldPath, field.type, currentValue, suggestionValue)}
                             <Space wrap>
                               <Button
                                 size="small"
                                 type="primary"
-                                loading={suggestionMutating}
-                                disabled={!canWrite || suggestionMutating}
+                                disabled={!canWrite}
                                 onClick={() => handleAcceptSuggestion(activeDomainConfig.key, field.key)}
                               >
                                 采纳新建议
                               </Button>
                               <Button
                                 size="small"
-                                disabled={!canWrite || suggestionMutating}
+                                disabled={!canWrite}
                                 onClick={() => handleIgnoreSuggestion(activeDomainConfig.key, field.key)}
                               >
                                 忽略
                               </Button>
                               <Button
                                 size="small"
-                                loading={suggestionMutating}
-                                disabled={!canWrite || suggestionMutating || !rollbackEnabled}
+                                disabled={!canWrite || !rollbackEnabled}
                                 title={rollbackEnabled ? '' : '无历史版本'}
                                 onClick={() => handleRollbackSuggestion(activeDomainConfig.key, field.key)}
                               >
@@ -1294,7 +1272,7 @@ const SystemProfileBoardPage = () => {
                     type="primary"
                     icon={<SaveOutlined />}
                     loading={savingProfile}
-                    disabled={!canWrite || suggestionMutating}
+                    disabled={!canWrite}
                     onClick={handleSaveDraft}
                   >
                     保存草稿
@@ -1302,7 +1280,7 @@ const SystemProfileBoardPage = () => {
                   <Button
                     icon={<SendOutlined />}
                     loading={publishingProfile}
-                    disabled={!canWrite || suggestionMutating}
+                    disabled={!canWrite}
                     onClick={handlePublish}
                   >
                     发布画像

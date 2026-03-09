@@ -107,9 +107,34 @@
 | 下游超时 |  | 快速失败/降级 | ERR-xxx | 是/否 |  |
 ### 5.4 API 设计（Contracts）
 <!-- 聚焦本次新增/变更的 API，详细字段/示例见 docs/接口文档.md -->
-| API-ID | 方法 | 路径 | 鉴权 | 幂等 | 超时 | 兼容性 | 备注 |
+
+**契约定义规则（🔴 MUST，涉及前后端交互时）**：
+- 端点路径必须精确（含路径参数、查询参数）
+- 请求/响应体必须用 JSON Schema 或 TypeScript interface 定义
+- 前端调用代码必须引用此契约
+- 后端实现必须符合此契约
+
+| API-ID | 方法 | 路径 | 请求体结构 | 响应体结构 | 错误码 | 兼容性 | 备注 |
 |---|---|---|---|---|---|---|---|
-| API-001 |  |  |  |  |  | 向后兼容/破坏性 |  |
+| API-001 | POST | /api/v1/example | `{field: string}` | `{result: string, data: {...}}` | 400/500 | 向后兼容 | 前后端共享契约 |
+
+**请求/响应体详细定义示例**：
+```typescript
+// API-001 请求体
+interface ExampleRequest {
+  field: string;        // 必填，业务字段说明
+  optional?: number;    // 可选字段
+}
+
+// API-001 响应体
+interface ExampleResponse {
+  result: string;       // 必填，处理结果
+  data: {
+    id: string;
+    name: string;
+  };
+}
+```
 ### 5.5 异步/消息/作业（如适用）
 | EVT-ID | Topic/Queue | 生产者 | 消费者 | 投递语义 | 幂等/去重 | DLQ | 备注 |
 |---|---|---|---|---|---|---|---|

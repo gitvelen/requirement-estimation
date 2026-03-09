@@ -38,24 +38,19 @@
 4. 阶段推进 commit 触发结果门禁：`Implementation -> Testing` 与 `Testing -> Deployment` 均触发 `result_gate_test/build/typecheck`。
 5. 发现失败先修复再重测，禁止"带失败推进"。
 6. 涉及前端页面改造时，必须存在对应的契约烟测（覆盖：菜单/标题一致性、空态/错态/加载态、关键入口可达），仅 `npm run build` 通过不视为充分验证。
+7. 标注 [Integration Required] 的 REQ，必须提供分层测试证据：
+   - AI 自动化测试：API 集成测试脚本 + 执行日志（🔴 MUST）
+   - 人类验证清单：操作步骤 + 预期结果（🟡 建议，关键流程推荐）
+8. 标注 [E2E Required] 的 REQ（仅关键业务流程），必须提供：
+   - AI 自动化测试：完整链路测试脚本 + 执行日志（🔴 MUST）
+   - 人类验收记录：验证人 + 验证时间 + 通过/失败（🔴 MUST）
 
 ## 预审门禁（🔴 MUST，审查前执行）
 
-> 来源：lessons_learned — 测试/构建不过就进入 REP 审查，审查轮次白费；修复后又要重新走查，是多轮不收敛的主要原因之一。
+> 通用规则见 `ai_workflow.md` 的"预审门禁"章节。本阶段特有检查项：
 
-AI 在启动 REP 审查（写 `review_testing.md` 或 `review_minor.md`）之前，必须先执行以下检查并确认全部通过：
-
-1. 运行 `aicoding.config.yaml` 中配置的 `result_gate_test_command` → 测试全部通过
-2. 运行 `result_gate_build_command` → 构建成功
-3. 运行 `result_gate_typecheck_command` → 类型检查通过
-4. 确认 `test_report.md`（major）或测试证据（minor）已产出
-
-预审全部通过后，将结果记录到本次审查产物再继续 REP 流程：
-- major：填写审查模板的「§-1 预审结果」段落
-- minor：在 `review_minor.md` 中记录同等检查结果（如本阶段走最小证据路径，也可在 `test_report.md` 或 `status.md` 的 `TEST-RESULT` 附同等检查结果）
-如有失败项，先修复再重新预审，不进入 REP。
-
-**多轮审查时同样适用**：每轮修复完成后，先重新跑预审门禁确认无回归，再启动下一轮审查。
+**Testing 阶段特有检查项**：
+1. 确认 `test_report.md`（major）或测试证据（minor）已产出
 
 ## 阶段完成条件
 1. 自审收敛（P0/P1 open=0）。

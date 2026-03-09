@@ -4,7 +4,14 @@
 # 注意：不启用 set -e，避免 grep 无匹配（退出码 1）中断后续 Warning
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "${SCRIPT_DIR}/../lib/common.sh"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# 优先使用绝对路径（生产环境），回退到相对路径（测试环境）
+if [ -f "${REPO_ROOT}/.aicoding/scripts/lib/common.sh" ]; then
+  source "${REPO_ROOT}/.aicoding/scripts/lib/common.sh"
+else
+  source "${SCRIPT_DIR}/../lib/common.sh"
+fi
 aicoding_load_config
 aicoding_gate_log_init
 

@@ -26,6 +26,34 @@
 | 集成测试 | | | | | API + 数据库 |
 | E2E 测试 | | | | | 关键用户路径 |
 | 回归测试 | | | | | 全量已有用例 |
+
+## 集成测试证据（Integration Required 的 REQ）
+
+### AI 自动化测试（🔴 MUST）
+
+| REQ-ID | 测试场景 | 测试脚本路径 | 验证点 | 执行命令 | 结果 | 日志 |
+|---|---|---|---|---|---|---|
+| REQ-001 | 文档导入触发 AI 提取 | `tests/integration/test_knowledge_import.py` | 1. API 返回 200<br>2. 响应包含 system_description<br>3. 数据库正确存储 | `pytest tests/integration/test_knowledge_import.py -v` | ✅ 通过 | [日志链接] |
+
+### 人类验证清单（关键流程，🟡 建议）
+
+| REQ-ID | 验证场景 | 操作步骤 | 预期结果 | 验证人 | 验证时间 | 结果 | 问题记录 |
+|---|---|---|---|---|---|---|---|
+| REQ-001 | 前端展示验证 | 1. 访问 /knowledge/import<br>2. 上传文档<br>3. 访问 /system/profile | 信息展示页显示完整数据 | [待填写] | [待填写] | [待验证] | |
+
+## 端到端测试证据（E2E Required 的 REQ）
+
+### AI 自动化测试（🔴 MUST）
+
+| REQ-ID | 测试场景 | 测试脚本路径 | 验证点 | 执行命令 | 结果 | 日志 |
+|---|---|---|---|---|---|---|
+| REQ-002 | 支付流程 | `tests/e2e/test_payment.py` | 完整支付链路 | `pytest tests/e2e/test_payment.py -v` | ✅ 通过 | [日志链接] |
+
+### 人类验证结果（🔴 MUST）
+
+| REQ-ID | 验证场景 | 操作步骤 | 预期结果 | 验证人 | 验证时间 | 结果 | 问题记录 |
+|---|---|---|---|---|---|---|---|
+| REQ-002 | 支付界面验证 | 1. 访问支付页面<br>2. 填写支付信息<br>3. 提交支付 | 支付成功并跳转 | 张三 | 2026-03-03 | ✅ 通过 | 无 |
 ## 需求覆盖矩阵（GWT 粒度追溯）
 <!-- 每条GWT-ID必须出现并判定，门禁从此表提取覆盖集合与requirements.md做差集验真 -->
 <!-- TEST-COVERAGE-MATRIX-BEGIN -->
