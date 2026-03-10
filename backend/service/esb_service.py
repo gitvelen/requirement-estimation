@@ -496,7 +496,7 @@ class EsbService:
             try:
                 embedding_service = self._ensure_embedding_service()
                 texts = [self._build_entry_text(e) for e in entries]
-                embeddings = embedding_service.batch_generate_embeddings(texts)
+                embeddings = embedding_service.batch_generate_embeddings(texts, batch_size=settings.ESB_EMBEDDING_BATCH_SIZE)
                 for entry, emb in zip(entries, embeddings):
                     entry["embedding"] = emb
             except Exception as exc:

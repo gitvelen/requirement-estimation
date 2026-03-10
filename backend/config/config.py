@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
     KNOWLEDGE_SIMILARITY_THRESHOLD: float = 0.6  # 相似度阈值
 
+    # ESB embedding 批次大小配置
+    ESB_EMBEDDING_BATCH_SIZE: int = int(os.getenv("ESB_EMBEDDING_BATCH_SIZE", "10"))
+
     # 文件上传配置
     UPLOAD_DIR: str = "uploads"
     MAX_FILE_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10")) * 1024 * 1024  # 默认10MB
