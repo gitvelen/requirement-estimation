@@ -385,6 +385,7 @@ async def import_knowledge_v2(
                         system_name=bound_system_name,
                         actor=current_user,
                         reason="knowledge_import",
+                        context_override={"document_text": text_content},
                     )
             except Exception as exc:
                 logger.warning("触发画像AI总结失败（忽略）: %s", exc)

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from typing import Any, Dict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from backend.app import app
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import knowledge_service as ks
+from backend.service import profile_summary_service as profile_summary_module
 from backend.service import system_profile_service
 from backend.service import user_service
 
@@ -33,6 +35,38 @@ class BrokenEmbeddingService:
         raise RuntimeError("embedding unavailable")
 
 
+class StubProfileSummaryService:
+    def __init__(self) -> None:
+        self.calls = []
+        self._counter = 0
+
+    def trigger_summary(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        actor: Dict[str, Any] | None = None,
+        reason: str = "import",
+        source_file: str | None = None,
+        trigger: str | None = None,
+        context_override: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        self._counter += 1
+        self.calls.append(
+            {
+                "job_id": f"summary_task_{self._counter:03d}",
+                "system_id": system_id,
+                "system_name": system_name,
+                "actor_id": (actor or {}).get("id"),
+                "reason": reason,
+                "source_file": source_file,
+                "trigger": trigger,
+                "context_override": context_override or {},
+            }
+        )
+        return {"job_id": f"summary_task_{self._counter:03d}", "status": "queued", "created_new": True}
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
@@ -50,6 +84,7 @@ def client(tmp_path, monkeypatch):
 
     ks._knowledge_service = None
     system_profile_service._system_profile_service = None
+    profile_summary_module._profile_summary_service = None
 
     return TestClient(app)
 
@@ -284,3 +319,32 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client):
     payload = response.json()
     assert payload["error_code"] == "KNOW_002"
     assert "soffice未安装" in str(payload.get("message") or "")
+
+
+def test_knowledge_import_passes_full_document_text_to_summary_job(client, monkeypatch):
+    manager = _seed_user("kmgr_full_text", "pwd123", ["manager"])
+    token = _login(client, "kmgr_full_text", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    summary_stub = StubProfileSummaryService()
+    monkeypatch.setattr(profile_summary_module, "get_profile_summary_service", lambda: summary_stub)
+
+    service = ks.get_knowledge_service()
+    full_text = "背景说明\n核心流程\n接口约束"
+    monkeypatch.setattr(service.document_parser, "parse", lambda **_kwargs: {"text": full_text})
+    monkeypatch.setattr(service, "_chunk_text", lambda _text: ["背景说明", "核心流程"])
+
+    response = client.post(
+        "/api/v1/knowledge/imports",
+        data={
+            "knowledge_type": "document",
+            "level": "normal",
+            "system_id": "sys_hop",
+        },
+        files={"file": ("spec.csv", b"ignored", "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert len(summary_stub.calls) == 1
+    assert summary_stub.calls[0]["context_override"]["document_text"] == full_text

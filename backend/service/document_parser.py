@@ -199,15 +199,6 @@ class DocumentParser:
             # ESB服务治理文档需要忽略的sheet
             ignored_sheets = {"系统清单", "字典", "新服务治理平台服务视图"}
 
-            # ESB服务治理文档固定表头（第2行，索引1）
-            esb_fixed_header = [
-                "序号", "投产日期", "系统标识", "系统名称", "系统负责人",
-                "服务场景码", "服务名称", "场景名称", "交易码", "交易名称",
-                "消费方系统标识", "消费方系统名称", "消费方系统负责人",
-                "操作类型", "调用日志检查(ESB项目组)", "是否延期(项目组)",
-                "确认投产（项目组）", "申请人", "需求编号", "备注"
-            ]
-
             # 遍历所有Sheet
             logger.info(f"文件包含的所有sheets: {wb.sheetnames}")
             for sheet_name in wb.sheetnames:
@@ -219,22 +210,14 @@ class DocumentParser:
 
                 ws = wb[sheet_name]
 
-                # 提取数据：使用固定表头，从第3行（索引2）开始读取数据
+                # 保留原始行结构，具体表头识别交给调用方按业务场景处理
                 sheet_data = []
-
-                # 添加固定表头作为第一行
-                sheet_data.append(esb_fixed_header)
-
-                # 从第3行开始读取数据（跳过前2行）
-                for idx, row in enumerate(ws.iter_rows(values_only=True)):
-                    if idx < 2:  # 跳过第1、2行
-                        continue
-                    # 过滤空行
-                    if any(cell is not None for cell in row):
+                for row in ws.iter_rows(values_only=True):
+                    if any(cell is not None and str(cell).strip() != "" for cell in row):
                         sheet_data.append(list(row))
 
                 data[sheet_name] = sheet_data
-                logger.info(f"Sheet '{sheet_name}': {len(sheet_data)-1} 行数据（使用固定表头）")
+                logger.info(f"Sheet '{sheet_name}': {len(sheet_data)} 行数据")
 
             logger.info(f"XLSX解析成功，共 {len(data)} 个Sheet")
 

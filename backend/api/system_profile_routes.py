@@ -854,6 +854,7 @@ async def import_profile_document(
             reason="document_import",
             source_file=file_name,
             trigger="document_import",
+            context_override={"document_text": text_content},
         )
 
         payload: Dict[str, Any] = {

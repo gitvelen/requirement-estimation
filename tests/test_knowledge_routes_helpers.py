@@ -27,3 +27,11 @@ def test_knowledge_parsed_to_text_extracts_docx_paragraphs_and_tables():
     assert "Redis | 缓存" in text
     assert "MySQL | 数据库" in text
     assert "metadata" not in text
+
+
+def test_knowledge_parsed_to_text_prefers_verbatim_text_field():
+    full_text = "第一段\n第二段\n第三段"
+
+    text = _parsed_to_text({"text": full_text, "metadata": {"chunk_count": 2}})
+
+    assert text == full_text

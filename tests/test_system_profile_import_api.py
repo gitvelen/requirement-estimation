@@ -43,6 +43,7 @@ class StubProfileSummaryService:
         reason: str = "import",
         source_file: str | None = None,
         trigger: str | None = None,
+        context_override: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         self._counter += 1
         job_id = f"summary_task_{self._counter:03d}"
@@ -55,6 +56,7 @@ class StubProfileSummaryService:
                 "source_file": source_file,
                 "trigger": trigger,
                 "actor_id": (actor or {}).get("id"),
+                "context_override": context_override or {},
             }
         )
         system_profile_service.get_system_profile_service().upsert_extraction_task(
@@ -205,6 +207,31 @@ def test_profile_import_success_returns_task_id_and_records_history(client, monk
     assert status_payload["trigger"] == "document_import"
     assert status_payload["error"] is None
     assert isinstance(status_payload["notifications"], list)
+
+
+def test_profile_import_passes_full_document_text_to_summary_job(client, monkeypatch):
+    manager = _seed_user("import_full_text", "pwd123", ["manager"])
+    token = _login(client, "import_full_text", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    summary_stub = StubProfileSummaryService()
+    monkeypatch.setattr(profile_summary_module, "get_profile_summary_service", lambda: summary_stub)
+
+    service = ks.get_knowledge_service()
+    full_text = "需求概述\n系统边界\n接口清单"
+    monkeypatch.setattr(service.document_parser, "parse", lambda **_kwargs: {"text": full_text})
+    monkeypatch.setattr(service, "_chunk_text", lambda _text: ["需求概述", "系统边界"])
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_hop/profile/import",
+        data={"doc_type": "requirement_doc"},
+        files={"file": ("requirements.csv", b"ignored", "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert len(summary_stub.calls) == 1
+    assert summary_stub.calls[0]["context_override"]["document_text"] == full_text
 
 
 def test_profile_import_history_supports_pagination(client, monkeypatch):

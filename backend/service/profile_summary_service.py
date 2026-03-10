@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -23,7 +25,8 @@ from backend.config.config import settings
 from backend.service.code_scan_service import get_code_scan_service
 from backend.service.esb_service import get_esb_service
 from backend.service.system_profile_service import PROFILE_V24_DOMAIN_KEYS, get_system_profile_service
-from backend.utils.llm_client import llm_client
+from backend.utils.llm_client import deep_merge, extract_usage_from_response, llm_client, merge_stage1_responses
+from backend.utils.token_counter import chunk_text, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,12 @@ DOMAIN_HINT_KEYWORDS: Dict[str, tuple[str, ...]] = {
 }
 
 
+@dataclass(frozen=True)
+class SummaryContextBundle:
+    static_prefix_text: str
+    chunkable_body_text: str
+
+
 class ProfileSummaryService:
     def __init__(self) -> None:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="profile_summary")
@@ -106,6 +115,7 @@ class ProfileSummaryService:
         reason: str = "import",
         source_file: str = "",
         trigger: str = "document_import",
+        context_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_system_id = str(system_id or "").strip()
         normalized_system_name = str(system_name or "").strip()
@@ -131,6 +141,7 @@ class ProfileSummaryService:
             trigger=str(trigger or "").strip() or "document_import",
             source_file=str(source_file or "").strip(),
             actor=actor or {},
+            context_override=context_override or {},
         )
         return {"job_id": job_id, "status": "pending", "created_new": True}
 
@@ -144,6 +155,7 @@ class ProfileSummaryService:
         trigger: str,
         source_file: str,
         actor: Dict[str, Any],
+        context_override: Dict[str, Any],
     ) -> None:
         profile_service = get_system_profile_service()
 
@@ -154,8 +166,16 @@ class ProfileSummaryService:
             profile_service.update_extraction_task_status(system_id, task_id=job_id, status="processing")
 
             try:
-                context = self._build_context(system_id=system_id, system_name=system_name)
-                llm_result = self._call_llm(system_id=system_id, system_name=system_name, context=context)
+                context_bundle = self._build_context_bundle(
+                    system_id=system_id,
+                    system_name=system_name,
+                    context_override=context_override,
+                )
+                llm_result = self._call_llm(
+                    system_id=system_id,
+                    system_name=system_name,
+                    context_bundle=context_bundle,
+                )
                 suggestions = llm_result.get("suggestions") if isinstance(llm_result, dict) else {}
                 relevant_domains = llm_result.get("relevant_domains") if isinstance(llm_result, dict) else []
                 related_systems = llm_result.get("related_systems") if isinstance(llm_result, dict) else []
@@ -252,7 +272,7 @@ class ProfileSummaryService:
         except Exception as exc:
             logger.warning("创建通知失败: %s", exc)
 
-    def _build_context(self, *, system_id: str, system_name: str) -> str:
+    def _build_static_context(self, *, system_id: str, system_name: str) -> str:
         parts: List[str] = []
 
         # code scan (latest completed job)
@@ -332,7 +352,11 @@ class ProfileSummaryService:
         except Exception as exc:
             logger.info("收集ESB上下文失败（忽略）: %s", exc)
 
-        # knowledge_store (local only, best-effort)
+        joined = "\n".join(parts).strip()
+        return joined[: self._context_max_chars()] if joined else ""
+
+    def _build_knowledge_context(self, *, system_name: str) -> str:
+        parts: List[str] = []
         try:
             store_path = os.path.join(settings.REPORT_DIR, "knowledge_store.json")
             if os.path.exists(store_path):
@@ -360,10 +384,48 @@ class ProfileSummaryService:
         except Exception as exc:
             logger.info("收集知识库上下文失败（忽略）: %s", exc)
 
-        joined = "\n".join(parts).strip()
-        if not joined:
-            return f"系统：{system_name}（{system_id}）。材料不足。"
-        return joined[: self._context_max_chars()]
+        return "\n".join(parts).strip()[: self._context_max_chars()] if parts else ""
+
+    def _build_context_bundle(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        context_override: Optional[Dict[str, Any]] = None,
+    ) -> SummaryContextBundle:
+        override = context_override if isinstance(context_override, dict) else {}
+        document_text = str(override.get("document_text") or "").strip()
+        static_prefix_text = self._build_static_context(system_id=system_id, system_name=system_name)
+
+        if document_text:
+            if not static_prefix_text:
+                static_prefix_text = f"系统：{system_name}（{system_id}）。"
+            return SummaryContextBundle(
+                static_prefix_text=static_prefix_text,
+                chunkable_body_text=document_text,
+            )
+
+        knowledge_context = self._build_knowledge_context(system_name=system_name)
+        if not static_prefix_text and not knowledge_context:
+            static_prefix_text = f"系统：{system_name}（{system_id}）。材料不足。"
+        return SummaryContextBundle(
+            static_prefix_text=static_prefix_text,
+            chunkable_body_text=knowledge_context,
+        )
+
+    def _compose_context_text(self, *, bundle: SummaryContextBundle, body_text: Optional[str] = None) -> str:
+        parts = [
+            str(bundle.static_prefix_text or "").strip(),
+            str(body_text if body_text is not None else bundle.chunkable_body_text or "").strip(),
+        ]
+        return "\n".join(part for part in parts if part).strip()
+
+    def _build_context(self, *, system_id: str, system_name: str) -> str:
+        bundle = self._build_context_bundle(system_id=system_id, system_name=system_name)
+        combined = self._compose_context_text(bundle=bundle)
+        if combined:
+            return combined[: self._context_max_chars()]
+        return f"系统：{system_name}（{system_id}）。材料不足。"
 
     def _context_max_chars(self) -> int:
         value = int(getattr(settings, "PROFILE_SUMMARY_CONTEXT_MAX_CHARS", 120000) or 120000)
@@ -521,9 +583,9 @@ class ProfileSummaryService:
             }
         ]
 
-    def _call_llm(self, *, system_id: str, system_name: str, context: str) -> Dict[str, Any]:
-        context_window = (context or "")[: self._context_max_chars()]
-        stage1_prompt = f"""请基于以下材料判断系统画像相关域，并识别材料中提及的其他系统。
+    def _build_stage1_prompt(self, *, system_id: str, system_name: str, context_text: str) -> str:
+        context_window = (context_text or "")[: self._context_max_chars()]
+        return f"""请基于以下材料判断系统画像相关域，并识别材料中提及的其他系统。
 
 系统：{system_name}（system_id={system_id}）
 材料（可能不完整）：
@@ -537,28 +599,17 @@ class ProfileSummaryService:
 relevant_domains 只允许以下值：
 system_positioning, business_capabilities, integration_interfaces, technical_architecture, constraints_risks
 """
-        stage1_response = llm_client.chat_with_system_prompt(
-            system_prompt="你是一个严谨的系统分析助手，擅长从材料中识别系统画像相关域和跨系统信息。",
-            user_prompt=stage1_prompt,
-            temperature=0.1,
-            max_tokens=600,
-        )
-        stage1_parsed = llm_client.extract_json(stage1_response)
-        stage1_data = stage1_parsed if isinstance(stage1_parsed, dict) else {}
-        relevant_domains = self._normalize_relevant_domains(stage1_data.get("relevant_domains"))
-        inferred_domains = self._infer_domains_from_context(context_window)
-        for domain in inferred_domains:
-            if domain not in relevant_domains:
-                relevant_domains.append(domain)
-        related_systems = self._normalize_related_systems(
-            stage1_data.get("related_systems"),
-            current_system_name=system_name,
-        )
 
-        if not relevant_domains:
-            relevant_domains = list(PROFILE_DOMAIN_KEYS)
-
-        stage2_prompt = f"""请基于以下材料，仅输出相关域的系统画像建议。
+    def _build_stage2_prompt(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        relevant_domains: List[str],
+        context_text: str,
+    ) -> str:
+        context_window = (context_text or "")[: self._context_max_chars()]
+        return f"""请基于以下材料，仅输出相关域的系统画像建议。
 
 系统：{system_name}（system_id={system_id}）
 相关域：{", ".join(relevant_domains)}
@@ -594,16 +645,57 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
 }}
 只填充相关域；不相关域可以省略。每个域内的字段尽量填充，如果材料中没有信息则使用空值（空字符串/空数组/空对象）。
 """
-        stage2_response = llm_client.chat_with_system_prompt(
-            system_prompt="你是一个严谨的系统分析助手，擅长输出结构化系统画像建议。",
-            user_prompt=stage2_prompt,
-            temperature=0.2,
-            max_tokens=2500,
-        )
-        logger.info(f"LLM Stage2 原始响应: {stage2_response[:500]}")
-        stage2_parsed = llm_client.extract_json(stage2_response)
-        logger.info(f"LLM Stage2 解析结果: {json.dumps(stage2_parsed, ensure_ascii=False)[:500]}")
 
+    def _log_chunk_metric(
+        self,
+        *,
+        stage: str,
+        chunk_index: Optional[int],
+        estimated_tokens: int,
+        latency_ms: int,
+        usage: Dict[str, int],
+    ) -> None:
+        payload = {
+            "stage": stage,
+            "chunk_index": chunk_index,
+            "estimated_tokens": estimated_tokens,
+            "latency_ms": latency_ms,
+        }
+        if usage.get("total_tokens") is not None:
+            payload["actual_total_tokens"] = usage["total_tokens"]
+        logger.info("profile_summary_chunk_metric %s", payload)
+
+    def _calculate_body_budget(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        static_prefix_text: str,
+    ) -> int:
+        static_prefix_tokens = estimate_tokens(static_prefix_text)
+        stage1_prompt_overhead = estimate_tokens(
+            self._build_stage1_prompt(system_id=system_id, system_name=system_name, context_text="")
+        )
+        stage2_prompt_overhead = estimate_tokens(
+            self._build_stage2_prompt(
+                system_id=system_id,
+                system_name=system_name,
+                relevant_domains=list(PROFILE_DOMAIN_KEYS),
+                context_text="",
+            )
+        )
+        safety_tokens = 1000
+        stage1_budget = min(
+            settings.LLM_INPUT_MAX_TOKENS,
+            settings.LLM_MAX_CONTEXT_TOKENS - 600 - safety_tokens - stage1_prompt_overhead - static_prefix_tokens,
+        )
+        stage2_budget = min(
+            settings.LLM_INPUT_MAX_TOKENS,
+            settings.LLM_MAX_CONTEXT_TOKENS - 2500 - safety_tokens - stage2_prompt_overhead - static_prefix_tokens,
+        )
+        return max(1, min(stage1_budget, stage2_budget))
+
+    def _normalize_stage2_suggestions(self, stage2_parsed: Any) -> Dict[str, Any]:
         suggestions: Dict[str, Any] = {}
         if isinstance(stage2_parsed, dict):
             nested = stage2_parsed.get("suggestions")
@@ -614,16 +706,14 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
             else:
                 suggestions = stage2_parsed
 
-        # 转换 LLM 返回的简化结构到前端期望的详细结构
-        normalized_suggestions = {}
+        normalized_suggestions: Dict[str, Any] = {}
         for domain_key, domain_value in suggestions.items():
             if not isinstance(domain_value, dict):
                 continue
 
-            normalized_domain = {}
+            normalized_domain: Dict[str, Any] = {}
 
             if domain_key == "system_positioning":
-                # 优先使用 LLM 返回的正确字段名，否则尝试 description 字段
                 normalized_domain["system_description"] = domain_value.get("system_description", domain_value.get("description", ""))
                 normalized_domain["target_users"] = domain_value.get("target_users", [])
                 normalized_domain["boundaries"] = domain_value.get("boundaries", [])
@@ -632,7 +722,6 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 desc = domain_value.get("description", "")
                 normalized_domain["module_structure"] = domain_value.get("module_structure", [])
                 normalized_domain["core_processes"] = domain_value.get("core_processes", [])
-                # 如果只有 description，尝试解析为 core_processes
                 if desc and not normalized_domain["core_processes"]:
                     normalized_domain["core_processes"] = [desc]
 
@@ -640,7 +729,6 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 desc = domain_value.get("description", "")
                 normalized_domain["integration_points"] = domain_value.get("integration_points", [])
                 normalized_domain["external_dependencies"] = domain_value.get("external_dependencies", [])
-                # 如果只有 description，尝试解析为 external_dependencies
                 if desc and not normalized_domain["external_dependencies"]:
                     normalized_domain["external_dependencies"] = [desc]
 
@@ -653,22 +741,194 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 desc = domain_value.get("description", "")
                 normalized_domain["key_constraints"] = domain_value.get("key_constraints", [])
                 normalized_domain["known_risks"] = domain_value.get("known_risks", [])
-                # 如果只有 description，尝试解析为 known_risks
                 if desc and not normalized_domain["known_risks"]:
                     normalized_domain["known_risks"] = [desc]
 
             if normalized_domain:
                 normalized_suggestions[domain_key] = normalized_domain
 
-        logger.info(f"标准化后 suggestions: {json.dumps(normalized_suggestions, ensure_ascii=False)[:500]}")
+        return normalized_suggestions
 
-        if not relevant_domains and isinstance(suggestions, dict):
-            relevant_domains = [domain for domain in PROFILE_DOMAIN_KEYS if domain in suggestions]
+    def _execute_stage1(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        context_text: str,
+        chunk_index: Optional[int],
+        estimated_tokens: int,
+    ) -> Dict[str, Any]:
+        stage1_prompt = self._build_stage1_prompt(
+            system_id=system_id,
+            system_name=system_name,
+            context_text=context_text,
+        )
+        started_at = time.perf_counter()
+        response = llm_client._chat_raw(
+            [
+                {"role": "system", "content": "你是一个严谨的系统分析助手，擅长从材料中识别系统画像相关域和跨系统信息。"},
+                {"role": "user", "content": stage1_prompt},
+            ],
+            temperature=0.1,
+            max_tokens=600,
+            retry_times=3,
+        )
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        usage = extract_usage_from_response(response)
+        self._log_chunk_metric(
+            stage="stage1",
+            chunk_index=chunk_index,
+            estimated_tokens=estimated_tokens,
+            latency_ms=latency_ms,
+            usage=usage,
+        )
+        stage1_text = response.choices[0].message.content
+        stage1_parsed = llm_client.extract_json(stage1_text)
+        stage1_data = stage1_parsed if isinstance(stage1_parsed, dict) else {}
+        if "relevant_domains" not in stage1_data or "related_systems" not in stage1_data:
+            raise ValueError("CHUNK_PROCESSING_FAILED")
+        relevant_domains = self._normalize_relevant_domains(stage1_data.get("relevant_domains"))
+        inferred_domains = self._infer_domains_from_context(context_text)
+        for domain in inferred_domains:
+            if domain not in relevant_domains:
+                relevant_domains.append(domain)
+        return {
+            "relevant_domains": relevant_domains,
+            "related_systems": self._normalize_related_systems(
+            stage1_data.get("related_systems"),
+            current_system_name=system_name,
+            ),
+        }
+
+    def _execute_stage2(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        context_text: str,
+        relevant_domains: List[str],
+        chunk_index: Optional[int],
+        estimated_tokens: int,
+    ) -> Dict[str, Any]:
+        stage2_prompt = self._build_stage2_prompt(
+            system_id=system_id,
+            system_name=system_name,
+            relevant_domains=relevant_domains,
+            context_text=context_text,
+        )
+        started_at = time.perf_counter()
+        response = llm_client._chat_raw(
+            [
+                {"role": "system", "content": "你是一个严谨的系统分析助手，擅长输出结构化系统画像建议。"},
+                {"role": "user", "content": stage2_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=2500,
+            retry_times=3,
+        )
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        usage = extract_usage_from_response(response)
+        self._log_chunk_metric(
+            stage="stage2",
+            chunk_index=chunk_index,
+            estimated_tokens=estimated_tokens,
+            latency_ms=latency_ms,
+            usage=usage,
+        )
+        stage2_text = response.choices[0].message.content
+        logger.info("LLM Stage2 原始响应: %s", stage2_text[:500])
+        stage2_parsed = llm_client.extract_json(stage2_text)
+        logger.info("LLM Stage2 解析结果: %s", json.dumps(stage2_parsed, ensure_ascii=False)[:500])
+        normalized_suggestions = self._normalize_stage2_suggestions(stage2_parsed)
+        logger.info("标准化后 suggestions: %s", json.dumps(normalized_suggestions, ensure_ascii=False)[:500])
+        return normalized_suggestions
+
+    def _call_llm(
+        self,
+        *,
+        system_id: str,
+        system_name: str,
+        context: Optional[str] = None,
+        context_bundle: Optional[SummaryContextBundle] = None,
+    ) -> Dict[str, Any]:
+        bundle = context_bundle or SummaryContextBundle(
+            static_prefix_text="",
+            chunkable_body_text=str(context or ""),
+        )
+        body_budget = self._calculate_body_budget(
+            system_id=system_id,
+            system_name=system_name,
+            static_prefix_text=bundle.static_prefix_text,
+        )
+        body_text = str(bundle.chunkable_body_text or "")
+        body_tokens = estimate_tokens(body_text)
+
+        if body_tokens <= body_budget:
+            context_text = self._compose_context_text(bundle=bundle)
+            stage1_result = self._execute_stage1(
+                system_id=system_id,
+                system_name=system_name,
+                context_text=context_text,
+                chunk_index=None,
+                estimated_tokens=body_tokens,
+            )
+            relevant_domains = stage1_result.get("relevant_domains") or list(PROFILE_DOMAIN_KEYS)
+            stage2_suggestions = self._execute_stage2(
+                system_id=system_id,
+                system_name=system_name,
+                context_text=context_text,
+                relevant_domains=relevant_domains,
+                chunk_index=None,
+                estimated_tokens=body_tokens,
+            )
+            return {
+                "suggestions": stage2_suggestions if isinstance(stage2_suggestions, dict) else {},
+                "relevant_domains": relevant_domains,
+                "related_systems": stage1_result.get("related_systems") or [],
+            }
+
+        if not getattr(settings, "ENABLE_LLM_CHUNKING", True):
+            raise ValueError("CHUNKING_DISABLED_OVERSIZE")
+
+        chunks = chunk_text(
+            body_text,
+            max_tokens=body_budget,
+            overlap_paragraphs=getattr(settings, "LLM_CHUNK_OVERLAP_PARAGRAPHS", 2),
+        )
+
+        stage1_results = []
+        for chunk in chunks:
+            context_text = self._compose_context_text(bundle=bundle, body_text=chunk.content)
+            stage1_results.append(
+                self._execute_stage1(
+                    system_id=system_id,
+                    system_name=system_name,
+                    context_text=context_text,
+                    chunk_index=chunk.chunk_index,
+                    estimated_tokens=chunk.estimated_tokens,
+                )
+            )
+
+        merged_stage1 = merge_stage1_responses(stage1_results)
+        relevant_domains = merged_stage1.get("relevant_domains") or list(PROFILE_DOMAIN_KEYS)
+        merged_suggestions: Dict[str, Any] = {}
+
+        for chunk in chunks:
+            context_text = self._compose_context_text(bundle=bundle, body_text=chunk.content)
+            chunk_suggestions = self._execute_stage2(
+                system_id=system_id,
+                system_name=system_name,
+                context_text=context_text,
+                relevant_domains=relevant_domains,
+                chunk_index=chunk.chunk_index,
+                estimated_tokens=chunk.estimated_tokens,
+            )
+            merged_suggestions = deep_merge(merged_suggestions, chunk_suggestions)
 
         return {
-            "suggestions": normalized_suggestions if isinstance(normalized_suggestions, dict) else {},
+            "suggestions": merged_suggestions,
             "relevant_domains": relevant_domains,
-            "related_systems": related_systems,
+            "related_systems": merged_stage1.get("related_systems") or [],
         }
 
 

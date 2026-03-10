@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4000"))
     LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))  # LLM请求超时时间（秒），异步任务需要更长时间
+    LLM_MAX_CONTEXT_TOKENS: int = int(os.getenv("LLM_MAX_CONTEXT_TOKENS", "32000"))
+    LLM_INPUT_MAX_TOKENS: int = int(os.getenv("LLM_INPUT_MAX_TOKENS", "25000"))
+    LLM_CHUNK_OVERLAP_PARAGRAPHS: int = int(os.getenv("LLM_CHUNK_OVERLAP_PARAGRAPHS", "2"))
+    ENABLE_LLM_CHUNKING: bool = _env_bool("ENABLE_LLM_CHUNKING", True)
 
     # Milvus向量数据库配置
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")

@@ -31,6 +31,13 @@ class EsbService:
     DEFAULT_SCOPE = "both"
     DEFAULT_STATUS_VALUE = "正常使用"
     DEFAULT_STATUS_SENTINEL = "__DEFAULT_STATUS__"
+    LEGACY_FIXED_HEADER = [
+        "序号", "投产日期", "系统标识", "系统名称", "系统负责人",
+        "服务场景码", "服务名称", "场景名称", "交易码", "交易名称",
+        "消费方系统标识", "消费方系统名称", "消费方系统负责人",
+        "操作类型", "调用日志检查(ESB项目组)", "是否延期(项目组)",
+        "确认投产（项目组）", "申请人", "需求编号", "备注",
+    ]
 
     REQUIRED_FIELDS = ("provider_system_id", "consumer_system_id", "service_name", "status")
 
@@ -39,6 +46,7 @@ class EsbService:
         "scenario_code": ["服务场景码", "场景码", "场景代码", "服务场景代码"],
         "provider_system_id": [
             "系统标识",
+            "服务方系统标识",
             "提供方系统标识",
             "提供方系统简称",
             "提供方系统编号",
@@ -221,17 +229,43 @@ class EsbService:
                 if candidate in header_map:
                     resolved[field] = candidate
                     break
+        if aliases is self.FIELD_ALIASES and self._is_interface_template_header(header_map):
+            resolved.setdefault("provider_system_id", "系统标识")
+            resolved.setdefault("provider_system_name", "系统名称")
+            resolved.setdefault("consumer_system_id", "系统标识#2")
+            resolved.setdefault("consumer_system_name", "系统名称#2")
         return resolved
+
+    def _looks_like_legacy_fixed_header_template(self, rows: List[List[Any]]) -> bool:
+        if len(rows) < 3:
+            return False
+
+        first_row_map = self._build_header_map(rows[0])
+        second_row_map = self._build_header_map(rows[1])
+        if not first_row_map or not second_row_map:
+            return False
+
+        has_group_header = "投产日期" in first_row_map and "调用方" in first_row_map
+        has_key_columns = all(
+            column in second_row_map
+            for column in ("系统标识", "交易名称", "消费方系统标识")
+        )
+        return has_group_header and has_key_columns
 
     def _rows_to_dicts(self, rows: List[List[Any]]) -> List[Dict[str, Any]]:
         if not rows:
             return []
-        header_row_index = self._select_header_row_index(rows)
-        header_row = rows[header_row_index]
-        header_map = self._build_header_map(header_row)
-        if not header_map:
-            return []
-        data_rows = rows[header_row_index + 1:]
+        if self._looks_like_legacy_fixed_header_template(rows):
+            header_row_index = 1
+            header_map = self._build_header_map(self.LEGACY_FIXED_HEADER)
+            data_rows = rows[header_row_index + 1:]
+        else:
+            header_row_index = self._select_header_row_index(rows)
+            header_row = rows[header_row_index]
+            header_map = self._build_header_map(header_row)
+            if not header_map:
+                return []
+            data_rows = rows[header_row_index + 1:]
         result = []
         for row_no, row in enumerate(data_rows, start=header_row_index + 2):
             if not row or not any(cell is not None and str(cell).strip() != "" for cell in row):

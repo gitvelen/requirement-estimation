@@ -13,6 +13,7 @@
 - **R6**（追溯）：任何 REQ 编号调整后，必须同步更新 `plan.md` 的"任务关联 REQ/覆盖矩阵"，并做一次"引用存在性"自检
 - **R7**（实现）：开始任何实现前，必须建立TodoList，逐项勾选完成；完成后更新TodoList状态
 - **R8**（前端质量）：页面级改动必须至少包含 1 条“首屏渲染不崩溃”测试；`no-use-before-define` 视为阻断项，不得以 warning 放行
+- **R9**（配置）：必须明确区分“需求目标模型口径”“样例配置文件”“当前部署主机实际配置源”；跨阶段文档只允许一套 canonical 模型名
 
 ---
 
@@ -196,3 +197,28 @@
   - `cd frontend && npm run lint:system-profile-import`
 - **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R8`）
 - **证据/关联**：`frontend/src/pages/SystemProfileImportPage.js`，`frontend/src/__tests__/systemProfileImportPage.render.test.js`
+
+---
+
+### 2026-03-09｜模型口径与部署环境口径混写，导致跨阶段文档漂移并误导发布（需求/部署/配置）
+- **标签**：需求、部署、配置、文档
+- **触发（事实）**：v2.6 的 `CR/proposal` 中同时出现了 `Qwen3-32B` 与 `Qwen3-32B-local` 两种写法；后续 `requirements/design/plan/test_report/deployment` 又把 Embedding 从 `Qwen3-Embedding-8B` 漂移成 `Qwen3-Embedding`，并进一步把内网样例文件 `.env.backend*` 误当成这台外网服务器的默认发布配置源。
+- **根因**：
+  1. 同一需求在上游文档中存在两套模型命名，后续阶段没有先冻结 canonical 名称再落盘
+  2. 下游文档编写时直接复用了 `.env.backend*` 的示例值，等于让样例文件反向定义了需求口径
+  3. Deployment 文档没有明确区分“需求目标模型口径”“内网样例配置”“当前主机实际运行配置源”
+  4. 缺少跨阶段一致性门禁，未对 `CR -> proposal -> requirements -> design -> plan -> test_report -> deployment -> .env.backend*` 做模型名与配置源的统一校验
+- **影响**：
+  - 文档链路内同一需求出现多套模型名，需求、设计、测试、部署无法保持单一真相源
+  - 外网服务器被错误切到内网样例配置，造成部署口径与机器实际环境不符
+- **改进行动（可执行）**：
+  1. 在 Proposal 或 CR 固化一张“canonical 模型/配置口径表”，明确 `LLM_MODEL`、`EMBEDDING_MODEL`、配置源、适用环境
+  2. 进入 Requirements/Design 前执行跨文件一致性检查：`rg -n "Qwen3-32B|Qwen3-32B-local|Qwen3-Embedding-8B|Qwen3-Embedding|\\.env\\.backend|docker-compose.yml" docs/<版本号> .env.backend*`
+  3. Deployment 文档必须显式分开写“需求目标口径”和“当前部署主机实际运行配置”，不得混写
+  4. 发布后除健康检查外，必须补一条应用内配置核验：`docker exec <container> /app/.venv/bin/python -c "from backend.config.config import settings; ..."`
+- **验证方式（可复现）**：
+  - `rg -n "Qwen3-32B|Qwen3-32B-local|Qwen3-Embedding-8B|Qwen3-Embedding" docs/v2.6 .env.backend .env.backend.example .env.backend.internal`
+  - `docker exec requirement-backend /app/.venv/bin/python -c "from backend.config.config import settings; print(settings.DASHSCOPE_API_BASE); print(settings.LLM_MODEL); print(settings.EMBEDDING_MODEL)"`
+  - `docker-compose config | rg -n "DASHSCOPE_API_KEY|ADMIN_API_KEY|JWT_SECRET|KNOWLEDGE_ENABLED|KNOWLEDGE_VECTOR_STORE"`
+- **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R9`，建议纳入 Proposal/Deployment 阶段门禁）
+- **证据/关联**：`docs/v2.6/cr/CR-20260309-001.md`、`docs/v2.6/proposal.md`、`docs/v2.6/requirements.md`、`docs/v2.6/deployment.md`、`docs/部署记录.md`
