@@ -1,0 +1,138 @@
+diff --git a/backend/config/config.py b/backend/config/config.py
+index 818bd1b..2ccfa00 100755
+--- a/backend/config/config.py
++++ b/backend/config/config.py
+@@ -36,66 +36,69 @@ class Settings(BaseSettings):
+         origins_str = os.getenv("ALLOWED_ORIGINS", "http://172.18.121.196,http://172.18.121.196:80")
+         return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+ 
+-    # 阿里云大模型配置
+-    DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
+-    DASHSCOPE_API_BASE: str = os.getenv("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+-    DASHSCOPE_EMBEDDING_API_BASE: str = os.getenv("DASHSCOPE_EMBEDDING_API_BASE", "").strip()
+-    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo")
+-    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+-    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4000"))
+-    LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))  # LLM请求超时时间（秒），异步任务需要更长时间
+-    LLM_MAX_CONTEXT_TOKENS: int = int(os.getenv("LLM_MAX_CONTEXT_TOKENS", "32000"))
+-    LLM_INPUT_MAX_TOKENS: int = int(os.getenv("LLM_INPUT_MAX_TOKENS", "25000"))
+-    LLM_CHUNK_OVERLAP_PARAGRAPHS: int = int(os.getenv("LLM_CHUNK_OVERLAP_PARAGRAPHS", "2"))
+-    ENABLE_LLM_CHUNKING: bool = _env_bool("ENABLE_LLM_CHUNKING", True)
++    # 阿里云大模型配置
++    DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
++    DASHSCOPE_API_BASE: str = os.getenv("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
++    DASHSCOPE_EMBEDDING_API_BASE: str = os.getenv("DASHSCOPE_EMBEDDING_API_BASE", "").strip()
++    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo")
++    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
++    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4000"))
++    LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))  # LLM请求超时时间（秒），异步任务需要更长时间
++    LLM_MAX_CONTEXT_TOKENS: int = int(os.getenv("LLM_MAX_CONTEXT_TOKENS", "32000"))
++    LLM_INPUT_MAX_TOKENS: int = int(os.getenv("LLM_INPUT_MAX_TOKENS", "25000"))
++    LLM_CHUNK_OVERLAP_PARAGRAPHS: int = int(os.getenv("LLM_CHUNK_OVERLAP_PARAGRAPHS", "2"))
++    ENABLE_LLM_CHUNKING: bool = _env_bool("ENABLE_LLM_CHUNKING", True)
+ 
+     # Milvus向量数据库配置
+     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
+     MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
+     MILVUS_COLLECTION_NAME: str = "system_knowledge"
+ 
+-    # 知识库配置
+-    KNOWLEDGE_ENABLED: bool = os.getenv("KNOWLEDGE_ENABLED", "true").lower() == "true"
+-    # 向量存储后端：local（本地文件向量库）/ milvus（Milvus向量库，需配套MinIO等）
+-    KNOWLEDGE_VECTOR_STORE: str = os.getenv("KNOWLEDGE_VECTOR_STORE", "local").lower()
+-    EMBEDDING_API_BASE: str = os.getenv("EMBEDDING_API_BASE", "").strip()  # embedding独立网关（可选）
+-    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "auto").strip().lower()  # auto/openai/dashscope
+-    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")  # Embedding模型
+-    EMBEDDING_DIM: int = 1024  # 向量维度
++    # 知识库配置
++    KNOWLEDGE_ENABLED: bool = os.getenv("KNOWLEDGE_ENABLED", "true").lower() == "true"
++    # 向量存储后端：local（本地文件向量库）/ milvus（Milvus向量库，需配套MinIO等）
++    KNOWLEDGE_VECTOR_STORE: str = os.getenv("KNOWLEDGE_VECTOR_STORE", "local").lower()
++    EMBEDDING_API_BASE: str = os.getenv("EMBEDDING_API_BASE", "").strip()  # embedding独立网关（可选）
++    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "auto").strip().lower()  # auto/openai/dashscope
++    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")  # Embedding模型
++    EMBEDDING_DIM: int = 1024  # 向量维度
+     KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
+     KNOWLEDGE_SIMILARITY_THRESHOLD: float = 0.6  # 相似度阈值
+ 
+-    # 文件上传配置
+-    UPLOAD_DIR: str = "uploads"
+-    MAX_FILE_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10")) * 1024 * 1024  # 默认10MB
+-    SYSTEM_PROFILE_IMPORT_MAX_BYTES: int = int(
+-        os.getenv("SYSTEM_PROFILE_IMPORT_MAX_MB", "200")
+-    ) * 1024 * 1024
+-    KNOWLEDGE_IMPORT_MAX_BYTES: int = int(
+-        os.getenv("KNOWLEDGE_IMPORT_MAX_MB", "200")
+-    ) * 1024 * 1024
+-
+-    # 系统画像AI总结上下文配置（字符级）
+-    PROFILE_SUMMARY_CONTEXT_MAX_CHARS: int = int(
+-        os.getenv("PROFILE_SUMMARY_CONTEXT_MAX_CHARS", "120000")
+-    )
+-    PROFILE_SUMMARY_SAMPLE_MAX_ITEMS: int = int(
+-        os.getenv("PROFILE_SUMMARY_SAMPLE_MAX_ITEMS", "48")
+-    )
+-    PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS: int = int(
+-        os.getenv("PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS", "1200")
+-    )
+-
+-    # 非结构化文档切片配置
+-    KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE: int = int(
+-        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE", "1000")
+-    )
+-    KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP: int = int(
+-        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP", "150")
+-    )
+-    KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS: int = int(
+-        os.getenv("KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS", "2000")
+-    )
++    # ESB embedding 批次大小配置
++    ESB_EMBEDDING_BATCH_SIZE: int = int(os.getenv("ESB_EMBEDDING_BATCH_SIZE", "10"))
++
++    # 文件上传配置
++    UPLOAD_DIR: str = "uploads"
++    MAX_FILE_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10")) * 1024 * 1024  # 默认10MB
++    SYSTEM_PROFILE_IMPORT_MAX_BYTES: int = int(
++        os.getenv("SYSTEM_PROFILE_IMPORT_MAX_MB", "200")
++    ) * 1024 * 1024
++    KNOWLEDGE_IMPORT_MAX_BYTES: int = int(
++        os.getenv("KNOWLEDGE_IMPORT_MAX_MB", "200")
++    ) * 1024 * 1024
++
++    # 系统画像AI总结上下文配置（字符级）
++    PROFILE_SUMMARY_CONTEXT_MAX_CHARS: int = int(
++        os.getenv("PROFILE_SUMMARY_CONTEXT_MAX_CHARS", "120000")
++    )
++    PROFILE_SUMMARY_SAMPLE_MAX_ITEMS: int = int(
++        os.getenv("PROFILE_SUMMARY_SAMPLE_MAX_ITEMS", "48")
++    )
++    PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS: int = int(
++        os.getenv("PROFILE_SUMMARY_SAMPLE_ITEM_MAX_CHARS", "1200")
++    )
++
++    # 非结构化文档切片配置
++    KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE: int = int(
++        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_SIZE", "1000")
++    )
++    KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP: int = int(
++        os.getenv("KNOWLEDGE_UNSTRUCTURED_CHUNK_OVERLAP", "150")
++    )
++    KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS: int = int(
++        os.getenv("KNOWLEDGE_MAX_UNSTRUCTURED_CHUNKS", "2000")
++    )
+ 
+     @property
+     def ALLOWED_EXTENSIONS(self) -> set:
+diff --git a/backend/service/esb_service.py b/backend/service/esb_service.py
+index d969edd..23af880 100644
+--- a/backend/service/esb_service.py
++++ b/backend/service/esb_service.py
+@@ -496,7 +496,7 @@ class EsbService:
+             try:
+                 embedding_service = self._ensure_embedding_service()
+                 texts = [self._build_entry_text(e) for e in entries]
+-                embeddings = embedding_service.batch_generate_embeddings(texts)
++                embeddings = embedding_service.batch_generate_embeddings(texts, batch_size=settings.ESB_EMBEDDING_BATCH_SIZE)
+                 for entry, emb in zip(entries, embeddings):
+                     entry["embedding"] = emb
+             except Exception as exc:

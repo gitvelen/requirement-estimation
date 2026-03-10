@@ -23,29 +23,16 @@ _phase: Deployment
 | 人类决策人 | User |
 | 最后更新 | 2026-03-10 |
 | 完成日期 | 2026-03-10 |
+| 发布日期 | 2026-03-10 |
 
 ## 变更摘要
-- 启动 v2.6 新版本迭代
-- 基线锁定 v2.5
-- 核心需求：文档分块处理以适配内网 LLM Token 限制（Qwen3-32B / Qwen3-Embedding-8B，最大上下文 32,000 tokens）
-- CR-20260309-001 已完成范围澄清，状态从 Idea 更新为 Accepted
-- 通过 ChangeManagement 阶段审查（第 1 轮），进入 Proposal 阶段
-- Proposal 第 2 轮走查发现 3 个 P1：测试口径冲突、回滚与无损目标冲突、分块算法上限不成立
-- Proposal 第 3 轮已修正上述 3 个 P1，并进入 Requirements 阶段
-- Requirements 第 1 轮已修正测试等级、失败语义、API/权限/持久化边界与字段契约问题，通过审查（P0=0, P1=0）
-- Design 第 1 轮已完成详细技术方案与自审，产出 `design.md` / `review_design.md`，通过追溯覆盖与 API 契约检查
-- Planning 第 1 轮已完成任务拆分与自审，产出 `plan.md` / `review_planning.md`，反向覆盖校验通过（REQ 11/11）
-- 已自动进入 Implementation 阶段
-- T001~T004 已完成：Token 预算/分块基座、LLM raw 调用、`profile_summary_service` 双路径与导入接口原文透传均已落地
-- T005 已完成：后端回归 `61 passed`，覆盖率 `92%`，无新增运行时依赖
-- T006 已完成：新增 `docs/v2.6/deployment.md`，并同步 `docs/技术方案设计.md`、`docs/接口文档.md`、`docs/部署记录.md`
-- Implementation 阶段产物已补齐：`implementation_checklist.md`、`review_implementation.md`、`test_report.md`
-- Testing 第 1 轮已完成并通过：`review_testing.md` 已收敛，项目级结果门禁为 `.venv/bin/python -m pytest -q --tb=short`=`210 passed`、`cd frontend && npm run build`=`Compiled successfully.`、`.venv/bin/python -m compileall -q backend`=退出码 0
-- Testing 预审阶段额外暴露 4 条既有 ESB 导入兼容性失败；已在 `backend/service/document_parser.py` 与 `backend/service/esb_service.py` 做最小兼容修复并复测通过
-- 已自动进入 Deployment 阶段
-- 已执行 STAGING 发布纠偏：`printf '2\n' | bash deploy-all.sh` 成功，buildx 不满足时已自动回退 classic builder；当前本机继续使用根 `.env` 外网配置，需求口径与部署口径已分离记录
-- 发布后 backend 已恢复健康，frontend 因 `build/` 目录重建导致 bind mount 持有旧目录，已额外执行 `docker-compose up -d --force-recreate frontend` 修复
-- 当前保持 `wait_confirm`，等待用户在 STAGING 验收并给出“通过/不通过”结论
+- v2.6 版本已完成并发布到 GitHub master 分支
+- 核心功能：文档分块处理以适配内网 LLM Token 限制（Qwen3-32B / Qwen3-Embedding-8B，最大上下文 32,000 tokens）
+- CR-20260309-001 已完成实施并上线（状态：Implemented）
+- 新增 ESB 导入 HTTP 400 错误修复（可配置 embedding 批次大小）
+- 所有测试通过：后端 210 passed，前端编译成功，覆盖率 92%
+- STAGING 环境验收通过，代码已推送到 GitHub master 分支
+- 版本状态：Released（已发布）
 
 ## 目标与成功指标
 | ID | 指标定义（可判定） | 基线（v2.5） | 目标（v2.6） | 统计窗口 | 数据源 |
@@ -66,7 +53,7 @@ _phase: Deployment
 ## Active CR 列表（🔴 MUST，CR场景）
 | CR-ID | 状态 | 标题 | 影响面（文档/模块/ID） | 链接 |
 |---|---|---|---|---|
-| CR-20260309-001 | Implemented | 文档分块处理以适配内网 LLM Token 限制 | backend/api / backend/utils / backend/service / backend/config | `cr/CR-20260309-001.md` |
+| - | - | 无 Active CR | - | - |
 
 ## Idea池（可选，非Active）
 | CR-ID | 状态 | 标题 | 提出日期 | 优先级 | 链接 |
@@ -86,7 +73,9 @@ _phase: Deployment
 
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠"文件存在性"推断导致误判。
-- 当前处于 Deployment 阶段：STAGING 已发布并完成基础健康检查，等待用户验收结论。
+- v2.6 版本已完成所有阶段并发布到 GitHub master 分支。
+- 版本状态：Closed（已关闭），所有 CR 已实施完成。
+- 下一版本：v2.7（如有新需求）
 
 ---
 
@@ -101,7 +90,7 @@ _phase: Deployment
 | Planning | Implementation | 2026-03-09 | Planning 第 1 轮自审通过（P0=0, P1=0），计划反向覆盖校验通过 | Codex | 形成 `plan.md` v0.1 / `review_planning.md`，将实现拆分为 T001~T006，覆盖 REQ 11/11 |
 | Implementation | Testing | 2026-03-09 | 完成 T001~T006 与 Implementation 自审收敛，Testing 输入已就绪 | Codex | 形成 `implementation_checklist.md` / `review_implementation.md` / `test_report.md` / `deployment.md`，v2.6 定向回归 61 passed，覆盖率 92% |
 | Testing | Deployment | 2026-03-09 | Testing 第 1 轮审查收敛并通过项目级结果门禁 | Codex | 新增 `review_testing.md` / `spotcheck_testing_cr-20260309-001.md`，修复 4 条 ESB 兼容性阻断后恢复 full pytest `210 passed`，前端 build 与 backend compileall 均通过 |
-| Deployment | Deployment | 2026-03-09 | 完成 STAGING 自动发布并进入验收等待 | Codex | 先误将本机切到 `.env.backend`，后恢复外网服务器默认根 `.env`；当前 STAGING 实际运行 `qwen-turbo` / `text-embedding-v2`，需求文档口径已修正为 `Qwen3-32B` / `Qwen3-Embedding-8B` |
+| Deployment | Closed | 2026-03-10 | v2.6 版本完成验收并发布到 GitHub master | User+Claude | ESB 导入修复已验证通过，代码已推送远端，版本正式关闭 |
 
 ## CR状态更新记录（部署后填写）
 | CR-ID | 之前状态 | 之后状态 | 上线日期 | 备注 |
