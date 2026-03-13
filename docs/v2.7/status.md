@@ -1,19 +1,19 @@
 ---
 _baseline: v2.6
 _current: HEAD
-_workflow_mode: manual
+_workflow_mode: auto
 _run_status: running
 _change_status: in_progress
 _change_level: major
 _review_round: 0
-_phase: Requirements
+_phase: Design
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.7 |
 | 变更目录 | `docs/v2.7/` |
-| 当前阶段 | Requirements |
+| 当前阶段 | Design |
 | 变更状态 | In Progress |
 | 变更分级 | major |
 | 基线版本（对比口径） | `v2.6` |
@@ -24,12 +24,12 @@ _phase: Requirements
 | 最后更新 | 2026-03-13 |
 
 ## 变更摘要
-- v2.7 已完成 Proposal 阶段基线提交，当前进入 Requirements 阶段；Requirements 阶段审查轮次已重置
+- v2.7 已完成 Requirements 阶段基线提交，当前进入 Design 阶段；Design 阶段审查轮次已重置
 - Proposal 范围已从旧版“5 个 Skill + 脚本式提取”升级为“6 个内置 Skill + Skill Runtime + Per-System Memory 资产层”
 - 新增管理员“服务治理”页导入能力，要求以 D3 为主更新画像，并对 D1/D4 形成按场景受控的语义更新结果
 - 新增系统清单导入后的画像联动能力，但已收敛为“仅首次初始化或空画像时初始化写入，非空画像跳过且不进入 PM 建议流”
 - 明确系统识别必须输出直接判定，功能点拆解必须读取画像与 Memory，并将 AI 评估后的修改继续沉淀为 Memory
-- `proposal.md` 已同步到 v0.6；`requirements.md` 已升级到 v0.12，`review_requirements.md` 已完成第 6 轮复审并收敛，当前进入 Requirements 阶段
+- `proposal.md` 已同步到 v0.6；`requirements.md` 已升级到 v0.12，`review_requirements.md` 已完成第 6 轮复审并收敛；`design.md` 已升级到 v0.3，`review_design.md` 已完成第 3 轮自审并通过，当前进入 Design 阶段
 
 ## 目标与成功指标
 | ID | 指标定义（可判定） | 基线（v2.6） | 目标（v2.7） | 统计窗口 | 数据源 |
@@ -49,7 +49,7 @@ _phase: Requirements
 - 实现清单：`implementation_checklist.md`
 - 重构对照：`refactoring_checklist.md`
 - 变更单（CR）：`cr/CR-*.md`
-- 审查：`review_requirements.md`
+- 审查：`review_design.md`
 - 测试报告：`test_report.md`
 - 部署：`deployment.md`
 
@@ -77,7 +77,7 @@ _phase: Requirements
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠“文件存在性”推断导致误判。
 - 第 2 轮 Requirements 复审结论已被用户新增范围正式作废；Requirements 以 2026-03-13 的第 6 轮复审结果为准，并已在同日获人工确认进入 Design。
-- 当前处于 Requirements 阶段：需求收敛结果将作为后续 Design / Planning / Implementation 的基线输入。
+- 当前处于 Design 阶段：设计文档已收敛，后续将进入 Planning 做任务拆解和验证口径固化。
 
 ---
 
@@ -86,6 +86,7 @@ _phase: Requirements
 |---|---|---|---|---|---|
 | - | Proposal | 2026-03-12 | 新版本启动初始化 | User | 基线锁定 v2.6，无 Active CR |
 | Proposal | Requirements | 2026-03-12 | Proposal 第 4 轮复审收敛且用户确认进入下一阶段 | User + Codex | 开始按分段走查协议编写 `requirements.md` |
+| Requirements | Design | 2026-03-13 | Requirements 第 6 轮复审收敛，且用户确认进入 Design | User + Codex | 系统清单联动已收敛为“首次初始化/空画像补写，非空画像跳过” |
 | Proposal | Requirements | 2026-03-12 | Proposal 第 4 轮复审收敛且用户确认进入下一阶段 | User + Codex | 开始按分段走查协议编写 `requirements.md` |
 | Requirements | Design | 2026-03-13 | Requirements 第 6 轮复审收敛，且用户确认进入 Design | User + Codex | 系统清单联动已收敛为“首次初始化/空画像补写，非空画像跳过” |
 | Design | Planning | 2026-03-13 | Design 第 3 轮复审通过，且用户确认进入 Planning | User + Codex | 开始编写 `plan.md`，按 requirements/design 做任务反向覆盖与验证命令拆解 |
