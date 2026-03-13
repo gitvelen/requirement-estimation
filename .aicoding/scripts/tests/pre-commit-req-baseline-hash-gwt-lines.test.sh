@@ -32,6 +32,7 @@ mkdir -p scripts/git-hooks scripts/lib docs/v1.0
 cp "$PRE_COMMIT_SRC" scripts/git-hooks/pre-commit
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "${ROOT_DIR}/scripts/lib/common.sh" scripts/lib/common.sh
+cp "${ROOT_DIR}/scripts/lib/validation.sh" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/pre-commit
 
 mkdir -p src
@@ -76,6 +77,11 @@ cat > docs/v1.0/review_implementation.md <<EOF
 | GWT-ID | REQ-ID | 判定 | 证据类型 | 证据（可复现） | 备注 |
 |---|---|---|---|---|---|
 | GWT-REQ-001-01 | REQ-001 | ✅ | CODE_REF | \`src/example.ts:1\` | 风险：示例 |
+
+## 证据清单
+### 1. 验证命令
+**命令：** echo "test"
+**输出：** test
 
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_STAGE: implementation

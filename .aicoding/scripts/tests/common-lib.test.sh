@@ -120,6 +120,15 @@ aicoding_detect_version_dir "docs/v1.0/design.md"
 aicoding_detect_version_dir "src/main.py"
 [ "$AICODING_VERSION_DIR" = "docs/v1.0/" ] && pass "version dir fallback find" || fail "fallback expected docs/v1.0/, got: $AICODING_VERSION_DIR"
 
+OLD_CLAUDE_PROJECT_DIR=${CLAUDE_PROJECT_DIR:-}
+OLD_PWD=$(pwd)
+cd "$tmp_dir"
+unset CLAUDE_PROJECT_DIR
+aicoding_detect_version_dir "src/main.py"
+[ "$AICODING_VERSION_DIR" = "docs/v1.0/" ] && pass "version dir fallback without CLAUDE_PROJECT_DIR" || fail "fallback without CLAUDE_PROJECT_DIR expected docs/v1.0/, got: $AICODING_VERSION_DIR"
+export CLAUDE_PROJECT_DIR="$OLD_CLAUDE_PROJECT_DIR"
+cd "$OLD_PWD"
+
 # ============================================================
 # Test: aicoding_summary_value_from_file
 # ============================================================
@@ -184,12 +193,12 @@ _phase: Implementation
 ## Active CRs
 | CR-ID | 状态 |
 |---|---|
-| CR-001 | active |
-| CR-002 | closed |
+| CR-20260306-001 | Accepted |
+| CR-20260306-002 | Closed |
 EOF
 
 crs=$(aicoding_active_crs "$tmp_dir/docs/v1.0/status.md")
-echo "$crs" | grep -q "CR-001" && pass "CR-001 is active" || fail "CR-001 should be active"
+echo "$crs" | grep -q "CR-20260306-001" && pass "CR-20260306-001 is active" || fail "CR-20260306-001 should be active"
 
 # ============================================================
 # Summary

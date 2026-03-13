@@ -65,11 +65,11 @@ EOF
 
 git add docs/v1.0/status.md
 
-bash scripts/git-hooks/pre-commit >/tmp/aicoding-e2e-precommit.log 2>&1 || fail "pre-commit failed in e2e major flow"
+bash scripts/git-hooks/pre-commit >"$tmp_dir/aicoding-e2e-precommit.log" 2>&1 || fail "pre-commit failed in e2e major flow"
 
 msg_file=$(mktemp)
 echo "feat: e2e major flow" > "$msg_file"
-bash scripts/git-hooks/commit-msg "$msg_file" >/tmp/aicoding-e2e-commitmsg.log 2>&1 || fail "commit-msg failed in e2e major flow"
+bash scripts/git-hooks/commit-msg "$msg_file" >"$tmp_dir/aicoding-e2e-commitmsg.log" 2>&1 || fail "commit-msg failed in e2e major flow"
 rm -f "$msg_file"
 
 git commit -q -m "feat: e2e major flow"

@@ -13,6 +13,7 @@ else
   # shellcheck source=../lib/common.sh
   source "${SCRIPT_DIR}/../lib/common.sh"
 fi
+aicoding_load_config
 
 # --- Git-Hook 1: commit-msg 阶段前缀校验 ---
 MSG=$(head -1 "$1")
@@ -29,9 +30,19 @@ else
   exit 1
 fi
 
-# --- Hotfix 场景强制 fix: 前缀 ---
+# --- 单版本策略：禁止一次提交同时触碰多个版本目录 ---
 STAGED=$(git diff --cached --name-only)
-HOTFIX_VERSION_DIR=$(echo "$STAGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+aicoding_detect_version_dir_from_files "$STAGED" || true
+VERSION_DIR_COUNT=$(printf '%s\n' "${AICODING_VERSION_DIRS:-}" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "${VERSION_DIR_COUNT:-0}" -gt 1 ]; then
+  echo "❌ 检测到多版本目录同时暂存；当前框架仅支持单版本提交"
+  echo "   命中的版本目录："
+  printf '%s\n' "$AICODING_VERSION_DIRS" | sed 's/^/     /'
+  exit 1
+fi
+
+# --- Hotfix 场景强制 fix: 前缀 ---
+HOTFIX_VERSION_DIR="${AICODING_VERSION_DIR:-}"
 if [ -n "$HOTFIX_VERSION_DIR" ]; then
   HOTFIX_STATUS_FILE="${HOTFIX_VERSION_DIR}status.md"
   HOTFIX_CHANGE_LEVEL=""
@@ -82,21 +93,51 @@ cr_scope_matches_file() {
 }
 
 # --- Git-Hook 2: commit-msg CR-ID 校验（条件触发） ---
-# 优先使用本次暂存命中的 docs/vX.Y/；若未命中（常见于纯代码提交），
-# 回退到最新版本目录的 status.md 作为 Active CR 真相源，避免 code-only 提交漏校验。
-STAGED=$(git diff --cached --name-only)
-VERSION_DIR=$(echo "$STAGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+# 严格从暂存区探测版本目录，绑定当前变更所属版本，防止 code-only commit 绕过 CR 追溯
+VERSION_DIR="${AICODING_VERSION_DIR:-}"
+STATUS_FILE=""
+
 if [ -z "$VERSION_DIR" ]; then
-  VERSION_DIR=$(aicoding_latest_version_dir "$(aicoding_repo_root)" || true)
-fi
-if [ -n "$VERSION_DIR" ]; then
-  STATUS_FILE="${VERSION_DIR}status.md"
+  # 从暂存区探测版本目录
+  staged_status=""
+  while IFS= read -r staged_file; do
+    [ -z "$staged_file" ] && continue
+    [ "$(basename "$staged_file")" = "status.md" ] || continue
+    aicoding_extract_version_dir_from_path "$staged_file" >/dev/null 2>&1 || continue
+    staged_status="$staged_file"
+    break
+  done < <(git diff --cached --name-only --diff-filter=AM)
+  if [ -n "$staged_status" ]; then
+    VERSION_DIR=$(dirname "$staged_status")/
+    STATUS_FILE="$staged_status"
+  else
+    # 尝试从其他暂存的版本文档推断
+    any_staged_doc=""
+    while IFS= read -r staged_file; do
+      [ -z "$staged_file" ] && continue
+      aicoding_extract_version_dir_from_path "$staged_file" >/dev/null 2>&1 || continue
+      any_staged_doc="$staged_file"
+      break
+    done < <(git diff --cached --name-only --diff-filter=AM)
+    if [ -n "$any_staged_doc" ]; then
+      VERSION_DIR=$(aicoding_extract_version_dir_from_path "$any_staged_doc")
+      STATUS_FILE="${VERSION_DIR}status.md"
+    else
+      # 纯代码提交：尝试从最新版本目录推断（防止绕过 CR 追溯）
+      latest_version_dir=$(aicoding_latest_version_dir "$REPO_ROOT" || true)
+      if [ -n "$latest_version_dir" ]; then
+        VERSION_DIR="${latest_version_dir}"
+        STATUS_FILE="${VERSION_DIR}status.md"
+      fi
+    fi
+  fi
 else
-  # 无可用版本目录时，跳过 CR-ID 校验
-  STATUS_FILE=""
+  STATUS_FILE="${VERSION_DIR}status.md"
 fi
-if [ -n "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ]; then
-  STATUS_CONTENT=$(git show ":$STATUS_FILE" 2>/dev/null || cat "$STATUS_FILE")
+
+if [ -n "$STATUS_FILE" ] && aicoding_staged_exists "$STATUS_FILE"; then
+  # 严格从暂存区读取，不回退到工作树
+  STATUS_CONTENT=$(git show ":$STATUS_FILE" 2>/dev/null)
   ACTIVE_CRS=$(echo "$STATUS_CONTENT" | awk -F'|' '
     {
       gsub(/^[ \t]+|[ \t]+$/, "", $2);
@@ -115,7 +156,12 @@ if [ -n "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ]; then
     while IFS= read -r CR; do
       [ -z "$CR" ] && continue
       CR_FILE="${VERSION_DIR}cr/${CR}.md"
-      CR_CONTENT=$(git show ":$CR_FILE" 2>/dev/null || cat "$CR_FILE" 2>/dev/null || true)
+      # 严格从暂存区读取 CR 文件，不回退到工作树
+      if aicoding_staged_exists "$CR_FILE"; then
+        CR_CONTENT=$(git show ":$CR_FILE" 2>/dev/null)
+      else
+        CR_CONTENT=""
+      fi
       [ -n "$CR_CONTENT" ] || continue
 
       tmp_cr="${tmp_dir}/${CR}.md"

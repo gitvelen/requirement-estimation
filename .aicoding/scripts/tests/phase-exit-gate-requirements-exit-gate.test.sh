@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PHASE_EXIT_SRC="${ROOT_DIR}/scripts/cc-hooks/phase-exit-gate.sh"
 LIB_SRC="${ROOT_DIR}/scripts/lib/review_gate_common.sh"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -32,6 +33,7 @@ mkdir -p scripts/cc-hooks scripts/lib docs/v1.0
 cp "$PHASE_EXIT_SRC" scripts/cc-hooks/phase-exit-gate.sh
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/cc-hooks/phase-exit-gate.sh
 
 cat > docs/v1.0/status.md <<'EOF_STATUS'

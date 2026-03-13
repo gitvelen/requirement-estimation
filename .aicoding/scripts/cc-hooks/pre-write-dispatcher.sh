@@ -7,6 +7,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../lib/review_gate_common.sh
 source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
 source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/../lib/validation.sh"
 aicoding_load_config
 
 aicoding_parse_cc_input
@@ -20,9 +21,9 @@ aicoding_parse_cc_input
 if echo "$CC_FILE_PATH" | grep -qE 'review_[a-z_]+\.md$'; then
   if [ "$CC_TOOL_NAME" = "Write" ]; then
     if [ -f "$CC_FILE_PATH" ]; then
-      EXISTING_ROUNDS=$(grep -c '## [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*第.*轮' "$CC_FILE_PATH" 2>/dev/null || echo 0)
+      EXISTING_ROUNDS=$(grep -cE '^#{2,3} .*(第.*轮|[0-9]{4}-[0-9]{2}-[0-9]{2}.*第.*轮)' "$CC_FILE_PATH" 2>/dev/null || echo 0)
       if [ "$EXISTING_ROUNDS" -gt 0 ]; then
-        NEW_ROUNDS=$(echo "$CC_CONTENT" | grep -c '## [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*第.*轮' 2>/dev/null || echo 0)
+        NEW_ROUNDS=$(echo "$CC_CONTENT" | grep -cE '^#{2,3} .*(第.*轮|[0-9]{4}-[0-9]{2}-[0-9]{2}.*第.*轮)' 2>/dev/null || echo 0)
         if [ "$NEW_ROUNDS" -lt "$EXISTING_ROUNDS" ]; then
           aicoding_block "review 文件已有 ${EXISTING_ROUNDS} 轮审查记录，新内容只有 ${NEW_ROUNDS} 轮。审查记录必须追加，不得覆盖。请使用 Edit 工具在文件末尾追加新一轮审查。"
         fi
@@ -59,6 +60,36 @@ if aicoding_detect_version_dir "$CC_FILE_PATH"; then
 fi
 
 # ============================================================
+# Gate 2.5: hotfix 前置边界检查
+# 目标：在 CC 写入期尽早阻断超出 hotfix 边界的操作，降低回滚成本
+# ============================================================
+if [ "$HAS_PHASE" = true ]; then
+  CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
+  if [ "$CHANGE_LEVEL" = "hotfix" ]; then
+    aicoding_bool_is_true "$AICODING_ENABLE_HOTFIX" || {
+      aicoding_block "_change_level=hotfix 但配置 enable_hotfix=false"
+    }
+
+    HOTFIX_CHANGED_COUNT=$(aicoding_worktree_changed_file_count "$CC_FILE_PATH")
+    if [ "$HOTFIX_CHANGED_COUNT" -gt "${AICODING_HOTFIX_MAX_DIFF_FILES}" ]; then
+      aicoding_block "hotfix 待变更文件数为 ${HOTFIX_CHANGED_COUNT}（已计入当前写入 ${CC_FILE_PATH}），超过 hotfix_max_diff_files=${AICODING_HOTFIX_MAX_DIFF_FILES}。请缩小范围或升级为 major/minor。"
+    fi
+
+    if hotfix_reqc_boundary_content_match "$CC_CONTENT"; then
+      aicoding_block "hotfix 触碰 REQ-C 边界（当前写入内容命中 REQ-C/GWT-REQ-C 标识）。请升级为 major，并走完整阶段收敛。"
+    fi
+
+    if hotfix_sensitive_boundary_path_match "$CC_FILE_PATH"; then
+      aicoding_block "hotfix 不得涉及 API/DB schema/权限安全变更（文件路径命中敏感边界：${CC_FILE_PATH}）。请升级为 major。"
+    fi
+
+    if hotfix_sensitive_boundary_content_match "$CC_CONTENT"; then
+      aicoding_block "hotfix 不得涉及 API/DB schema/权限安全变更（当前写入内容命中敏感关键词：${CC_FILE_PATH}）。请升级为 major。"
+    fi
+  fi
+fi
+
+# ============================================================
 # Gate 2: 阶段推进拦截（原 phase-gate.sh）
 # 仅 status.md + 人工介入期
 # ============================================================
@@ -83,10 +114,10 @@ fi
 
 # ============================================================
 # Gate 3: 文档作用域控制（原 doc-scope-guard.sh）
-# 仅 docs/vX.Y/ 下的文件
+# 仅版本目录下的文件
 # ============================================================
 if [ "$HAS_PHASE" = true ]; then
-  if echo "$CC_FILE_PATH" | grep -qE 'docs/v[0-9]+\.[0-9]+/'; then
+  if aicoding_is_versioned_doc_path "$CC_FILE_PATH"; then
     case "$AICODING_PHASE" in
       ChangeManagement)
         ALLOWED="status.md|review_|cr/" ;;
@@ -104,6 +135,8 @@ if [ "$HAS_PHASE" = true ]; then
         ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
       Deployment)
         ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
+      Hotfix)
+        ALLOWED="status.md|review_|cr/" ;;
       *) ALLOWED="" ;;
     esac
 
@@ -125,87 +158,9 @@ if [ "$HAS_PHASE" = true ]; then
 fi
 
 # ============================================================
-# Gate 4: 阶段入口门禁（原 phase-entry-gate.sh）
-# review_*.md 和 status.md 不触发
-# 当核心文档被修改时，清除入口缓存以强制重新读取
+# Gate 4: 阶段入口提示
+# 入口必读清单仅在 SessionStart 注入上下文，不再维护跨调用读取状态。
 # ============================================================
-if [ "$HAS_PHASE" = true ] && [ "$HAS_VERSION" = true ]; then
-  # 核心文档被修改时，清除该版本所有阶段的入口缓存
-  GATE_BASENAME=$(basename "$CC_FILE_PATH")
-  case "$GATE_BASENAME" in
-    requirements.md|design.md|plan.md|proposal.md|status.md)
-      VERSION_SLUG=$(echo "$AICODING_VERSION_DIR" | tr '/' '_')
-      rm -f /tmp/aicoding-entry-passed-*-"${VERSION_SLUG}"-* 2>/dev/null || true
-      ;;
-  esac
-fi
-if [ "$HAS_PHASE" = true ]; then
-  BASENAME=$(basename "$CC_FILE_PATH")
-  case "$BASENAME" in
-    review_*|status.md) ;; # 跳过
-    *)
-      CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
-      [ "$CHANGE_LEVEL" = "hotfix" ] && SHOULD_CHECK=false
-      IS_VERSIONED_DOC=false
-      echo "$CC_FILE_PATH" | grep -qE 'docs/v[0-9]+\.[0-9]+/' && IS_VERSIONED_DOC=true
-
-      if [ "$CHANGE_LEVEL" != "hotfix" ]; then
-        SHOULD_CHECK=false
-        case "$AICODING_PHASE" in
-          Implementation)
-            if [ "$IS_VERSIONED_DOC" = true ]; then
-              SHOULD_CHECK=true
-            elif ! echo "$CC_FILE_PATH" | grep -q 'docs/'; then
-              SHOULD_CHECK=true
-            fi ;;
-          Deployment)
-            if [ "$IS_VERSIONED_DOC" = true ]; then
-              SHOULD_CHECK=true
-            elif echo "$CC_FILE_PATH" | grep -q 'docs/'; then
-              SHOULD_CHECK=true
-            fi ;;
-          *)
-            [ "$IS_VERSIONED_DOC" = true ] && SHOULD_CHECK=true ;;
-        esac
-      fi
-
-      if [ "$SHOULD_CHECK" = true ]; then
-        VERSION_SLUG=$(echo "$AICODING_VERSION_DIR" | tr '/' '_')
-        SESSION_KEY=$(aicoding_session_key)
-        GATE_PASSED="/tmp/aicoding-entry-passed-${AICODING_PHASE}-${VERSION_SLUG}-${SESSION_KEY}"
-        if [ ! -f "$GATE_PASSED" ]; then
-          REQUIRED_PATTERNS=$(aicoding_phase_entry_required "$AICODING_PHASE" "$AICODING_VERSION_DIR")
-
-          if [ -n "$REQUIRED_PATTERNS" ]; then
-            SESSION_KEY=$(aicoding_session_key)
-            READ_LOG="/tmp/aicoding-reads-${SESSION_KEY}.log"
-            [ ! -f "$READ_LOG" ] && READ_LOG_CONTENT="" || READ_LOG_CONTENT=$(< "$READ_LOG")
-            MISSING=""
-            while IFS= read -r pattern; do
-              [ -z "$pattern" ] && continue
-              if ! echo "$READ_LOG_CONTENT" | grep -qF "$pattern"; then
-                MISSING="${MISSING}\n  - ${pattern}"
-              fi
-            done <<< "$REQUIRED_PATTERNS"
-
-            if [ -n "$MISSING" ]; then
-              ESCAPED=$(echo -e "$MISSING" | tr '\n' ' ')
-              WARN_MSG="阶段入口门禁（${AICODING_PHASE}）：写入产出物前必须先读取以下文件：${ESCAPED}请先 Read 上述文件，再继续写入。"
-              aicoding_load_config
-              if [ "$AICODING_ENTRY_GATE_MODE" = "block" ]; then
-                aicoding_block "${WARN_MSG}"
-              else
-                echo "⚠️  [CC-7] ${WARN_MSG}" >&2
-                aicoding_gate_log_warning "${WARN_MSG}"
-              fi
-            fi
-            touch "$GATE_PASSED"
-          fi
-        fi
-      fi
-    ;;
-  esac
-fi
 
 # ============================================================
 # Gate 5: 阶段出口门禁（原 phase-exit-gate.sh）
@@ -215,44 +170,36 @@ fi
 _validate_minor_review_file() {
   local file="$1"
   [ -f "$file" ] || return 1
-  grep -q 'REVIEW-SUMMARY-BEGIN' "$file" || return 1
-  grep -q 'REVIEW_RESULT:[[:space:]]*pass' "$file" || return 1
-  grep -q 'REQ_BASELINE_HASH:' "$file" || return 1
+
+  # 使用与 validation.sh 一致的验证逻辑
+  local content
+  content=$(cat "$file")
+  local reason
+  reason=$(validate_minor_review_content "$content") || {
+    case "$reason" in
+      content_empty)       echo "❌ ${file} 不存在或为空" >&2 ;;
+      no_summary_block)    echo "❌ ${file} 缺少 REVIEW-SUMMARY-BEGIN/END 机器可读块" >&2 ;;
+      result_not_pass:*)   echo "❌ ${file} REVIEW_RESULT=${reason#result_not_pass:}（期望 pass）" >&2 ;;
+      no_req_hash)         echo "❌ ${file} 缺少 REQ_BASELINE_HASH" >&2 ;;
+      no_gwt_rows)         echo "❌ ${file} 缺少 GWT 验证表行（至少 1 条）" >&2 ;;
+      no_evidence_checklist) echo "❌ ${file} 缺少证据清单段落" >&2 ;;
+      evidence_checklist_empty) echo "❌ ${file} 证据清单为空" >&2 ;;
+      no_valid_evidence)   echo "❌ ${file} 证据清单缺少有效证据内容" >&2 ;;
+      *)                   echo "❌ ${file} 验证失败：${reason}" >&2 ;;
+    esac
+    return 1
+  }
+  return 0
 }
 _has_minor_test_evidence() {
   local status_file="$1"
-  [ -f "${VERSION_PATH}test_report.md" ] && return 0
-  grep -q 'TEST-RESULT-BEGIN' "$status_file" 2>/dev/null && return 0
-  return 1
+  local status_content=""
+  [ -f "$status_file" ] && status_content=$(cat "$status_file")
+  has_minor_test_evidence "$VERSION_PATH" "$status_content"
 }
 _validate_minor_testing_round_file() {
   local review_file="$1"
-  local block phase result round_at phase_norm result_norm
-  [ -f "$review_file" ] || return 1
-  block=$(
-    awk '
-      /MINOR-TESTING-ROUND-BEGIN/ {in_block=1; buf=""; next}
-      /MINOR-TESTING-ROUND-END/ {
-        if (in_block) {last=buf}
-        in_block=0
-        next
-      }
-      in_block {buf = buf $0 "\n"}
-      END {printf "%s", last}
-    ' "$review_file"
-  )
-  [ -n "$block" ] || return 1
-
-  phase=$(printf '%s\n' "$block" | sed -n 's/^ROUND_PHASE:[[:space:]]*//p' | tail -1)
-  result=$(printf '%s\n' "$block" | sed -n 's/^ROUND_RESULT:[[:space:]]*//p' | tail -1)
-  round_at=$(printf '%s\n' "$block" | sed -n 's/^ROUND_AT:[[:space:]]*//p' | tail -1)
-  phase_norm=$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-  result_norm=$(printf '%s' "$result" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-
-  [ "$phase_norm" = "testing" ] || return 1
-  [ "$result_norm" = "pass" ] || return 1
-  echo "$round_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || return 1
-  return 0
+  validate_minor_testing_round_structure "$review_file"
 }
 _validate_constraints_confirmation_file() {
   local review_label="$1" review_file="$2" req_label="$3" req_file="$4" proposal_label="$5" proposal_file="$6"
@@ -266,12 +213,12 @@ _validate_proposal_coverage_file() {
 }
 
 if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
-  NEW_PHASE=$(echo "$CC_CONTENT" | grep -oE '_phase:[[:space:]]*(ChangeManagement|Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment)' \
+  NEW_PHASE=$(echo "$CC_CONTENT" | grep -oE '_phase:[[:space:]]*(ChangeManagement|Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment|Hotfix)' \
     | sed 's/_phase:[[:space:]]*//' | head -1)
 
   if [ -n "$NEW_PHASE" ] && [ "$AICODING_PHASE" != "$NEW_PHASE" ]; then
     case "$AICODING_PHASE" in
-      Requirements|Design|Planning|Implementation|Testing)
+      Requirements|Design|Planning|Implementation|Testing|Hotfix)
         NEW_CURRENT=$(echo "$CC_CONTENT" | awk '/^_current:/{sub(/^_current:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}')
         STATUS_CURRENT=$(aicoding_yaml_value "_current")
         STATUS_CURRENT_REF="${NEW_CURRENT:-$STATUS_CURRENT}"
@@ -368,6 +315,10 @@ if [ "$IS_STATUS_MD" = true ] && [ "$HAS_PHASE" = true ]; then
                 "${AICODING_VERSION_DIR}test_report.md" "${VERSION_PATH}test_report.md" \
                 || { aicoding_block "Testing GWT 覆盖校验失败"; }
             fi ;;
+          Hotfix)
+            has_test_result_block "$CC_CONTENT" \
+              || { aicoding_block "Hotfix 阶段退出前必须在 status.md 内联 TEST-RESULT 结果块"; }
+            ;;
         esac
       ;;
     esac

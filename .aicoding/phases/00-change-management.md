@@ -7,10 +7,30 @@
 - 测试通过（但尚未合入主分支基线）后，用户提出新增/修改想法
 - 任意阶段"已 Done/已评审通过"后，又出现范围调整/新增需求
 
+## 阶段入口/出口
+
+**入口文件：**
+- `docs/<版本号>/status.md`
+- `.aicoding/phases/00-change-management.md`（本文件）
+- `.aicoding/templates/cr_template.md`
+
+**出口文件：**
+- `docs/<版本号>/review_change_management.md`
+
+## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
+
+> 脚本单源：`scripts/lib/common.sh` 的 `aicoding_phase_entry_required`。以下表格为人类可读视图，以脚本为准。
+
+| 必读文件 | 用途 | 强制级别 |
+|---------|------|---------|
+| `docs/<版本号>/status.md` | 获取当前状态、Active CR、基线版本 | 🔴 CC-7 强制 |
+| `.aicoding/phases/00-change-management.md` | 本阶段规则（本文件） | 🔴 CC-7 强制 |
+| `.aicoding/templates/cr_template.md` | CR 模板 | 🔴 CC-7 强制 |
+
 > **新版本启动**（v1.0 → v2.0）：直接从 Proposal 开始，不需要创建 CR。Phase 00 仅在"版本内范围调整"时适用。
 > **版本内变更**（已测试/已完成后的范围调整）：必须创建 CR，避免直接修改已冻结的 Proposal/Requirements。
-3. **用户明确指定后**，执行对应流程
-4. **版本内变更必须创建 CR**，进入 Phase 00 澄清流程；**新版本启动直接从 Proposal 开始**
+
+> 决策树补充：若当前版本尚未完成，且只是当前既有范围内的正常澄清/推进，则继续当前流程，不进入 Phase 00；只有"版本内已冻结范围上的追加/改向"才回到 Phase 00。
 
 **AI 建议参考标准**（详见 `ai_workflow.md:6-9`）：
 - **同版本追加 CR**：Bug 修复、遗漏功能补充、单模块小改动、不涉及架构/API/数据库变更
@@ -33,7 +53,7 @@
      - `_run_status: running`
      - `_phase: ChangeManagement`
      - `_review_round: 0`
-     - Active CR 列表：添加新 CR
+     - Idea池：先登记新 CR（状态=Idea）
 4. **进入 Phase 00 澄清流程**
 
 ### 新版本迭代流程
@@ -58,13 +78,13 @@
 - **生产基线**：合入主分支（`main`/`master`）的发布点（建议打 tag，如 `v1.0`）
 - **测试候选**：测试通过时可打 RC tag（如 `v2.0-rc1`），避免"测过哪一版"漂移
 - 在 `docs/<版本号>/status.md` 填写：
-  - 基线版本（对比口径）：`v1.0` 或 `<commit>`
+  - 基线版本（对比口径）：版本 tag（例如 `v1.0`）
   - 本次复查口径：`diff-only` / `full`
 
 ### 2) 新意图优先写 CR（不直接混改已测正文）
 - 路径：`docs/<版本号>/cr/CR-YYYYMMDD-001.md`
 - 模板：`.aicoding/templates/cr_template.md`
-- 在 `status.md` 的 **Active CR 列表**登记 CR（含状态与链接）
+- `Idea` 状态先登记在 `status.md` 的 **Idea池**；用户确认后变为 `Accepted`，再进入 **Active CR 列表**
 
 ### 3) 默认差异审查（diff-only），但门禁不降级
 **diff-only** 的含义：只审 **Active CR + 受影响文件/模块/接口**，不强制全量重读全部阶段文档。
@@ -85,7 +105,7 @@
      - 确认验收标准（GWT 是否完整、可判定）
      - 确认影响面（哪些模块/文档/接口受影响）
      - 确认风险与回滚（是否有不可逆操作）
-   - 用户明确说"确认"后，CR 状态从 Idea → Accepted
+   - 用户明确说"确认"后，CR 状态从 Idea → Accepted，并从 `Idea池` 移入 `Active CR 列表`
    - **禁止跳过**：AI 不得在未与用户澄清的情况下直接将 CR 标记为 Accepted
    - **软门禁说明**：此规则依赖 AI 自觉执行，无程序化校验。如需硬校验，可在 CR 文件中增加机器可读的"澄清记录"块，pre-commit 检查其存在性
 3. **定范围**：在 `status.md` 更新 Active CR 与复查口径（diff-only/full）
@@ -132,7 +152,7 @@
 
 3. **AI验证基线版本是否存在**：
    ```bash
-   # 支持tag、commit、branch验证
+   # _baseline 仅允许版本 tag（例如 v1.0）
    git rev-parse --verify "${BASELINE}^{commit}" 2>/dev/null
    ```
 

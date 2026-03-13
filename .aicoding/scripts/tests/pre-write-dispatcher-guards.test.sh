@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DISPATCHER_SRC="${ROOT_DIR}/scripts/cc-hooks/pre-write-dispatcher.sh"
 LIB_SRC="${ROOT_DIR}/scripts/lib/review_gate_common.sh"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -32,6 +33,7 @@ mkdir -p scripts/cc-hooks scripts/lib docs/v1.0
 cp "$DISPATCHER_SRC" scripts/cc-hooks/pre-write-dispatcher.sh
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/cc-hooks/pre-write-dispatcher.sh
 
 cat > docs/v1.0/requirements.md <<'EOF_REQ'

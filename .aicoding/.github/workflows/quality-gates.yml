@@ -38,3 +38,17 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/tests/run-all.sh
+
+      - name: Audit Release Gate On Pull Request
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check_release_gate.sh ci pull_request "${{ github.base_ref }}" "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
+      - name: Audit Release Gate On Mainline Push
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check_release_gate.sh ci push "${{ github.ref_name }}" "${{ github.event.before }}" "${{ github.sha }}"

@@ -43,6 +43,6 @@ config_val=$(aicoding_config_value "a.c")
 
 unset CLAUDE_SESSION_ID || true
 session_key=$(aicoding_session_key)
-echo "$session_key" | grep -qE '^[0-9]{8}-[0-9]{6}-[0-9]+$' || fail "expected fallback session key format YYYYMMDD-HHMMSS-<pid>, got: ${session_key}"
+echo "$session_key" | grep -qE '^[0-9]{8}-[0-9]{6}(-[0-9]+)+$' || fail "expected fallback session key format YYYYMMDD-HHMMSS-<nano>-<pid>-<random>, got: ${session_key}"
 
 echo "ok"

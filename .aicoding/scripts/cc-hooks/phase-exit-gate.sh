@@ -9,6 +9,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../lib/review_gate_common.sh
 source "${SCRIPT_DIR}/../lib/review_gate_common.sh"
 source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/../lib/validation.sh"
 aicoding_load_config
 
 aicoding_parse_cc_input
@@ -17,7 +18,7 @@ aicoding_parse_cc_input
 # 只关心 status.md
 echo "$CC_FILE_PATH" | grep -q 'status\.md$' || exit 0
 
-NEW_PHASE=$(echo "$CC_CONTENT" | grep -oE '_phase:[[:space:]]*(ChangeManagement|Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment)' \
+NEW_PHASE=$(echo "$CC_CONTENT" | grep -oE '_phase:[[:space:]]*(ChangeManagement|Proposal|Requirements|Design|Planning|Implementation|Testing|Deployment|Hotfix)' \
   | sed 's/_phase:[[:space:]]*//' | head -1)
 [ -z "$NEW_PHASE" ] && exit 0
 
@@ -33,9 +34,9 @@ CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
 # 如果新旧 _phase 相同，不是阶段推进，放行
 [ "$AICODING_PHASE" = "$NEW_PHASE" ] && exit 0
 
-# 只在 Requirements + AI 自动期（Phase 02-06）做出口检查
+# 只在 Requirements + AI 自动期（Phase 02-06）和 Hotfix 做出口检查
 case "$AICODING_PHASE" in
-  Requirements|Design|Planning|Implementation|Testing) ;;
+  Requirements|Design|Planning|Implementation|Testing|Hotfix) ;;
   *) exit 0 ;;
 esac
 
@@ -160,6 +161,9 @@ case "$AICODING_PHASE" in
       review_gate_validate_review_summary_and_coverage "${AICODING_VERSION_DIR}review_testing.md" "${VERSION_PATH}review_testing.md" "$REQ_LABEL" "$REQ_FILE" "$STATUS_CURRENT_REF" "${AICODING_VERSION_DIR}review_testing.md" || { aicoding_block "Testing 审查摘要校验失败"; }
       review_gate_validate_test_report_gwt_coverage "$REQ_LABEL" "$REQ_FILE" "${AICODING_VERSION_DIR}test_report.md" "${VERSION_PATH}test_report.md" || { aicoding_block "Testing GWT 覆盖校验失败"; }
     fi
+    ;;
+  Hotfix)
+    has_test_result_block "$CC_CONTENT" || { aicoding_block "Hotfix 阶段退出前必须在 status.md 内联 TEST-RESULT 结果块"; }
     ;;
 esac
 

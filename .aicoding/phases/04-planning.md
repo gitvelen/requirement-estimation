@@ -5,14 +5,17 @@
 ## 目标
 - 把设计拆解为可执行、可验证、可追溯的任务。
 
-## 本阶段输入
+## 阶段入口/出口
+
+**入口文件：**
 - `docs/<版本号>/design.md`
 - `docs/<版本号>/requirements.md`
 - `docs/<版本号>/status.md`
-- `templates/plan_template.md`
-- `templates/review_planning_template.md`
+- `.aicoding/phases/04-planning.md`（本文件）
+- `.aicoding/templates/plan_template.md`
+- `.aicoding/templates/review_planning_template.md`
 
-## 本阶段输出
+**出口文件：**
 - `docs/<版本号>/plan.md`
 - `docs/<版本号>/review_planning.md`
 
@@ -35,7 +38,10 @@
 3. 任务粒度优先“可独立提交 + 可独立验证”。
 4. 若存在 Active CR，需在任务中标注 CR 影响范围。
 
-## 阶段完成条件
+## 读取模板
+编写计划时读取 `.aicoding/templates/plan_template.md`。
+
+## 完成条件（🔴 MUST）
 1. `review_planning.md` 通过自审（P0/P1 open=0）。
 2. 需求反向覆盖校验通过（requirements ↔ plan）。
 3. `status.md` 更新到下一阶段前，入口/出口门禁全部通过。

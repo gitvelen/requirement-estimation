@@ -1,6 +1,6 @@
 #!/bin/bash
 # aicoding-hooks-managed
-# Warning 13: 部署阶段 CR 子集验证
+# Warning 13: Deployment 阶段 Active CR 提交证据提醒
 [ -f "$STATUS_FILE" ] || exit 0
 W13_PHASE=$(aicoding_yaml_value "_phase")
 [ "$W13_PHASE" = "Deployment" ] || exit 0

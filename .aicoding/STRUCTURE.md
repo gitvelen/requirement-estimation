@@ -1,5 +1,21 @@
 # `.aicoding/` 目录结构与约定
 
+> **快速导航：** 本文档包含目录结构、版本迭代规则、ID前缀约定、Git管理规范
+
+## 规范索引（单一真相源）
+
+当你需要查阅某个规则时，只读以下唯一真相源，不要读其他副本：
+
+| 领域 | 唯一真相源 | 包含内容 |
+|------|-----------|---------|
+| 工作流规则 | `ai_workflow.md` | 变更分级、阶段推进、收敛判定、债务管理 |
+| 状态机语义 | `ai_workflow.md` | Major/Minor/Hotfix、wait_confirm语义 |
+| 阶段入口/出口 | `scripts/lib/common.sh` | 每个阶段的必读文件、必须产出文件 |
+| CR状态枚举 | `phases/cr-rules.md` | CR状态定义、转换规则 |
+| 主文档清单 | 本文档"两类文档"章节 | 6个主文档的定义 |
+
+---
+
 ## 目录结构
 ```
 .
@@ -46,11 +62,13 @@
 1. 分析变更描述，给出建议（参考下表）
 2. 询问用户确认："这是 v1.0 的补丁修复，还是要开始 v1.1 新版本？"
 3. 用户明确指定后，执行对应流程
-4. 版本内变更必须创建 CR，进入 Phase 00 澄清流程；新版本启动直接从 Proposal 开始
+4. 版本内变更默认创建 CR，进入 Phase 00 澄清流程；新版本启动直接从 Proposal 开始
+
+> 补充：Hotfix 是"当前版本补丁"中的紧急特例。它仍属于同版本变更，但满足 hotfix 边界时可跳过 Phase 00，并切换到独立 `_phase: Hotfix` 执行。
 
 | 变更性质 | AI 建议参考（关键词） | 操作方式 |
 |---------|---------------------|---------|
-| 遗漏/Bug/Hotfix | "修复"、"Bug"、"遗漏"、"缺陷" | 在当前版本追加 CR |
+| 遗漏/Bug/Hotfix | "修复"、"Bug"、"遗漏"、"缺陷" | 在当前版本处理（通常追加 CR；满足 hotfix 边界时走 hotfix 特例） |
 | 新功能/重构/增强 | "新功能"、"新版本"、"重构"、"架构" | 创建新版本目录 |
 
 ### 何时创建新版本目录
@@ -65,7 +83,7 @@
 - 部署后发现的遗漏功能（原需求范围内）
 - 部署后发现的 Bug 或缺陷
 - 原需求的小幅调整
-- 紧急 Hotfix
+- 紧急 Hotfix（满足 hotfix 边界时可不创建 CR 文档）
 - 用户明确指定"补丁"
 
 ### 基线管理
@@ -80,6 +98,7 @@
 - **新版本启动**不需要 CR，直接从 Proposal 开始
 - CR 必须经过 Phase 00 澄清流程（范围、验收、影响面、风险）
 - CR 状态从 Idea → Accepted → In Progress → Implemented
+- `status.md` 中的 **Active CR 列表**只跟踪 `Accepted / In Progress`；`Idea` 状态应记录在 `Idea池`，不进入 Active 列表
 
 ## Git 管理（AI 自动执行）
 
@@ -94,9 +113,10 @@
    - PR 标题/描述中也应列出所有 CR-ID，便于追溯
 5. **禁止危险操作**：`push --force`、`reset --hard`、`branch -D` 等必须经用户授权
 6. **远端同步**：非 PR 的主分支操作（打 tag、hotfix 合入等）完成后，须将 commit 和 tag 一并 push 到远端，确认 `ahead_by=0`
-7. **Commit message 自动生成**：AI 根据 diff 按现有格式规范（`<type>: <描述>`，有 CR 时加 `[CR-ID]`）自动生成，无需询问用户
+7. **completed 只在基线形成后出现**：`docs/<版本号>/status.md` 的 `done + completed` 只能出现在主分支收口场景；`pre-push` / CI 会拦截“未随主分支和 tag 一起发布的 completed”
+8. **Commit message 自动生成**：AI 根据 diff 按现有格式规范（`<type>: <描述>`，有 CR 时加 `[CR-ID]`）自动生成，无需询问用户
 
-> **注意**：上述规则 1/3/4/6 属于 AI 行为约束，难以在 Git hooks 中硬校验。可选增强：在 `pre-push` 中增加"禁止直接 push 到 main/master"的拦截。
+> **注意**：规则 1 仍主要依赖 AI/团队纪律；规则 3/4/6/7 现在由 `pre-push`、CI release gate 和 `scripts/release-complete.sh` 部分程序化约束，但仍不替代 PR 审核与发布审批。
 
 ## 变更单（CR）
 - 适用：已完成/已测试后出现新需求或范围调整

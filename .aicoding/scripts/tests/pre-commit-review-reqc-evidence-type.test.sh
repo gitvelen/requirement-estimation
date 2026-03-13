@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PRE_COMMIT_SRC="${ROOT_DIR}/scripts/git-hooks/pre-commit"
 LIB_SRC="${ROOT_DIR}/scripts/lib/review_gate_common.sh"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -33,6 +34,7 @@ mkdir -p scripts/git-hooks scripts/lib docs/v1.0
 cp "$PRE_COMMIT_SRC" scripts/git-hooks/pre-commit
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/pre-commit
 
 cat > docs/v1.0/status.md <<'EOF'
@@ -66,6 +68,11 @@ cat > docs/v1.0/review_implementation.md <<EOF
 | GWT-ID | REQ-ID | 判定 | 证据类型 | 证据（可复现） | 备注 |
 |---|---|---|---|---|---|
 | GWT-REQ-C001-01 | REQ-C001 | ✅ | CODE_REF | \`src/example.ts:1\` | 风险：示例 |
+
+## 证据清单
+### 1. 验证命令
+**命令：** echo "test"
+**输出：** test
 
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_STAGE: implementation

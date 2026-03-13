@@ -1,4 +1,4 @@
-# [需求分析与评估系统] - 版本号:v2.6
+# [需求分析与评估系统] - 版本号:v2.7
 ---
 
 ## 启动协议
@@ -31,6 +31,9 @@ AI 进入项目后，先执行以下 3 步再开始工作：
 - **工作流控制**：`.aicoding/ai_workflow.md`
 - **阶段规则**：`.aicoding/phases/`（单一真相源）
 - **阶段状态**：`docs/<版本号>/status.md`（单一真相源）
+- **高风险前置**：高风险项与变更范围应在 ChangeManagement/Requirements/Design 阶段明确，Deployment 只做一致性校验与执行留痕。
+- **验收环境部署**：默认自动部署到 `STAGING/TEST`，不额外请求部署前批准；部署后将 `_run_status` 置为 `wait_confirm`，其语义是“已部署，等待业务反馈”。
+- **业务验收闭环**：部署到 `STAGING/TEST` 后不得直接标记完成；仅在人工验收通过后，才能将 `_change_status` 设为 `done`、`_run_status` 设为 `completed`。
 
 ---
 

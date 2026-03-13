@@ -2,8 +2,14 @@
 # aicoding-hooks-managed
 # Warning 17: plan.md 任务缺少验证命令（准备交付时触发）
 [ -f "$STATUS_FILE" ] || exit 0
+W17_PHASE=$(aicoding_yaml_value "_phase")
 W17_RUN_STATUS=$(aicoding_yaml_value "_run_status")
 W17_CHANGE_STATUS=$(aicoding_yaml_value "_change_status")
+
+case "$W17_PHASE" in
+  Testing|Deployment) ;;
+  *) exit 0 ;;
+esac
 [ "$W17_RUN_STATUS" = "wait_confirm" ] || [ "$W17_CHANGE_STATUS" = "done" ] || exit 0
 
 PLAN="${VERSION_DIR}plan.md"

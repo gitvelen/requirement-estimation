@@ -1,5 +1,8 @@
 # Review Report：Requirements / <版本号>
 
+> **共享章节**：见 `templates/review_skeleton.md`
+> 本模板只包含 Requirements 阶段特定的审查内容
+
 > 轻量审查模板：聚焦需求完整性、GWT 可判定性、禁止项固化。
 > 不含代码级证据判定（Requirements 阶段无代码产出）。
 
@@ -12,20 +15,11 @@
 | 输入材料 | proposal.md, requirements.md |
 
 ## §0 审查准备（REP 步骤 A+B）
-
-### A. 事实核实
-> 从 requirements.md 提取事实性声明，逐条对照 proposal.md 核实。
-
-| # | 声明（出处） | 核实源 | 结论 |
-|---|------------|--------|------|
-| 1 | ... | proposal.md §x.x | ✅/❌ |
-
-### B. 关键概念交叉引用
-> 提取关键概念（REQ-ID 引用、GWT 中的阈值/枚举、角色权限、术语），全文搜索所有出现位置。
-
-| 概念 | 出现位置 | 口径一致 |
-|------|---------|---------|
-| ... | §x.x, §y.y | ✅/❌ |
+> 见 `templates/review_skeleton.md` 的"§0 审查准备"章节
+>
+> **本阶段特定说明**：
+> - A. 事实核实：从 requirements.md 提取事实性声明，逐条对照 proposal.md 核实
+> - B. 关键概念交叉引用：提取关键概念（REQ-ID 引用、GWT 中的阈值/枚举、角色权限、术语）
 
 ## 审查清单
 
@@ -69,6 +63,7 @@
 - [ ] 数据边界：空值/极值/并发场景是否有明确行为定义
 
 ## 关键发现
+> 见 `templates/review_skeleton.md` 的"关键发现"章节
 
 ### RVW-001（P0/P1/P2）<标题>
 - 证据：
@@ -76,6 +71,7 @@
 - 建议修改：
 
 ## §3 覆盖率证明（REP 步骤 D）
+> 见 `templates/review_skeleton.md` 的"§3 覆盖率证明"章节
 
 | 维度 | 应检项数 | 已检 | 未检 | 未检说明 |
 |------|---------|------|------|---------|
@@ -85,12 +81,16 @@
 | Proposal 覆盖项（P-DO+P-DONT+P-METRIC） | | | | |
 
 ## 对抗性自检
+> 通用检查项见 `templates/review_skeleton.md`
+
 - [ ] 是否存在"我知道意思但文本没写清"的地方？
 - [ ] 所有"不要/禁止"是否都已固化为 REQ-C + GWT？
 - [ ] 所有"可选/或者/暂不"表述是否已收敛为单一口径？
 - [ ] 高风险项是否已在本阶段收敛？
 
 ## 收敛判定
+> 见 `templates/review_skeleton.md` 的"收敛判定"章节
+
 - P0(open): X
 - P1(open): Y
 - 结论：✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过
@@ -114,20 +114,8 @@ VERIFICATION_COMMANDS: rg -n "关键词" docs/<版本号>/requirements.md
 
 ---
 
+## 证据清单
+> 见 `templates/review_skeleton.md` 的"证据清单"章节
+
 ## 多轮审查追加格式
-
-> 后续轮次以追加方式写入，并更新 REVIEW-SUMMARY-BEGIN 块中的字段。
-
-```markdown
-## 第 N 轮审查（YYYY-MM-DD）
-### 上轮遗留问题处置
-| RVW-ID | 处置 | 证据 |
-|--------|------|------|
-| RVW-001 | 已修复 | requirements.md §x.x 已补充 |
-
-### 本轮新发现
-（同"关键发现"格式）
-
-<!-- 更新 REVIEW-SUMMARY-BEGIN 块中的字段 -->
-<!-- 更新 CONSTRAINTS-CONFIRMATION-BEGIN 块中的字段 -->
-```
+> 见 `templates/review_skeleton.md` 的"多轮审查追加格式"章节

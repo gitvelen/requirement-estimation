@@ -22,6 +22,7 @@ trap cleanup EXIT
 mkdir -p "$tmp_dir/scripts/cc-hooks" "$tmp_dir/scripts/lib" "$tmp_dir/docs/v1.0"
 cp "$ROOT_DIR/scripts/cc-hooks/phase-exit-gate.sh" "$tmp_dir/scripts/cc-hooks/phase-exit-gate.sh"
 cp "$ROOT_DIR/scripts/lib/common.sh" "$tmp_dir/scripts/lib/common.sh"
+cp "$ROOT_DIR/scripts/lib/validation.sh" "$tmp_dir/scripts/lib/validation.sh"
 cp "$ROOT_DIR/scripts/lib/review_gate_common.sh" "$tmp_dir/scripts/lib/review_gate_common.sh"
 chmod +x "$tmp_dir/scripts/cc-hooks/phase-exit-gate.sh"
 

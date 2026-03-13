@@ -66,3 +66,7 @@ frontend/build/
 # Docs (tracked); ignore local artifacts only
 *.md.bak_*
 docs/.claude/
+
+# aicoding local artifacts
+.aicoding/.history/
+.aicoding/docs/plans/

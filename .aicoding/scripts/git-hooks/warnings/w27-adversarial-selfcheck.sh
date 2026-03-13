@@ -5,14 +5,25 @@
 [ -f "$STATUS_FILE" ] || exit 0
 
 PHASE=$(aicoding_yaml_value "_phase")
+CHANGE_LEVEL=$(aicoding_yaml_value "_change_level")
 case "$PHASE" in
   Design|Planning|Implementation|Testing) ;;
   *) exit 0 ;;
 esac
+[ -n "$CHANGE_LEVEL" ] || CHANGE_LEVEL="major"
+
+# minor review 为轻量审查，不要求对抗性自检章节（见 review_minor_template.md / 05-implementation.md）
+if [ "$CHANGE_LEVEL" = "minor" ]; then
+  exit 0
+fi
 
 # 检查当前阶段的 review 文件
 PHASE_LOWER=$(echo "$PHASE" | tr '[:upper:]' '[:lower:]')
-REVIEW_FILE="${VERSION_DIR}review_${PHASE_LOWER}.md"
+if [ "$CHANGE_LEVEL" = "minor" ] && { [ "$PHASE" = "Implementation" ] || [ "$PHASE" = "Testing" ]; }; then
+  REVIEW_FILE="${VERSION_DIR}review_minor.md"
+else
+  REVIEW_FILE="${VERSION_DIR}review_${PHASE_LOWER}.md"
+fi
 [ -f "$REVIEW_FILE" ] || exit 0
 
 # 检查 REVIEW_RESULT 是否为 pass
@@ -21,13 +32,11 @@ RESULT=$(aicoding_summary_value_from_file "$REVIEW_FILE" "REVIEW_RESULT")
 
 # 检查是否包含对抗性自检 section
 if ! grep -q '对抗性自检' "$REVIEW_FILE" 2>/dev/null; then
-  warn "W27: ${REVIEW_FILE##*/} REVIEW_RESULT=pass，但缺少"对抗性自检"章节（自审时必填，用于缓解自审偏差）"
+  warn "W27: ${REVIEW_FILE##*/} REVIEW_RESULT=pass，但缺少“对抗性自检”章节（自审时必填，用于缓解自审偏差）"
   exit 0
 fi
 
 # 检查清单项是否至少有一项被勾选
-CHECKED_COUNT=$(grep -cE '^\s*-\s*\[[xX✓]\]' "$REVIEW_FILE" 2>/dev/null || echo 0)
-# 从对抗性自检 section 提取勾选项
 SELFCHECK_SECTION=$(awk '/对抗性自检/{found=1; next} found && /^### /{exit} found && /^## /{exit} found{print}' "$REVIEW_FILE")
 SELFCHECK_CHECKED=$(echo "$SELFCHECK_SECTION" | grep -cE '^\s*-\s*\[[xX✓]\]' 2>/dev/null || echo 0)
 SELFCHECK_TOTAL=$(echo "$SELFCHECK_SECTION" | grep -cE '^\s*-\s*\[' 2>/dev/null || echo 0)

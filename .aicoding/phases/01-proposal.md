@@ -3,11 +3,16 @@
 ## 目标
 将模糊的创意转化为清晰的产品提案
 
-## 输入
+## 阶段入口/出口
+
+**入口文件：**
 - 用户的初步想法、创意或问题
+- `docs/<版本号>/status.md`
+- `.aicoding/phases/01-proposal.md`（本文件）
+- `.aicoding/templates/proposal_template.md`
 - `docs/系统功能说明书.md`（全新项目没有，存量项目才具备）
 
-## 输出
+**出口文件：**
 - `docs/<版本号>/proposal.md` — 产品提案文档
 
 ## 阶段入口协议（🔴 MUST，CC-7 程序化强制）

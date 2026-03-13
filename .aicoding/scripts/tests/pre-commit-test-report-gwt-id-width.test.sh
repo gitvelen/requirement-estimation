@@ -32,6 +32,7 @@ mkdir -p scripts/git-hooks scripts/lib docs/v1.0
 cp "$PRE_COMMIT_SRC" scripts/git-hooks/pre-commit
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "${ROOT_DIR}/scripts/lib/common.sh" scripts/lib/common.sh
+cp "${ROOT_DIR}/scripts/lib/validation.sh" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/pre-commit
 
 cat > docs/v1.0/status.md <<'EOF'
@@ -68,6 +69,11 @@ cat > docs/v1.0/review_testing.md <<EOF
 |---|---|---|---|---|---|
 | GWT-REQ-1000-01 | REQ-1000 | ✅ | RUN_OUTPUT | \`echo ok\` | 风险：示例 |
 | GWT-REQ-1000-02 | REQ-1000 | ✅ | RUN_OUTPUT | \`echo ok\` |  |
+
+## 证据清单
+### 1. 验证命令
+**命令：** echo "test"
+**输出：** test
 
 <!-- REVIEW-SUMMARY-BEGIN -->
 REVIEW_STAGE: testing

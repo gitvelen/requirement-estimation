@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PHASE_GATE_SRC="${ROOT_DIR}/scripts/cc-hooks/phase-gate.sh"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -30,6 +31,7 @@ git config user.name "test"
 mkdir -p scripts/cc-hooks scripts/lib docs/v1.0
 cp "$PHASE_GATE_SRC" scripts/cc-hooks/phase-gate.sh
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/cc-hooks/phase-gate.sh
 
 cat > docs/v1.0/status.md <<'EOF_STATUS'

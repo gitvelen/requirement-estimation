@@ -9,8 +9,8 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 aicoding_parse_cc_input
 [ -z "$CC_FILE_PATH" ] && exit 0
 
-# 只关心 docs/vX.Y/ 下的文件
-echo "$CC_FILE_PATH" | grep -qE 'docs/v[0-9]+\.[0-9]+/' || exit 0
+# 只关心版本目录下的文件
+aicoding_is_versioned_doc_path "$CC_FILE_PATH" || exit 0
 
 aicoding_detect_version_dir "$CC_FILE_PATH" || exit 0
 aicoding_get_phase || exit 0
@@ -35,6 +35,8 @@ case "$AICODING_PHASE" in
     ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
   Deployment)
     ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
+  Hotfix)
+    ALLOWED="status.md|review_|cr/" ;;
   *) exit 0 ;;
 esac
 

@@ -31,6 +31,7 @@ mkdir -p scripts/git-hooks scripts/lib docs/v1.0
 cp "$PRE_COMMIT_SRC" scripts/git-hooks/pre-commit
 cp "${ROOT_DIR}/scripts/lib/review_gate_common.sh" scripts/lib/review_gate_common.sh
 cp "${ROOT_DIR}/scripts/lib/common.sh" scripts/lib/common.sh
+cp "${ROOT_DIR}/scripts/lib/validation.sh" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/pre-commit
 
 # Base status at Design phase

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 COMMIT_MSG_SRC="${ROOT_DIR}/scripts/git-hooks/commit-msg"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -22,6 +23,7 @@ git config user.name "test"
 mkdir -p scripts/git-hooks scripts/lib docs/v1.0/cr src
 cp "$COMMIT_MSG_SRC" scripts/git-hooks/commit-msg
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/commit-msg
 
 cat > docs/v1.0/status.md <<'EOF_STATUS'

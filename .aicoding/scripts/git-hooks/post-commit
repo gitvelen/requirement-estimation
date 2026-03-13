@@ -6,9 +6,12 @@
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
-# 优先使用绝对路径（生产环境），回退到相对路径（测试环境）
+# 优先使用绝对路径（生产环境），自举场景回退，最后相对路径（测试环境）
 if [ -f "${REPO_ROOT}/.aicoding/scripts/lib/common.sh" ]; then
   source "${REPO_ROOT}/.aicoding/scripts/lib/common.sh"
+elif [ -f "${REPO_ROOT}/scripts/lib/common.sh" ]; then
+  # 自举场景：框架仓库自身开发时，scripts/ 在 repo root 下
+  source "${REPO_ROOT}/scripts/lib/common.sh"
 else
   source "${SCRIPT_DIR}/../lib/common.sh"
 fi
@@ -17,7 +20,7 @@ aicoding_gate_log_init
 
 # === 公共基础设施（供 warning 模块使用的全局变量） ===
 CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
-VERSION_DIR=$(echo "$CHANGED" | grep -oE 'docs/v[0-9]+\.[0-9]+/' | head -1)
+VERSION_DIR=$(aicoding_detect_version_dir_from_files "$CHANGED" >/dev/null 2>&1 && printf '%s\n' "${AICODING_VERSION_DIR:-}")
 # 不涉及版本目录的提交，不做 fallback（避免关联到错误版本）
 if [ -z "$VERSION_DIR" ]; then
   exit 0

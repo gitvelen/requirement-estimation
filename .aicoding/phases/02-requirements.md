@@ -3,11 +3,17 @@
 ## 目标
 将提案转化为范围明确、可验收的技术需求
 
-## 输入
-- `docs/<版本号>/proposal.md`
+## 阶段入口/出口
 
-## 输出
+**入口文件：**
+- `docs/<版本号>/proposal.md`
+- `docs/<版本号>/status.md`
+- `.aicoding/phases/02-requirements.md`（本文件）
+- `.aicoding/templates/requirements_template.md`
+
+**出口文件：**
 - `docs/<版本号>/requirements.md` — 需求规格说明
+- `docs/<版本号>/review_requirements.md`
 
 ## 阶段入口协议（🔴 MUST，CC-7 程序化强制）
 

@@ -13,10 +13,11 @@ deferred_limit_percent: 10
 # Minor 误标启发式阈值（warning）
 # minor_max_diff_files: 仍可视为 Minor 的最大改动文件数。建议用日常小改动 80 分位校准。
 # 已被 pre-commit 消费：超过阈值会硬拦截并要求升级为 major 或拆分提交。
-minor_max_diff_files: 10
+# 注意：Minor 允许跳过 Design/Planning 阶段，适用于无需设计文档的小改动。
+minor_max_diff_files: 5
 # minor_max_new_gwts: 仍可视为 Minor 的新增 GWT 数上限。建议从 3-5 起步再校准。
 # 已被 pre-commit 消费：超过阈值会硬拦截并要求升级为 major。
-minor_max_new_gwts: 5
+minor_max_new_gwts: 3
 
 # Hotfix 轨道（M1）
 # enable_hotfix: 是否启用热修通道。开启需配合严格范围控制。
@@ -25,12 +26,22 @@ enable_hotfix: true
 hotfix_max_diff_files: 3
 
 # 结果门禁（M2，仅在阶段推进 commit 中执行）
-# result_gate_test_command: 阶段推进时强制执行的测试命令。建议填 CI 同款命令。
-result_gate_test_command: "uv run pytest -q --tb=short"
-# result_gate_build_command: 阶段推进时强制执行的构建命令。建议填 CI 同款命令。
-result_gate_build_command: "cd frontend && npm run build"
-# result_gate_typecheck_command: 阶段推进时强制执行的类型检查命令。建议填 CI 同款命令。
-result_gate_typecheck_command: "uv run python scripts/incremental_static_gate.py"
+# 这 3 个键建议始终填写为“当前仓库真实可执行”的命令，不建议留空。
+# 选择原则：
+#   - result_gate_test_command: 填回归/单测/集成测试主入口；应尽量与 CI 完全一致。
+#   - result_gate_build_command: 有前后端/二进制构建时，填真实 build 命令；纯脚本仓库可退化为语法校验入口。
+#   - result_gate_typecheck_command: 有 TypeScript/MyPy/静态分析时填真实类型检查；纯 Bash/Markdown 仓库可退化为共享脚本语法校验。
+# 当前仓库是 Bash hooks + Markdown 文档仓库，没有独立应用构建产物，因此默认值采用：
+#   - test: 跑完整脚本测试套件（与 GitHub Actions 一致）
+#   - build: 校验主要 hook/入口脚本语法，避免阶段推进时把坏脚本写进主线
+#   - typecheck: 校验共享库脚本语法，作为“无类型系统仓库”的轻量静态检查
+# 迁移到具体业务项目时，应优先替换为真实命令，例如：
+#   result_gate_test_command: "uv run pytest -q --tb=short"
+#   result_gate_build_command: "cd web && npm run build"
+#   result_gate_typecheck_command: "cd web && npm run typecheck"
+result_gate_test_command: "bash scripts/tests/run-all.sh"
+result_gate_build_command: "bash -n scripts/git-hooks/pre-commit scripts/git-hooks/commit-msg scripts/git-hooks/post-commit scripts/check_quality_debt.sh scripts/cc-hooks/pre-write-dispatcher.sh scripts/cc-hooks/phase-entry-gate.sh scripts/cc-hooks/phase-exit-gate.sh scripts/cc-hooks/doc-scope-guard.sh"
+result_gate_typecheck_command: "bash -n scripts/lib/common.sh scripts/lib/validation.sh scripts/lib/review_gate_common.sh"
 
 # 入口门禁模式（M2）
 # entry_gate_mode: 入口门禁模式（warn/block）
@@ -39,11 +50,11 @@ result_gate_typecheck_command: "uv run python scripts/incremental_static_gate.py
 # 建议：生产环境使用 block 确保流程合规，开发环境可用 warn 观测 AI 行为
 entry_gate_mode: block
 
-# Requirements 入口读取覆盖（已废弃，保留仅为向后兼容）
-# requirements_entry_skip_proposal: 已废弃。Requirements 阶段必须读取 proposal.md 以确保需求覆盖完整。
-# 此配置项不再生效，proposal.md 始终为入口必读文件。
+# Requirements 入口读取覆盖（已废弃，字段被忽略）
+# requirements_entry_skip_proposal: 已废弃。无论此值如何设置，proposal.md 始终为 Requirements 阶段必读文件。
+# 保留此字段仅为避免旧配置文件解析报错，实际不影响任何行为。
 requirements_entry_skip_proposal: false
-# phase_skip_proposal: 兼容旧键（已弃用），语义同 requirements_entry_skip_proposal。
+# phase_skip_proposal: 兼容旧键（已弃用），语义同 requirements_entry_skip_proposal，同样被忽略。
 phase_skip_proposal: false
 
 # GWT-ID 格式（用于未来扩展）
@@ -61,7 +72,11 @@ high_risk_review_patterns: "兼容,回滚,权限,REQ-C,deprecated,confirm,迁移
 quality_debt_max_total: 10
 # quality_debt_high_risk_max: 高风险质量债务数量上限。超过此值时阻断新版本启动。
 quality_debt_high_risk_max: 5
-# quality_debt_high_risk_payback_ratio: 高风险债务强制偿还比例（0-100）。新版本启动前必须偿还的比例。
-quality_debt_high_risk_payback_ratio: 50
 # tech_debt_max_total: 技术债务总数上限（Open 状态）。超过此值时告警。
 tech_debt_max_total: 15
+
+# 版本目录命名规范（M3）
+# version_dir_pattern: 版本目录命名正则。用于从 _baseline tag 推断版本目录路径。
+# 默认：tag v1.0 对应目录 docs/v1.0/
+# 如果项目使用不同命名（如 v1.0.0），需修改此正则
+version_dir_pattern: "^v([0-9]+\\.[0-9]+)$"

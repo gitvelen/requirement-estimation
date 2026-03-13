@@ -22,7 +22,7 @@ for cmd in awk grep sed; do
 done
 
 BACKED_UP=false
-for hook in pre-commit commit-msg post-commit; do
+for hook in pre-commit commit-msg post-commit pre-push; do
   SOURCE="${SCRIPT_DIR}/${hook}"
   TARGET="${HOOK_DIR}/${hook}"
 

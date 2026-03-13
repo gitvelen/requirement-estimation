@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PRE_COMMIT_SRC="${ROOT_DIR}/scripts/git-hooks/pre-commit"
 LIB_SRC="${ROOT_DIR}/scripts/lib/review_gate_common.sh"
 COMMON_SRC="${ROOT_DIR}/scripts/lib/common.sh"
+VALIDATION_SRC="${ROOT_DIR}/scripts/lib/validation.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -24,6 +25,7 @@ mkdir -p scripts/git-hooks scripts/lib docs/v1.0 src
 cp "$PRE_COMMIT_SRC" scripts/git-hooks/pre-commit
 cp "$LIB_SRC" scripts/lib/review_gate_common.sh
 cp "$COMMON_SRC" scripts/lib/common.sh
+cp "$VALIDATION_SRC" scripts/lib/validation.sh
 chmod +x scripts/git-hooks/pre-commit
 
 cat > aicoding.config.yaml <<'EOF_CFG'
