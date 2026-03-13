@@ -64,9 +64,14 @@ cat > docs/v1.0/implementation_checklist.md <<'EOF_CHECK'
 - [x] self check done
 EOF_CHECK
 
-git add docs/v1.0/spotcheck_implementation_main.md docs/v1.0/implementation_checklist.md
+cat > docs/v1.0/refactoring_checklist.md <<'EOF_REFACTOR'
+# refactoring checklist
+- [x] runtime behavior checked
+EOF_REFACTOR
+
+git add docs/v1.0/spotcheck_implementation_main.md docs/v1.0/implementation_checklist.md docs/v1.0/refactoring_checklist.md
 if ! bash scripts/git-hooks/pre-commit; then
-  fail "expected doc-scope gate to allow spotcheck_ and implementation_checklist.md in Implementation phase"
+  fail "expected doc-scope gate to allow spotcheck_, implementation_checklist.md and refactoring_checklist.md in Implementation phase"
 fi
 
 git commit -q -m "implementation docs"

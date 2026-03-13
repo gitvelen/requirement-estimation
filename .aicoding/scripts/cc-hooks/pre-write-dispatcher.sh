@@ -130,7 +130,7 @@ if [ "$HAS_PHASE" = true ]; then
       Planning)
         ALLOWED="status.md|plan.md|review_|cr/" ;;
       Implementation)
-        ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md" ;;
+        ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md|refactoring_checklist.md" ;;
       Testing)
         ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
       Deployment)

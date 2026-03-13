@@ -1270,7 +1270,7 @@ if [ -n "$DOC_FILES" ]; then
       Requirements)   DF_ALLOWED="status.md|requirements.md|proposal.md|review_|cr/" ;;
       Design)         DF_ALLOWED="status.md|design.md|review_|cr/" ;;
       Planning)       DF_ALLOWED="status.md|plan.md|review_|cr/" ;;
-      Implementation) DF_ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md" ;;
+      Implementation) DF_ALLOWED="status.md|review_|spotcheck_|cr/|plan.md|tasks/|design.md|requirements.md|implementation_checklist.md|refactoring_checklist.md" ;;
       Testing)        DF_ALLOWED="status.md|test_report.md|review_|spotcheck_|cr/|design.md|requirements.md|plan.md" ;;
       Deployment)     DF_ALLOWED="status.md|deployment.md|test_report.md|review_|spotcheck_|cr/" ;;
       Hotfix)         DF_ALLOWED="status.md|review_|cr/" ;;
