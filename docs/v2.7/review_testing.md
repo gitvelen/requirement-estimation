@@ -27,6 +27,15 @@
 
 无 P0/P1 级未收敛问题。
 
+## 证据清单
+| 验证项 | 命令 | 关键输出 | 定位 |
+|---|---|---|---|
+| 后端回归 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q --tb=short` | `242 passed, 1 warning` | `tests/**` |
+| 前端 smoke | `cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/serviceGovernancePage.render.test.js src/__tests__/systemListConfigPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js` | `Test Suites: 5 passed, 5 total` | `frontend/src/__tests__/**` |
+| 前端构建 | `cd frontend && npm run build` | `Compiled successfully.` | `frontend/build` |
+| 后端语法 | `python -m compileall -q backend` | `无输出，退出码 0` | `backend/**` |
+| 人工 E2E | `User 在可验收环境执行 REQ-003 / REQ-004 验收` | `反馈：正常` | `docs/v2.7/test_report.md` |
+
 ## §0 审查准备
 ### A. 事实核实
 | # | 声明（出处） | 核实源 | 结论 |
@@ -219,7 +228,7 @@ GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-003-01,GWT-REQ-004-03,GWT-REQ-102-01,GWT-REQ-C006-01
 SPOTCHECK_FILE: docs/v2.7/spotcheck_testing_no-cr.md
-GWT_CHANGE_CLASS: structural
+GWT_CHANGE_CLASS: clarification
 CLARIFICATION_CONFIRMED_BY: User
 CLARIFICATION_CONFIRMED_AT: 2026-03-13
 VERIFICATION_COMMANDS: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q --tb=short,cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/serviceGovernancePage.render.test.js src/__tests__/systemListConfigPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js,cd frontend && npm run build,python -m compileall -q backend,BASE_URL=http://127.0.0.1:18080 bash scripts/api_regression.sh

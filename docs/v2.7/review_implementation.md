@@ -26,6 +26,15 @@
 ## 关键发现（按优先级）
 - 无 P0 / P1 Findings。
 
+## 证据清单
+| 验证项 | 命令 | 关键输出 | 定位 |
+|---|---|---|---|
+| 后端回归 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q --tb=short` | `242 passed, 1 warning` | `tests/**` |
+| 前端 smoke | `cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/serviceGovernancePage.render.test.js src/__tests__/systemListConfigPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js` | `Test Suites: 5 passed, 5 total` | `frontend/src/__tests__/**` |
+| 前端构建 | `cd frontend && npm run build` | `Compiled successfully.` | `frontend/build` |
+| 后端语法 | `python -m compileall -q backend` | `无输出，退出码 0` | `backend/**` |
+| 依赖差异 | `git diff --unified=0 v2.6 -- pyproject.toml requirements.txt backend/requirements.txt frontend/package.json` | `未发现新增运行时依赖` | `frontend/package.json` |
+
 ## §0 审查准备
 ### A. 事实核实
 | # | 声明 | 核实源 | 结论 |
@@ -214,7 +223,7 @@ GWT_FAIL: 0
 GWT_WARN: 0
 SPOT_CHECK_GWTS: GWT-REQ-001-01,GWT-REQ-004-02,GWT-REQ-005-02,GWT-REQ-C003-01,GWT-REQ-C007-01
 SPOTCHECK_FILE: docs/v2.7/spotcheck_implementation_no-cr.md
-GWT_CHANGE_CLASS: structural
+GWT_CHANGE_CLASS: clarification
 CLARIFICATION_CONFIRMED_BY: User
 CLARIFICATION_CONFIRMED_AT: 2026-03-13
 VERIFICATION_COMMANDS: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q --tb=short,cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/serviceGovernancePage.render.test.js src/__tests__/systemListConfigPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js,cd frontend && npm run build,python -m compileall -q backend,git diff --unified=0 v2.6 -- pyproject.toml requirements.txt backend/requirements.txt frontend/package.json,BASE_URL=http://127.0.0.1:18080 bash scripts/api_regression.sh

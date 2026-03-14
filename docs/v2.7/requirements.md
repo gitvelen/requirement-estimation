@@ -96,36 +96,36 @@
 
 | Proposal 锚点 | 类型 | 对应 REQ-ID | 验收标准 | 状态 |
 |---------------|------|------------|---------|------|
-| P-DO-01: PM 导入页仅保留需求文档、设计文档、技术方案三种文档类型 | DO | REQ-001 | GWT-REQ-001-01 | ✅已覆盖 |
-| P-DO-02: 画像数据模型重构为 5 域结构，各域字段与提案表一致 | DO | REQ-002 | GWT-REQ-002-01 | ✅已覆盖 |
-| P-DO-03: 各域预留 `extensions` 扩展字段 | DO | REQ-002 | GWT-REQ-002-02 | ✅已覆盖 |
-| P-DO-04: 新增管理员“服务治理”页，支持导入治理文档/模板并批量更新系统画像 | DO | REQ-003 | GWT-REQ-003-01 | ✅已覆盖 |
-| P-DO-05: 服务治理导入以 D3 为主更新画像，并允许对 D1/D4 做小范围语义更新 | DO | REQ-009 | GWT-REQ-009-01 | ✅已覆盖 |
-| P-DO-06: 新增系统清单导入后的画像联动能力，仅在系统首次初始化或目标画像全空时初始化命中系统画像 | DO | REQ-004 | GWT-REQ-004-02 | ✅已覆盖 |
-| P-DO-07: 建立 Skill Runtime 平台，至少包含 Registry、Router、Scene Executor、Policy Gate、Memory Reader/Writer | DO | REQ-005 | GWT-REQ-005-01 | ✅已覆盖 |
-| P-DO-08: 实现 6 个内置 Skill | DO | REQ-005 | GWT-REQ-005-02 | ✅已覆盖 |
-| P-DO-09: 每个 Skill 显式定义元数据 | DO | REQ-005 | GWT-REQ-005-03 | ✅已覆盖 |
-| P-DO-10: Runtime 支持按场景串联 Skill，而不是只做单次脚本调用 | DO | REQ-005 | GWT-REQ-005-04 | ✅已覆盖 |
-| P-DO-11: 为每个系统沉淀 Memory，记录画像更新、系统识别结论、AI 评估后功能点修改，且按类型分类 | DO | REQ-007 | GWT-REQ-007-01 | ✅已覆盖 |
-| P-DO-12: Memory 必须运用在系统画像完善、系统识别和功能点拆解三个工作中 | DO | REQ-008 | GWT-REQ-008-01 | ✅已覆盖 |
-| P-DO-13: 系统识别结果必须直接输出 `matched / ambiguous / unknown` | DO | REQ-008 | GWT-REQ-008-04 | ✅已覆盖 |
-| P-DO-14: 画像更新与功能点拆解结果的落地方式必须按场景区分 `auto_apply / draft_apply / suggestion_only / reject` | DO | REQ-009 | GWT-REQ-009-04 | ✅已覆盖 |
-| P-DO-15: 存量画像数据和向量库中历史评估报告数据完成清理 | DO | REQ-012 | GWT-REQ-012-01 | ✅已覆盖 |
-| P-DO-16: 画像面板（前端）适配新 5 域结构展示 | DO | REQ-002 | GWT-REQ-002-03 | ✅已覆盖 |
-| P-DONT-01: 不得保留“历史评估报告”和“服务治理文档”在 PM 导入页 | DONT | REQ-C001 | GWT-REQ-C001-01 | ✅已覆盖 |
-| P-DONT-02: 不得在画像数据中残留旧 schema 字段 | DONT | REQ-C002 | GWT-REQ-C002-01 | ✅已覆盖 |
-| P-DONT-03: 自动导入或自动更新不得覆盖 PM 已确认的 `manual` 内容 | DONT | REQ-C003 | GWT-REQ-C003-01 | ✅已覆盖 |
-| P-DONT-04: 不得把 Skill 和 Memory 设计成不可扩展结构 | DONT | REQ-C004 | GWT-REQ-C004-01 | ✅已覆盖 |
-| P-DONT-05: 系统识别不得只给候选列表而不做直接判定 | DONT | REQ-C005 | GWT-REQ-C005-01 | ✅已覆盖 |
-| P-DONT-06: 不得破坏现有评估流程 | DONT | REQ-C006 | GWT-REQ-C006-01 | ✅已覆盖 |
-| P-DONT-07: 不得引入新的外部依赖 | DONT | REQ-C007 | GWT-REQ-C007-01 | ✅已覆盖 |
-| P-DONT-08: 系统清单后续月度更新或覆盖导入不得覆盖非空画像；空画像判定仅看 `profile_data` 下 D1-D5 canonical 字段 | DONT | REQ-C008 | GWT-REQ-C008-01 | ✅已覆盖 |
-| P-METRIC-01: 画像域字段数 ≥ 20（含 `extensions`） | METRIC | REQ-101 | GWT-REQ-101-01 | ✅已覆盖 |
-| P-METRIC-02: PM 导入页文档类型 = 3 种 | METRIC | REQ-001 | GWT-REQ-001-02 | ✅已覆盖 |
-| P-METRIC-03: 服务治理导入自动匹配更新成功率 ≥ 95% | METRIC | REQ-102 | GWT-REQ-102-01 | ✅已覆盖 |
-| P-METRIC-04: 6 个内置 Skill 全部实现、正确路由，并通过独立功能测试 | METRIC | REQ-103 | GWT-REQ-103-01 | ✅已覆盖 |
-| P-METRIC-05: 三类 Memory 写入覆盖率 = 100% | METRIC | REQ-104 | GWT-REQ-104-01 | ✅已覆盖 |
-| P-METRIC-06: 存量旧 schema 画像数据 = 0 | METRIC | REQ-105 | GWT-REQ-105-01 | ✅已覆盖 |
+| P-DO-01: PM 导入页仅保留需求文档、设计文档、技术方案三种文档类型 | DO | REQ-001 | REQ-001-ACC-01 | ✅已覆盖 |
+| P-DO-02: 画像数据模型重构为 5 域结构，各域字段与提案表一致 | DO | REQ-002 | REQ-002-ACC-01 | ✅已覆盖 |
+| P-DO-03: 各域预留 `extensions` 扩展字段 | DO | REQ-002 | REQ-002-ACC-02 | ✅已覆盖 |
+| P-DO-04: 新增管理员“服务治理”页，支持导入治理文档/模板并批量更新系统画像 | DO | REQ-003 | REQ-003-ACC-01 | ✅已覆盖 |
+| P-DO-05: 服务治理导入以 D3 为主更新画像，并允许对 D1/D4 做小范围语义更新 | DO | REQ-009 | REQ-009-ACC-01 | ✅已覆盖 |
+| P-DO-06: 新增系统清单导入后的画像联动能力，仅在系统首次初始化或目标画像全空时初始化命中系统画像 | DO | REQ-004 | REQ-004-ACC-02 | ✅已覆盖 |
+| P-DO-07: 建立 Skill Runtime 平台，至少包含 Registry、Router、Scene Executor、Policy Gate、Memory Reader/Writer | DO | REQ-005 | REQ-005-ACC-01 | ✅已覆盖 |
+| P-DO-08: 实现 6 个内置 Skill | DO | REQ-005 | REQ-005-ACC-02 | ✅已覆盖 |
+| P-DO-09: 每个 Skill 显式定义元数据 | DO | REQ-005 | REQ-005-ACC-03 | ✅已覆盖 |
+| P-DO-10: Runtime 支持按场景串联 Skill，而不是只做单次脚本调用 | DO | REQ-005 | REQ-005-ACC-04 | ✅已覆盖 |
+| P-DO-11: 为每个系统沉淀 Memory，记录画像更新、系统识别结论、AI 评估后功能点修改，且按类型分类 | DO | REQ-007 | REQ-007-ACC-01 | ✅已覆盖 |
+| P-DO-12: Memory 必须运用在系统画像完善、系统识别和功能点拆解三个工作中 | DO | REQ-008 | REQ-008-ACC-01 | ✅已覆盖 |
+| P-DO-13: 系统识别结果必须直接输出 `matched / ambiguous / unknown` | DO | REQ-008 | REQ-008-ACC-04 | ✅已覆盖 |
+| P-DO-14: 画像更新与功能点拆解结果的落地方式必须按场景区分 `auto_apply / draft_apply / suggestion_only / reject` | DO | REQ-009 | REQ-009-ACC-04 | ✅已覆盖 |
+| P-DO-15: 存量画像数据和向量库中历史评估报告数据完成清理 | DO | REQ-012 | REQ-012-ACC-01 | ✅已覆盖 |
+| P-DO-16: 画像面板（前端）适配新 5 域结构展示 | DO | REQ-002 | REQ-002-ACC-03 | ✅已覆盖 |
+| P-DONT-01: 不得保留“历史评估报告”和“服务治理文档”在 PM 导入页 | DONT | REQ-C001 | REQ-C001-ACC-01 | ✅已覆盖 |
+| P-DONT-02: 不得在画像数据中残留旧 schema 字段 | DONT | REQ-C002 | REQ-C002-ACC-01 | ✅已覆盖 |
+| P-DONT-03: 自动导入或自动更新不得覆盖 PM 已确认的 `manual` 内容 | DONT | REQ-C003 | REQ-C003-ACC-01 | ✅已覆盖 |
+| P-DONT-04: 不得把 Skill 和 Memory 设计成不可扩展结构 | DONT | REQ-C004 | REQ-C004-ACC-01 | ✅已覆盖 |
+| P-DONT-05: 系统识别不得只给候选列表而不做直接判定 | DONT | REQ-C005 | REQ-C005-ACC-01 | ✅已覆盖 |
+| P-DONT-06: 不得破坏现有评估流程 | DONT | REQ-C006 | REQ-C006-ACC-01 | ✅已覆盖 |
+| P-DONT-07: 不得引入新的外部依赖 | DONT | REQ-C007 | REQ-C007-ACC-01 | ✅已覆盖 |
+| P-DONT-08: 系统清单后续月度更新或覆盖导入不得覆盖非空画像；空画像判定仅看 `profile_data` 下 D1-D5 canonical 字段 | DONT | REQ-C008 | REQ-C008-ACC-01 | ✅已覆盖 |
+| P-METRIC-01: 画像域字段数 ≥ 20（含 `extensions`） | METRIC | REQ-101 | REQ-101-ACC-01 | ✅已覆盖 |
+| P-METRIC-02: PM 导入页文档类型 = 3 种 | METRIC | REQ-001 | REQ-001-ACC-02 | ✅已覆盖 |
+| P-METRIC-03: 服务治理导入自动匹配更新成功率 ≥ 95% | METRIC | REQ-102 | REQ-102-ACC-01 | ✅已覆盖 |
+| P-METRIC-04: 6 个内置 Skill 全部实现、正确路由，并通过独立功能测试 | METRIC | REQ-103 | REQ-103-ACC-01 | ✅已覆盖 |
+| P-METRIC-05: 三类 Memory 写入覆盖率 = 100% | METRIC | REQ-104 | REQ-104-ACC-01 | ✅已覆盖 |
+| P-METRIC-06: 存量旧 schema 画像数据 = 0 | METRIC | REQ-105 | REQ-105-ACC-01 | ✅已覆盖 |
 
 **覆盖性确认**：
 - Proposal 共 30 个锚点（16 个 DO + 8 个 DONT + 6 个 METRIC）。
@@ -1091,14 +1091,14 @@
 
 | REQ-ID | 禁止项名称 | 适用范围 | 来源 | 关联GWT-ID |
 |--------|-----------|---------|------|-----------|
-| REQ-C001 | 禁止在 PM 导入页保留历史评估报告和服务治理文档入口 | PM 导入页、相关模板下载与旧类型导入请求 | proposal §P-DONT-01 | GWT-REQ-C001-01, GWT-REQ-C001-02 |
-| REQ-C002 | 禁止保留旧 schema 字段和旧数据残留 | 画像数据结构、旧 schema 数据、历史评估报告存量数据 | proposal §P-DONT-02 | GWT-REQ-C002-01, GWT-REQ-C002-02 |
-| REQ-C003 | 禁止自动更新覆盖 PM 已确认的 `manual` 内容 | 画像自动更新链路、字段来源判定、结果摘要 | proposal §P-DONT-03 | GWT-REQ-C003-01, GWT-REQ-C003-02 |
-| REQ-C004 | 禁止把 Skill 与 Memory 设计成不可扩展结构 | Skill Registry、Memory 模型、未来 Skill/Memory 扩展 | proposal §P-DONT-04 | GWT-REQ-C004-01, GWT-REQ-C004-02 |
-| REQ-C005 | 禁止系统识别只返回候选列表而不做直接判定 | 系统识别结果结构、任务链路输入 | proposal §P-DONT-05 | GWT-REQ-C005-01 |
-| REQ-C006 | 禁止破坏现有评估主链路和报告语义 | 创建任务、分配专家、专家评估、报告查询/导出链路 | proposal §P-DONT-06 | GWT-REQ-C006-01, GWT-REQ-C006-02 |
-| REQ-C007 | 禁止引入新的外部依赖 | 后端运行时依赖、前端运行时依赖 | proposal §P-DONT-07 | GWT-REQ-C007-01 |
-| REQ-C008 | 禁止系统清单导入覆盖非空画像 | 系统清单 confirm 联动、空画像判定、月度更新/覆盖导入 | proposal §P-DONT-08 | GWT-REQ-C008-01, GWT-REQ-C008-02 |
+| REQ-C001 | 禁止在 PM 导入页保留历史评估报告和服务治理文档入口 | PM 导入页、相关模板下载与旧类型导入请求 | proposal §P-DONT-01 | REQ-C001-ACC-01, REQ-C001-ACC-02 |
+| REQ-C002 | 禁止保留旧 schema 字段和旧数据残留 | 画像数据结构、旧 schema 数据、历史评估报告存量数据 | proposal §P-DONT-02 | REQ-C002-ACC-01, REQ-C002-ACC-02 |
+| REQ-C003 | 禁止自动更新覆盖 PM 已确认的 `manual` 内容 | 画像自动更新链路、字段来源判定、结果摘要 | proposal §P-DONT-03 | REQ-C003-ACC-01, REQ-C003-ACC-02 |
+| REQ-C004 | 禁止把 Skill 与 Memory 设计成不可扩展结构 | Skill Registry、Memory 模型、未来 Skill/Memory 扩展 | proposal §P-DONT-04 | REQ-C004-ACC-01, REQ-C004-ACC-02 |
+| REQ-C005 | 禁止系统识别只返回候选列表而不做直接判定 | 系统识别结果结构、任务链路输入 | proposal §P-DONT-05 | REQ-C005-ACC-01 |
+| REQ-C006 | 禁止破坏现有评估主链路和报告语义 | 创建任务、分配专家、专家评估、报告查询/导出链路 | proposal §P-DONT-06 | REQ-C006-ACC-01, REQ-C006-ACC-02 |
+| REQ-C007 | 禁止引入新的外部依赖 | 后端运行时依赖、前端运行时依赖 | proposal §P-DONT-07 | REQ-C007-ACC-01 |
+| REQ-C008 | 禁止系统清单导入覆盖非空画像 | 系统清单 confirm 联动、空画像判定、月度更新/覆盖导入 | proposal §P-DONT-08 | REQ-C008-ACC-01, REQ-C008-ACC-02 |
 
 ### 4A.2 禁止项明细
 

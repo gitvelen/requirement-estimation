@@ -40,8 +40,8 @@ hotfix_max_diff_files: 3
 #   result_gate_build_command: "cd web && npm run build"
 #   result_gate_typecheck_command: "cd web && npm run typecheck"
 result_gate_test_command: "bash scripts/tests/run-all.sh"
-result_gate_build_command: "bash -n scripts/git-hooks/pre-commit scripts/git-hooks/commit-msg scripts/git-hooks/post-commit scripts/check_quality_debt.sh scripts/cc-hooks/pre-write-dispatcher.sh scripts/cc-hooks/phase-entry-gate.sh scripts/cc-hooks/phase-exit-gate.sh scripts/cc-hooks/doc-scope-guard.sh"
-result_gate_typecheck_command: "bash -n scripts/lib/common.sh scripts/lib/validation.sh scripts/lib/review_gate_common.sh"
+result_gate_build_command: "bash -n .aicoding/scripts/git-hooks/pre-commit .aicoding/scripts/git-hooks/commit-msg .aicoding/scripts/git-hooks/post-commit .aicoding/scripts/check_quality_debt.sh .aicoding/scripts/cc-hooks/pre-write-dispatcher.sh .aicoding/scripts/cc-hooks/phase-entry-gate.sh .aicoding/scripts/cc-hooks/phase-exit-gate.sh .aicoding/scripts/cc-hooks/doc-scope-guard.sh"
+result_gate_typecheck_command: "bash -n .aicoding/scripts/lib/common.sh .aicoding/scripts/lib/validation.sh .aicoding/scripts/lib/review_gate_common.sh"
 
 # 入口门禁模式（M2）
 # entry_gate_mode: 入口门禁模式（warn/block）
