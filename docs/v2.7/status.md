@@ -1,37 +1,37 @@
 ---
 _baseline: v2.6
 _current: HEAD
-_workflow_mode: auto
-_run_status: running
-_change_status: in_progress
+_workflow_mode: semi-auto
+_run_status: completed
+_change_status: done
 _change_level: major
 _review_round: 0
-_phase: Testing
+_phase: Deployment
 ---
 
 | 项 | 值 |
 |---|---|
 | 版本号 | v2.7 |
 | 变更目录 | `docs/v2.7/` |
-| 当前阶段 | Testing |
-| 变更状态 | In Progress |
+| 当前阶段 | Deployment |
+| 变更状态 | Done |
 | 变更分级 | major |
 | 基线版本（对比口径） | `v2.6` |
 | 当前代码版本 | HEAD |
 | 本次复查口径 | full |
 | 当前执行 AI | Codex |
 | 人类决策人 | User |
-| 最后更新 | 2026-03-14 |
+| 最后更新 | 2026-03-15 |
+| 完成日期 | 2026-03-15 |
+| 发布日期 | 2026-03-15 |
 
 ## 变更摘要
-- v2.7 已完成 Implementation 收口并进入 Testing；自动化回归已跑通，`REQ-003/REQ-004` 的人工 E2E 与 Deployment 收口待完成
-- Proposal 范围已从旧版“5 个 Skill + 脚本式提取”升级为“6 个内置 Skill + Skill Runtime + Per-System Memory 资产层”
-- 新增管理员“服务治理”页导入能力，要求以 D3 为主更新画像，并对 D1/D4 形成按场景受控的语义更新结果
-- 新增系统清单导入后的画像联动能力，但已收敛为“仅首次初始化或空画像时初始化写入，非空画像跳过且不进入 PM 建议流”
-- 明确系统识别必须输出直接判定，功能点拆解必须读取画像与 Memory，并将 AI 评估后的修改继续沉淀为 Memory
-- `proposal.md` 已同步到 v0.6，`requirements.md` 已升级到 v0.13，`review_requirements.md` 已完成第 6 轮复审并收敛；`design.md` 已升级到 v0.4，`review_design.md` 已完成第 3 轮自审并通过；`plan.md` 已升级到 v0.3，`review_planning.md` 已完成第 1 轮自审并通过；`review_implementation.md`、`test_report.md`、`review_testing.md` 已产出
-- T001-T009 已完成；其中 T009 已补齐自动化回归、契约校验、最新治理模板口径收敛与 Testing 阶段前端可读性/交互回归收敛（回溯 CR：`CR-20260314-001`）
-- 当前处于 Testing 阶段：自动化回归与文档闭环已完成，等待 Deployment 留痕与 `REQ-003/REQ-004` 人工 E2E 收口
+- v2.7 已完成 Implementation、Testing 与 Deployment 收口；`REQ-003/REQ-004` 的人工 E2E 已在 STAGING/TEST 完成并通过
+- Proposal 范围已从旧版“5 个 Skill + 脚本式提取”升级为“6 个内置 Skill + Skill Runtime + Per-System Memory 资产层”，并形成统一 execution / Memory 记录链路
+- PM 导入页已收敛为 `需求文档 / 设计文档 / 技术方案` 三类；信息展示页保持既有“系统 TAB + 5 个域 TAB”交互，只展示 D1-D5 canonical 与 AI 建议
+- 管理员“服务治理”页与“系统清单”页已按最新口径完成用户可读化；治理模板以 `data/esb-template.xlsx` 为准，系统清单 confirm 仅初始化空画像并返回系统名称与用户可读跳过原因
+- `proposal.md`、`requirements.md`、`design.md`、`plan.md`、`review_implementation.md`、`test_report.md`、`review_testing.md`、`deployment.md` 与 5 份主文档已同步完成
+- 自动化回归、前端 smoke/build、后端 compileall、API regression 与回溯 CR `CR-20260314-001` 的证据已闭环；2026-03-14 23:42 已完成 STAGING/TEST 运行态发布，2026-03-14 23:59 User 完成 `REQ-003/REQ-004` 人工 E2E 并反馈“正常”
 
 ## 目标与成功指标
 | ID | 指标定义（可判定） | 基线（v2.6） | 目标（v2.7） | 统计窗口 | 数据源 |
@@ -79,7 +79,8 @@ _phase: Testing
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠“文件存在性”推断导致误判。
 - 第 2 轮 Requirements 复审结论已被用户新增范围正式作废；Requirements 以 2026-03-13 的第 6 轮复审结果为准，并已在同日获人工确认进入 Design。
-- 当前处于 Testing 阶段：自动化回归、契约校验与测试留痕已完成，且服务治理最新模板已固定为 `data/esb-template.xlsx`；`CR-20260314-001` 已作为 Implemented 回溯记录落盘，当前无 Active CR。
+- `CR-20260314-001` 已以回溯记录方式收口为 Implemented；当前无 Active CR。
+- v2.7 的自动化回归、人工验收、Deployment 留痕与主文档同步已形成闭环，可作为 `v2.7` 发布基线。
 
 ---
 
@@ -91,11 +92,13 @@ _phase: Testing
 | Requirements | Design | 2026-03-13 | Requirements 第 6 轮复审收敛，且用户确认进入 Design | User + Codex | 系统清单联动已收敛为“首次初始化/空画像补写，非空画像跳过” |
 | Design | Planning | 2026-03-13 | Design 第 3 轮复审通过，且用户确认进入 Planning | User + Codex | 开始编写 `plan.md`，按 requirements/design 做任务反向覆盖与验证命令拆解 |
 | Planning | Implementation | 2026-03-13 | Planning 第 1 轮复审收敛，且用户确认进入 Implementation | User + Codex | 先执行 T001~T003，并在 T006（M1🏁）前按后端里程碑展示协议暂停汇报 |
-| Implementation | Testing | 2026-03-14 | T001-T008 完成，Implementation 自审收敛，Testing 输入与自动化证据已就绪 | Codex | 已产出 `review_implementation.md` / `test_report.md` / `review_testing.md`；`REQ-003/REQ-004` 人工 E2E 验证待补 |
+| Implementation | Testing | 2026-03-14 | T001-T009 完成，Implementation 自审收敛，Testing 输入与自动化证据已就绪 | Codex | 已产出 `review_implementation.md` / `test_report.md` / `review_testing.md`；`REQ-003/REQ-004` 人工 E2E 待补 |
+| Testing | Deployment | 2026-03-14 | `REQ-003/REQ-004` 人工 E2E 完成且 Deployment 留痕闭环 | User + Codex | 最新治理模板固定为 `data/esb-template.xlsx`；STAGING/TEST 验收通过并切换为 Deployment 完成态 |
 
 ## CR状态更新记录（部署后填写）
 | CR-ID | 之前状态 | 之后状态 | 上线日期 | 备注 |
 |-------|---------|---------|---------|------|
+| CR-20260314-001 | Accepted | Implemented | 2026-03-14 | 回溯记录 Testing 阶段前端可读性与交互回归收敛，已纳入 v2.7 测试与部署闭环 |
 
 ## 紧急中断记录
 | 触发时间 | 原因 | 当前状态 | 恢复条件 |
