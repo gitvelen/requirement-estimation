@@ -16,7 +16,6 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from backend.config.config import settings
 from backend.api.routes import router
-from backend.api.subsystem_routes import router as subsystem_router
 from backend.api.cosmic_routes import router as cosmic_router
 from backend.api.system_routes import router as system_router
 from backend.api.knowledge_routes import router as knowledge_router
@@ -99,7 +98,6 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(router)
-app.include_router(subsystem_router)
 app.include_router(cosmic_router)
 app.include_router(system_router)
 app.include_router(knowledge_router)

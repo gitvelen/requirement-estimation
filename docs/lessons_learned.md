@@ -14,6 +14,8 @@
 - **R7**（实现）：开始任何实现前，必须建立TodoList，逐项勾选完成；完成后更新TodoList状态
 - **R8**（前端质量）：页面级改动必须至少包含 1 条“首屏渲染不崩溃”测试；`no-use-before-define` 视为阻断项，不得以 warning 放行
 - **R9**（配置）：必须明确区分“需求目标模型口径”“样例配置文件”“当前部署主机实际配置源”；跨阶段文档只允许一套 canonical 模型名
+- **R10**（运行态验证）：修复缺陷后必须核对“工作区源码、运行中容器、已部署静态资源”三者一致；未验证运行态前，不得宣称“已修复可验收”
+- **R11**（前端交互）：用户明确要求“不可改的交互形式”和“前端不该展示的信息”必须先整理成禁改清单；内部 ID/scene/status code/对象结构不得直接渲染到 UI，且发现 1 处同类问题后必须联排全页/全链路
 
 ---
 
@@ -222,3 +224,56 @@
   - `docker-compose config | rg -n "DASHSCOPE_API_KEY|ADMIN_API_KEY|JWT_SECRET|KNOWLEDGE_ENABLED|KNOWLEDGE_VECTOR_STORE"`
 - **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R9`，建议纳入 Proposal/Deployment 阶段门禁）
 - **证据/关联**：`docs/v2.6/cr/CR-20260309-001.md`、`docs/v2.6/proposal.md`、`docs/v2.6/requirements.md`、`docs/v2.6/deployment.md`、`docs/部署记录.md`
+
+---
+
+### 2026-03-14｜只核对源码未核对运行态，导致“已修复”判断失真（实现/部署/验证）
+- **标签**：实现、部署、验证、返工
+- **触发（事实）**：本轮修复“贷款核算 D1 采纳新建议无反应”时，工作区源码已包含修复，但运行中的 `requirement-backend` 容器仍是旧镜像；同时前端页面虽已修改源码，但未重新确认已部署的静态资源是否更新，导致用户看到的实际系统行为与我口头描述不一致。
+- **根因**：
+  1. 把“本地代码已改”误当成“系统已生效”，没有显式区分工作区源码、容器内运行代码、浏览器实际加载的静态资源。
+  2. 缺少修复后的三层核对：源码 diff、容器内关键实现、对外服务实际返回/静态文件 hash。
+  3. 在用户已经连续指出问题未生效后，没有第一时间把调查重点切到运行态与部署链路。
+- **影响**：
+  - 错把“未部署/未加载新资源”当成“功能逻辑仍有问题”，增加无效排查和往返沟通成本。
+  - 用户拿到“可以验证”的信号后却仍看到旧行为，直接损害信任。
+- **改进行动（可执行）**：
+  1. 缺陷修复完成后，必须同时核对三处：工作区源码、运行中容器文件、对外服务/静态资源。
+  2. 后端问题至少执行：健康检查 + 容器内关键代码 grep + 一条最小接口或函数级回归验证。
+  3. 前端问题至少执行：`eslint` + `npm run build` + 校验 Nginx/静态目录实际指向的新 bundle hash。
+  4. 向用户回复“可验证”前，必须附上至少一条运行态证据，而不是只引用源码状态。
+- **验证方式（可复现）**：
+  - `docker exec requirement-backend sh -lc "grep -n '_resolve_v27_canonical_sub_field\\|current_canonical_payload\\[target_sub_field\\]\\|ai_suggestions_previous' /app/backend/service/system_profile_service.py"`
+  - `curl -sf http://127.0.0.1:443/api/v1/health`
+  - `cd frontend && npx eslint src/pages/SystemProfileBoardPage.js src/__tests__/systemProfileBoardPage.v27.test.js`
+  - `cd frontend && npm run build`
+  - `curl -sf http://127.0.0.1 | rg -o "main\\.[a-f0-9]+\\.(js|css)"`
+- **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R10`，建议纳入 Testing/Deployment 阶段“运行态一致性”门禁）
+- **证据/关联**：`backend/service/system_profile_service.py`，`frontend/src/pages/SystemProfileBoardPage.js`，`frontend/src/__tests__/systemProfileBoardPage.v27.test.js`，`docker-compose.yml`
+
+---
+
+### 2026-03-14｜把后台实现视角带到前端，且未把用户交互边界当成硬约束，导致连续返工（前端/交互/验证）
+- **标签**：前端、交互、验收、返工
+- **触发（事实）**：本轮系统画像与知识导入改造中，用户连续指出以下问题：1）页面交互形式偏离上个版本，系统 TAB 和 5 个域 TAB 被大改；2）前端暴露了 `execution_id`、`scene`、原始状态码、来源、操作人、扩展信息、Memory 资产等后台信息；3）结构化建议对象直接渲染成 `[object Object]`；4）修复时只改单点，没有举一反三排查同类问题，导致多轮往返。
+- **根因**：
+  1. **以后端返回结构驱动前端展示**：直接按接口结构渲染，没有先做“用户可读”转换层，导致内部元数据和对象结构泄漏到页面。
+  2. **没有把用户明确口径升级为禁改边界**：对“不要展示什么”“交互形式不能改”“保持上版体验”这类要求，没有在动手前整理成硬约束清单。
+  3. **修点不修面**：发现一个展示缺陷后，没有立即联排同类页面、同类字段、同类建议渲染路径。
+  4. **证据意识不足**：在真实导入文件、真实返回数据、真实运行态未充分核对时，先按推测做了实现和解释。
+- **影响**：
+  - 同一批问题被用户多次指出，造成明显返工和信任损耗。
+  - 前端出现“反人类”展示，直接影响业务验收效率。
+  - 局部修复掩盖了系统性问题，增加后续排查成本。
+- **改进行动（可执行）**：
+  1. **先列 UI 禁改清单再动手**：凡用户明确说“不可改/不要展示/保持上版”的内容，必须先整理成页面级 checklist，并在实现与自测时逐项核对。
+  2. **前端统一做用户视角适配**：后端的 `execution_id`、`scene_id`、原始状态码、结构化 suggestion wrapper、来源元数据等，只能在适配后按用户可读文案展示，禁止直接 render。
+  3. **发现 1 处同类问题后联排全页/全链路**：例如发现对象直出或内部字段泄漏时，立即全局检查导入页、历史区、结果区、详情页、建议区、事件区是否存在相同模式问题。
+  4. **涉及导入/模板问题必须优先取真实证据**：优先保留并读取用户真实导入文件、真实接口返回、真实数据库/运行态结果，不以本地样例或记忆替代。
+  5. **验收前补一轮“人类视角 smoke”**：至少从“普通业务用户是否看得懂、是否符合上版操作习惯、是否暴露后台概念”三个角度过一遍页面。
+- **验证方式（可复现）**：
+  - `rg -n "execution_id|scene_id|\\[object Object\\]|来源：|操作人|扩展信息|Memory 资产" frontend/src`
+  - `cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js`
+  - 人工检查：逐页确认“系统 TAB / 5 域 TAB 交互形式未偏离上版、页面不出现内部 ID/scene/status code/对象文本”
+- **升级（规则/清单/自动化）**：是（已升级为 Quick Index `R11`，建议后续把“前端禁改清单 + 内部元数据泄漏扫描”纳入页面改动门禁）
+- **证据/关联**：`frontend/src/pages/SystemProfileBoardPage.js`，`frontend/src/pages/SystemProfileImportPage.js`，`frontend/src/components/MainLayout.js`，`frontend/src/__tests__/systemProfileBoardPage.v27.test.js`，`frontend/src/__tests__/systemProfileImportPage.render.test.js`，`frontend/src/__tests__/navigationAndPageTitleRegression.test.js`

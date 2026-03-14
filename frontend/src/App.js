@@ -18,6 +18,7 @@ import DashboardRankingsPage from './pages/DashboardRankingsPage';
 import DashboardReportsPage from './pages/DashboardReportsPage';
 import SystemProfileImportPage from './pages/SystemProfileImportPage';
 import SystemProfileBoardPage from './pages/SystemProfileBoardPage';
+import ServiceGovernancePage from './pages/ServiceGovernancePage';
 import MainLayout from './components/MainLayout';
 import RequireAuth from './components/RequireAuth';
 import RequireRole from './components/RequireRole';
@@ -230,7 +231,7 @@ function App() {
             <Route
               path="/system-profiles"
               element={(
-                <RequireRole roles={['manager']}>
+                <RequireRole roles={['manager', 'admin', 'expert']}>
                   <SystemProfilesRedirect />
                 </RequireRole>
               )}
@@ -246,7 +247,7 @@ function App() {
             <Route
               path="/system-profiles/board"
               element={(
-                <RequireRole roles={['manager']}>
+                <RequireRole roles={['manager', 'admin', 'expert']}>
                   <SystemProfileBoardPage />
                 </RequireRole>
               )}
@@ -313,6 +314,14 @@ function App() {
               element={(
                 <RequireRole roles={['admin']}>
                   <SystemListConfigPage />
+                </RequireRole>
+              )}
+            />
+            <Route
+              path="/admin/service-governance"
+              element={(
+                <RequireRole roles={['admin']}>
+                  <ServiceGovernancePage />
                 </RequireRole>
               )}
             />

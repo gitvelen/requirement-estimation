@@ -1,10 +1,39 @@
 .app-layout {
-  min-height: 100vh;
+  height: 100vh;
   background: #f5f7fb;
+  overflow: hidden;
 }
 
 .app-sider {
   background: #1f2a44;
+  height: 100vh;
+}
+
+.app-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-sider-menu {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 12px;
+}
+
+.app-sider-menu .ant-menu {
+  min-height: 100%;
+  border-inline-end: none;
+}
+
+.app-shell {
+  min-width: 0;
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-logo {
@@ -39,6 +68,9 @@
 .app-header {
   background: #ffffff;
   padding: 0 24px;
+  height: 64px;
+  line-height: 64px;
+  flex: 0 0 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -75,6 +107,9 @@
 }
 
 .app-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   margin: 20px;
   padding: 0;
 }

@@ -25,9 +25,9 @@ def service(tmp_path, monkeypatch):
     return svc
 
 
-def test_local_store_basic_flow(service):
-    service.document_parser.parse = lambda *_args, **_kwargs: {"dummy": True}
-    service.document_parser.extract_system_knowledge = lambda *_args, **_kwargs: {
+def test_local_store_basic_flow(service, monkeypatch):
+    monkeypatch.setattr(service.document_parser, "parse", lambda *_args, **_kwargs: {"dummy": True})
+    monkeypatch.setattr(service.document_parser, "extract_system_knowledge", lambda *_args, **_kwargs: {
         "type": "system_profile",
         "count": 1,
         "systems": [
@@ -43,7 +43,7 @@ def test_local_store_basic_flow(service):
                 "notes": "",
             }
         ],
-    }
+    })
 
     result = service.import_from_file(
         file_content=b"dummy",
@@ -76,13 +76,13 @@ def test_local_store_basic_flow(service):
     assert rebuild.get("status") == "success"
 
 
-def test_import_requires_system_name(service):
-    service.document_parser.parse = lambda *_args, **_kwargs: {"dummy": True}
-    service.document_parser.extract_system_knowledge = lambda *_args, **_kwargs: {
+def test_import_requires_system_name(service, monkeypatch):
+    monkeypatch.setattr(service.document_parser, "parse", lambda *_args, **_kwargs: {"dummy": True})
+    monkeypatch.setattr(service.document_parser, "extract_system_knowledge", lambda *_args, **_kwargs: {
         "type": "system_profile",
         "count": 1,
         "systems": [{"system_name": "任意系统"}],
-    }
+    })
 
     result = service.import_from_file(
         file_content=b"dummy",

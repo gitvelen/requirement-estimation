@@ -88,6 +88,32 @@ describe('navigation and page title regression', () => {
     expect(configPos).toBeLessThan(dashboardPos);
   });
 
+  it('shows service governance under admin config menu and keeps subsystem entry removed', () => {
+    usePermission.mockReturnValue({
+      roles: ['admin'],
+      activeRole: 'admin',
+      setActiveRole: jest.fn(),
+      isAdmin: true,
+      isManager: false,
+      isExpert: false,
+      isViewer: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/dashboard/reports']}>
+        <Routes>
+          <Route path="/" element={<MainLayout />}>
+            <Route path="dashboard/reports" element={<div>content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const menuText = document.querySelector('.ant-menu')?.textContent || '';
+    expect(menuText).toContain('服务治理');
+    expect(menuText).not.toContain('子系统');
+  });
+
   it('keeps manager system profile entries aligned with v2.4 baseline only', () => {
     usePermission.mockReturnValue({
       roles: ['manager'],
@@ -118,6 +144,31 @@ describe('navigation and page title regression', () => {
     expect(expandedMenuText).toContain('信息展示');
     expect(expandedMenuText).not.toContain('代码扫描');
     expect(expandedMenuText).not.toContain('画像工作台');
+  });
+
+  it('renders a fixed shell so sidebar and content can scroll independently', () => {
+    usePermission.mockReturnValue({
+      roles: ['manager'],
+      activeRole: 'manager',
+      setActiveRole: jest.fn(),
+      isAdmin: false,
+      isManager: true,
+      isExpert: false,
+      isViewer: false,
+    });
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/system-profiles/import']}>
+        <Routes>
+          <Route path="/" element={<MainLayout />}>
+            <Route path="system-profiles/import" element={<div>content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(container.querySelector('.app-shell')).toBeInTheDocument();
+    expect(container.querySelector('.app-sider-menu')).toBeInTheDocument();
   });
 
   it('does not render redundant top-left title on rankings page', () => {

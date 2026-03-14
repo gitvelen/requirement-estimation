@@ -4,10 +4,10 @@
 | 项 | 值 |
 |---|---|
 | 状态 | Draft |
-| 日期 | 2026-03-13 |
-| 版本 | v0.1 |
+| 日期 | 2026-03-14 |
+| 版本 | v0.3 |
 | 基线版本（对比口径） | `v2.6` |
-| Active CR（如有） | 无 |
+| Active CR（如有） | 无（回溯记录：`CR-20260314-001`） |
 | 关联设计 | `docs/v2.7/design.md` |
 | 关联需求 | `docs/v2.7/requirements.md` |
 | 关联状态 | `docs/v2.7/status.md` |
@@ -45,15 +45,15 @@
 
 | 任务分类 | 任务ID | 任务名称 | 优先级 | 预估工时 | Owner | Reviewer | 关联CR | 关联需求项 | 关联场景（SCN） | 关联接口（API） | 关联测试（TEST） | 任务状态 | 依赖任务ID | 验证方式 | 里程碑 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 后端基础 | T001 | v2.7 canonical schema、Memory/Execution 存储与开关基座 | P0 | 1d | Codex | Codex | - | REQ-002, REQ-007, REQ-011, REQ-012, REQ-101, REQ-104, REQ-105, REQ-C002, REQ-C004, REQ-C007 | SCN-001, SCN-003, SCN-008, SCN-009 | API-003, API-004, API-005, API-009 | TEST-002, TEST-007, TEST-011, TEST-012, TEST-013 | 待办 | - | `pytest + rg` | M1 |
-| 后端基础 | T002 | Skill Runtime、Policy Gate 与 PM 文档导入链路 | P0 | 1.5d | Codex | Codex | - | REQ-001, REQ-005, REQ-006, REQ-009, REQ-011, REQ-103, REQ-C001, REQ-C004 | SCN-001, SCN-004, SCN-008 | API-001, API-002, API-003 | TEST-001, TEST-005, TEST-006, TEST-006A, TEST-009, TEST-011 | 待办 | T001 | `pytest + rg` | M1 |
-| 后端场景 | T003 | 服务治理导入改造为 admin 全局画像联动 | P0 | 1d | Codex | Codex | - | REQ-003, REQ-006, REQ-009, REQ-011, REQ-102, REQ-C003, REQ-C006 | SCN-002, SCN-004, SCN-008 | API-006, API-009 | TEST-003, TEST-006, TEST-007, TEST-009, TEST-011 | 待办 | T001,T002 | `pytest` | M1 |
-| 后端场景 | T004 | 单一系统清单解析、空画像初始化与子系统模型退场 | P0 | 1.5d | Codex | Codex | - | REQ-004, REQ-006, REQ-009, REQ-011, REQ-012, REQ-105, REQ-C002, REQ-C008 | SCN-003, SCN-008, SCN-009 | API-007, API-008 | TEST-004, TEST-006, TEST-011, TEST-012 | 待办 | T001,T002 | `pytest + rg` | M1 |
-| 后端能力 | T005 | Memory 驱动的系统识别与功能点拆解联动 | P0 | 1d | Codex | Codex | - | REQ-007, REQ-008, REQ-010, REQ-011, REQ-104, REQ-C005, REQ-C006 | SCN-006, SCN-007, SCN-008 | API-009 | TEST-007, TEST-008, TEST-010, TEST-011 | 待办 | T001,T002,T004 | `pytest` | M1 |
-| 后端能力 | T006 | `code_scan_skill` 适配层与 Runtime 接入 | P1 | 0.5d | Codex | Codex | - | REQ-005, REQ-006, REQ-009, REQ-103, REQ-C004, REQ-C007 | SCN-004 | -（复用现有 `/api/v1/code-scan/jobs*`） | TEST-005, TEST-006, TEST-013 | 待办 | T001,T002 | `pytest + rg` | M1🏁 |
-| 前端 | T007 | PM/Admin 页面、路由与交互收敛到 v2.7 口径 | P0 | 2d | Codex | Codex | - | REQ-001, REQ-002, REQ-003, REQ-004, REQ-007, REQ-009, REQ-011, REQ-C001, REQ-C008 | SCN-001, SCN-002, SCN-003, SCN-005, SCN-008 | API-001, API-003, API-006, API-008, API-009 | TEST-001, TEST-002, TEST-003, TEST-004, TEST-007, TEST-009, TEST-011 | 待办 | T002,T003,T004,T005,T006 | `npm test + npm build` | M2🏁 |
-| 部署与数据 | T008 | v2.7 清理脚本、开关发布顺序与回滚 Runbook | P1 | 0.5d | Codex | Codex | - | REQ-004, REQ-012, REQ-105, REQ-C002, REQ-C006, REQ-C007 | SCN-003, SCN-009 | API-003, API-008 | TEST-012, TEST-013 | 待办 | T001,T003,T004,T007 | `pytest + rg` | M3 |
-| 测试与证据 | T009 | 全量回归、证据闭环与主文档同步 | P0 | 1d | Codex | Codex | - | REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-101, REQ-102, REQ-103, REQ-104, REQ-105, REQ-C001, REQ-C002, REQ-C003, REQ-C004, REQ-C005, REQ-C006, REQ-C007, REQ-C008 | SCN-001~SCN-009 | API-001~API-009 | TEST-001~TEST-013 | 待办 | T001-T008 | `pytest + npm build + rg + api_regression` | M3 |
+| 后端基础 | T001 | v2.7 canonical schema、Memory/Execution 存储与开关基座 | P0 | 1d | Codex | Codex | - | REQ-002, REQ-007, REQ-011, REQ-012, REQ-101, REQ-104, REQ-105, REQ-C002, REQ-C004, REQ-C007 | SCN-001, SCN-003, SCN-008, SCN-009 | API-003, API-004, API-005, API-009 | TEST-002, TEST-007, TEST-011, TEST-012, TEST-013 | 已完成 | - | `pytest + rg` | M1 |
+| 后端基础 | T002 | Skill Runtime、Policy Gate 与 PM 文档导入链路 | P0 | 1.5d | Codex | Codex | - | REQ-001, REQ-005, REQ-006, REQ-009, REQ-011, REQ-103, REQ-C001, REQ-C004 | SCN-001, SCN-004, SCN-008 | API-001, API-002, API-003 | TEST-001, TEST-005, TEST-006, TEST-006A, TEST-009, TEST-011 | 已完成 | T001 | `pytest + rg` | M1 |
+| 后端场景 | T003 | 服务治理导入改造为 admin 全局画像联动 | P0 | 1d | Codex | Codex | - | REQ-003, REQ-006, REQ-009, REQ-011, REQ-102, REQ-C003, REQ-C006 | SCN-002, SCN-004, SCN-008 | API-006, API-009 | TEST-003, TEST-006, TEST-007, TEST-009, TEST-011 | 已完成 | T001,T002 | `pytest` | M1 |
+| 后端场景 | T004 | 单一系统清单解析、空画像初始化与子系统模型退场 | P0 | 1.5d | Codex | Codex | - | REQ-004, REQ-006, REQ-009, REQ-011, REQ-012, REQ-105, REQ-C002, REQ-C008 | SCN-003, SCN-008, SCN-009 | API-007, API-008 | TEST-004, TEST-006, TEST-011, TEST-012 | 已完成 | T001,T002 | `pytest + rg` | M1 |
+| 后端能力 | T005 | Memory 驱动的系统识别与功能点拆解联动 | P0 | 1d | Codex | Codex | - | REQ-007, REQ-008, REQ-010, REQ-011, REQ-104, REQ-C005, REQ-C006 | SCN-006, SCN-007, SCN-008 | API-009 | TEST-007, TEST-008, TEST-010, TEST-011 | 已完成 | T001,T002,T004 | `pytest` | M1 |
+| 后端能力 | T006 | `code_scan_skill` 适配层与 Runtime 接入 | P1 | 0.5d | Codex | Codex | - | REQ-005, REQ-006, REQ-009, REQ-103, REQ-C004, REQ-C007 | SCN-004 | -（复用现有 `/api/v1/code-scan/jobs*`） | TEST-005, TEST-006, TEST-013 | 已完成 | T001,T002 | `pytest + rg` | M1🏁 |
+| 前端 | T007 | PM/Admin 页面、路由与交互收敛到 v2.7 口径 | P0 | 2d | Codex | Codex | `CR-20260314-001` | REQ-001, REQ-002, REQ-003, REQ-004, REQ-007, REQ-009, REQ-011, REQ-C001, REQ-C008 | SCN-001, SCN-002, SCN-003, SCN-005, SCN-008 | API-001, API-003, API-006, API-008, API-009 | TEST-001, TEST-002, TEST-003, TEST-004, TEST-007, TEST-009, TEST-011 | 已完成 | T002,T003,T004,T005,T006 | `npm test + npm build` | M2🏁 |
+| 部署与数据 | T008 | v2.7 清理脚本、开关发布顺序与回滚 Runbook | P1 | 0.5d | Codex | Codex | - | REQ-004, REQ-012, REQ-105, REQ-C002, REQ-C006, REQ-C007 | SCN-003, SCN-009 | API-003, API-008 | TEST-012, TEST-013 | 已完成 | T001,T003,T004,T007 | `pytest + rg` | M3 |
+| 测试与证据 | T009 | 全量回归、证据闭环与主文档同步 | P0 | 1d | Codex | Codex | `CR-20260314-001` | REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-101, REQ-102, REQ-103, REQ-104, REQ-105, REQ-C001, REQ-C002, REQ-C003, REQ-C004, REQ-C005, REQ-C006, REQ-C007, REQ-C008 | SCN-001~SCN-009 | API-001~API-009 | TEST-001~TEST-013 | 已完成 | T001-T008 | `pytest + npm build + rg + api_regression` | M3 |
 
 ### 引用自检（🔴 MUST，R6）
 ```bash
@@ -81,7 +81,7 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 
 ### T001: v2.7 canonical schema、Memory/Execution 存储与开关基座
 **分类**：后端基础 / **优先级**：P0 / **预估工时**：1d / **Owner**：Codex / **Reviewer**：Codex
-**关联CR**：-
+**关联CR**：`CR-20260314-001`
 **关联需求项**：REQ-002, REQ-007, REQ-011, REQ-012, REQ-101, REQ-104, REQ-105, REQ-C002, REQ-C004, REQ-C007
 **关联场景（SCN）**：SCN-001, SCN-003, SCN-008, SCN-009
 **关联接口（API）**：API-003, API-004, API-005, API-009
@@ -117,7 +117,7 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 
 ### T002: Skill Runtime、Policy Gate 与 PM 文档导入链路
 **分类**：后端基础 / **优先级**：P0 / **预估工时**：1.5d / **Owner**：Codex / **Reviewer**：Codex
-**关联CR**：-
+**关联CR**：`CR-20260314-001`
 **关联需求项**：REQ-001, REQ-005, REQ-006, REQ-009, REQ-011, REQ-103, REQ-C001, REQ-C004
 **关联场景（SCN）**：SCN-001, SCN-004, SCN-008
 **关联接口（API）**：API-001, API-002, API-003
@@ -292,7 +292,7 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 **关联测试（TEST）**：TEST-001, TEST-002, TEST-003, TEST-004, TEST-007, TEST-009, TEST-011
 **任务描述**：
 - 修改 `frontend/src/pages/SystemProfileImportPage.js`，只保留三类 PM 文档卡片，删除 `history_report` / `esb` 常量与模板映射，并把轮询切到 `profile/execution-status`。
-- 修改 `frontend/src/pages/SystemProfileBoardPage.js` 读取 `profile_data.<domain>.canonical`，新增 `extensions` 与 Memory 入口；新增 `frontend/src/pages/ServiceGovernancePage.js` 承载 admin 服务治理页。
+- 修改 `frontend/src/pages/SystemProfileBoardPage.js` 读取 `profile_data.<domain>.canonical`，保持既有系统TAB/域TAB交互，并收敛前端禁展示项；新增 `frontend/src/pages/ServiceGovernancePage.js` 承载 admin 服务治理页。
 - 修改 `frontend/src/pages/SystemListConfigPage.js` / `frontend/src/pages/MainSystemConfigPage.js` / `frontend/src/App.js` / `frontend/src/components/MainLayout.js`，使系统清单页仅保留单一导入视图，不再展示子系统 tab，并新增 `/admin/service-governance` 路由。
 **影响面/修改范围**：
 - `frontend/src/App.js`
@@ -309,17 +309,17 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 - `frontend/src/__tests__/navigationAndPageTitleRegression.test.js`
 **验收标准**：
 - [ ] PM 导入页只显示 3 类文档，旧类型入口不可见且服务端拒绝
-- [ ] 系统画像面板按 D1-D5 canonical + extensions 展示，并能查看 Memory
-- [ ] 系统清单页不再出现主/子系统双 tab，confirm 结果区展示 `updated_system_ids` 与 `skipped_items`
+- [ ] 系统画像面板保持既有“系统TAB + 5域TAB”交互，只展示 D1-D5 canonical 与 AI 建议，前端不展示来源/操作人/扩展信息/Memory
+- [ ] 系统清单页不再出现主/子系统双 tab，confirm 结果区展示已更新系统名称、预检错误与用户可读跳过原因
 - [ ] 页面级改动都具备首屏渲染 smoke 证据
 **验证方式**（🔴 MUST，必须可复现）：
 - 命令：`cd frontend && CI=true npm test -- --watchAll=false --runInBand src/__tests__/systemProfileImportPage.render.test.js src/__tests__/systemProfileBoardPage.v27.test.js src/__tests__/serviceGovernancePage.render.test.js src/__tests__/systemListConfigPage.v27.test.js src/__tests__/navigationAndPageTitleRegression.test.js`
-- 预期：退出码 0，覆盖首屏渲染、角色路由、单 tab 系统清单、PM 三类导入与 Memory 入口
+- 预期：退出码 0，覆盖首屏渲染、角色路由、单 tab 系统清单、PM 三类导入、结果区用户可读化与导航回归
 - 命令：`cd frontend && npm run build`
 - 预期：退出码 0，前端可构建，无首屏渲染阻断项
 **里程碑展示（如标注 🏁）**：
 - 展示内容：PM 导入页、系统画像面板、admin 服务治理页、单 tab 系统清单页的真实界面与关键交互
-- 确认要点：用户确认页面信息架构、文案、结果区字段和 Memory 展示方式后，再进入清理与全量回归
+- 确认要点：用户确认页面信息架构、文案、结果区字段与禁展示项均保持收敛后，再进入清理与全量回归
 **回滚/开关策略（如涉及线上行为变化）**：
 - 回滚条件：页面首屏崩溃、权限路由错误或系统清单页面信息架构不符合 v2.7
 - 回滚步骤：前端回退至 v2.6 构建；后端保留 alias 和关闭相关开关
@@ -327,7 +327,7 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 
 ### T008: v2.7 清理脚本、开关发布顺序与回滚 Runbook
 **分类**：部署与数据 / **优先级**：P1 / **预估工时**：0.5d / **Owner**：Codex / **Reviewer**：Codex
-**关联CR**：-
+**关联CR**：`CR-20260314-001`
 **关联需求项**：REQ-004, REQ-012, REQ-105, REQ-C002, REQ-C006, REQ-C007
 **关联场景（SCN）**：SCN-003, SCN-009
 **关联接口（API）**：API-003, API-008
@@ -372,7 +372,7 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 **关联测试（TEST）**：TEST-001~TEST-013
 **任务描述**：
 - 汇总并执行 v2.7 的后端、前端、静态检查、接口回归与部署 smoke，产出 `docs/v2.7/test_report.md`。
-- 在 `docs/v2.7/review_implementation.md`、`docs/v2.7/review_testing.md`、`docs/v2.7/status.md` 中沉淀结论与证据链，确保后续阶段门禁可复现。
+- 在 `docs/v2.7/review_implementation.md`、`docs/v2.7/review_testing.md`、`docs/v2.7/status.md` 中沉淀结论与证据链，补齐回溯 CR `CR-20260314-001`，确保后续阶段门禁可复现。
 - 追加 `docs/v2.7/implementation_checklist.md`，显式列出 T001-T009 的执行顺序与里程碑暂停点。
 **影响面/修改范围**：
 - `docs/v2.7/test_report.md`
@@ -452,3 +452,5 @@ bash -lc 'source .aicoding/scripts/lib/review_gate_common.sh && review_gate_vali
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | v0.1 | 2026-03-13 | 初始化 v2.7 Planning 首版任务拆解，覆盖 Runtime、schema、服务治理、系统清单、Memory、前端改造、清理发布与全量回归 |
+| v0.2 | 2026-03-14 | 回填 Testing 阶段前端可读性/交互回归收敛的回溯 CR `CR-20260314-001`，并修正 T007/T009 的验收口径为用户可读展示边界 |
+| v0.3 | 2026-03-14 | 回填 `REQ-003/REQ-004` 人工 E2E 通过结果，并将 T009 同步为已完成 |

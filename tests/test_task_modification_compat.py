@@ -12,7 +12,7 @@ if ROOT_DIR not in sys.path:
 from backend.app import app
 from backend.api import routes as task_routes
 from backend.config.config import settings
-from backend.service import user_service
+from backend.service import memory_service, user_service
 
 
 @pytest.fixture()
@@ -22,12 +22,14 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, 'REPORT_DIR', str(data_dir))
     monkeypatch.setattr(settings, 'DEBUG', False)
+    monkeypatch.setattr(settings, 'ENABLE_V27_RUNTIME', True)
 
     monkeypatch.setattr(user_service, 'USER_STORE_PATH', str(data_dir / 'users.json'))
     monkeypatch.setattr(user_service, 'USER_STORE_LOCK_PATH', str(data_dir / 'users.json.lock'))
 
     monkeypatch.setattr(task_routes, 'TASK_STORE_PATH', str(data_dir / 'task_storage.json'))
     monkeypatch.setattr(task_routes, 'TASK_STORE_LOCK_PATH', str(data_dir / 'task_storage.json.lock'))
+    memory_service._memory_service = None
 
     return TestClient(app)
 
@@ -133,6 +135,10 @@ def test_legacy_and_new_modifications_can_coexist(client):
     latest = modifications[-1]
     assert latest.get('actor_id') == manager['id']
     assert latest.get('actor_role') == 'manager'
+
+    records = memory_service.get_memory_service().query_records('HOP', memory_type='function_point_adjustment')
+    assert records['total'] == 1
+    assert records['items'][0]['payload']['adjustment_types'] == ['rewrite']
 
     read_resp = client.get(f'/api/v1/requirement/modifications/{task_id}')
     assert read_resp.status_code == 200

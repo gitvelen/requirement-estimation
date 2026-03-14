@@ -13,6 +13,7 @@ if ROOT_DIR not in sys.path:
 from backend.app import app
 from backend.api import system_routes
 from backend.config.config import settings
+from backend.service import document_parser
 from backend.service import knowledge_service as ks
 from backend.service import profile_summary_service as profile_summary_module
 from backend.service import system_profile_service
@@ -82,6 +83,7 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ks, "get_embedding_service", lambda: DummyEmbeddingService())
 
+    document_parser._document_parser = None
     ks._knowledge_service = None
     system_profile_service._system_profile_service = None
     profile_summary_module._profile_summary_service = None
@@ -297,7 +299,7 @@ def test_knowledge_import_parse_failure_returns_know002(client):
     assert response.json()["error_code"] == "KNOW_002"
 
 
-def test_knowledge_import_parse_failure_exposes_reason_in_message(client):
+def test_knowledge_import_parse_failure_exposes_reason_in_message(client, monkeypatch):
     _seed_user("kmgr7", "pwd123", ["manager"])
     token = _login(client, "kmgr7", "pwd123")
 
@@ -306,7 +308,7 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client):
     def broken_parse(*_args, **_kwargs):
         raise RuntimeError("旧格式解析工具不可用：soffice未安装")
 
-    service.document_parser.parse = broken_parse
+    monkeypatch.setattr(service.document_parser, "parse", broken_parse)
 
     response = client.post(
         "/api/v1/knowledge/imports",

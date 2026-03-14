@@ -2,21 +2,26 @@ import os
 import sys
 import threading
 from typing import Any, Dict, List
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from docx import Document
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from backend.app import app
-from backend.api import system_profile_routes
 from backend.api import system_routes
 from backend.config.config import settings
+from backend.service import document_parser
+from backend.service import document_skill_adapter
 from backend.service import knowledge_service as ks
+from backend.service import memory_service
 from backend.service import profile_summary_service as profile_summary_module
+from backend.service import runtime_execution_service
 from backend.service import system_profile_service
 from backend.service import user_service
 
@@ -82,22 +87,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(user_service, "USER_STORE_LOCK_PATH", str(data_dir / "users.json.lock"))
     monkeypatch.setattr(system_routes, "CSV_PATH", str(tmp_path / "system_list.csv"))
     monkeypatch.setattr(ks, "get_embedding_service", lambda: DummyEmbeddingService())
-    history_template = tmp_path / "工作量评估模板.xlsx"
-    esb_template = tmp_path / "接口申请模板.xlsx"
-    history_template.write_bytes(b"history-template")
-    esb_template.write_bytes(b"esb-template")
-    monkeypatch.setattr(
-        system_profile_routes,
-        "TEMPLATE_FILE_MAPPING",
-        {
-            "history_report": str(history_template),
-            "esb_document": str(esb_template),
-        },
-    )
-
+    document_parser._document_parser = None
+    document_skill_adapter._document_skill_adapter = None
     ks._knowledge_service = None
     system_profile_service._system_profile_service = None
     profile_summary_module._profile_summary_service = None
+    memory_service._memory_service = None
+    runtime_execution_service._runtime_execution_service = None
 
     return TestClient(app)
 
@@ -160,6 +156,15 @@ def _receive_json_with_timeout(websocket, timeout: float = 3.0):
     return result["payload"]
 
 
+def _build_docx_bytes(*paragraphs: str) -> bytes:
+    document = Document()
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 def test_profile_import_success_returns_task_id_and_records_history(client, monkeypatch):
     manager = _seed_user("import_owner", "pwd123", ["manager"])
     token = _login(client, "import_owner", "pwd123")
@@ -170,7 +175,7 @@ def test_profile_import_success_returns_task_id_and_records_history(client, monk
 
     response = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "requirement_doc"},
+        data={"doc_type": "requirements"},
         files={"file": ("requirements.csv", "字段,说明\nA,账户系统边界".encode("utf-8"), "text/csv")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -190,7 +195,7 @@ def test_profile_import_success_returns_task_id_and_records_history(client, monk
     history_payload = history.json()
     assert history_payload["total"] == 1
     item = history_payload["items"][0]
-    assert item["doc_type"] == "requirement_doc"
+    assert item["doc_type"] == "requirements"
     assert item["file_name"] == "requirements.csv"
     assert item["status"] == "success"
     assert item["failure_reason"] is None
@@ -209,6 +214,128 @@ def test_profile_import_success_returns_task_id_and_records_history(client, monk
     assert isinstance(status_payload["notifications"], list)
 
 
+def test_v27_profile_import_uses_runtime_and_execution_status_aliases(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("import_v27_owner", "pwd123", ["manager"])
+    token = _login(client, "import_v27_owner", "pwd123")
+    _seed_system("PAY", "sys_pay", owner_id=manager["id"])
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_pay/profile/import",
+        data={"doc_type": "requirements"},
+        files={
+            "file": (
+                "requirements.docx",
+                _build_docx_bytes("需求概述", "支付统一受理系统", "核心边界与服务对象"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scene_id"] == "pm_document_ingest"
+    assert payload["result_status"] == "queued"
+    assert payload["execution_id"].startswith("exec_")
+
+    status_response = client.get(
+        "/api/v1/system-profiles/sys_pay/profile/execution-status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["execution_id"] == payload["execution_id"]
+    assert status_payload["scene_id"] == "pm_document_ingest"
+    assert status_payload["status"] == "completed"
+    assert status_payload["skill_chain"] == ["requirements_skill"]
+
+    compat_status = client.get(
+        "/api/v1/system-profiles/sys_pay/profile/extraction-status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert compat_status.status_code == 200
+    assert compat_status.json()["execution_id"] == payload["execution_id"]
+
+    history = client.get(
+        "/api/v1/system-profiles/sys_pay/profile/import-history",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    history_item = history.json()["items"][0]
+    assert history_item["doc_type"] == "requirements"
+    assert history_item["execution_id"] == payload["execution_id"]
+
+
+def test_v27_profile_import_rejects_removed_doc_types(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+
+    manager = _seed_user("import_v27_reject", "pwd123", ["manager"])
+    token = _login(client, "import_v27_reject", "pwd123")
+    _seed_system("PAY", "sys_pay2", owner_id=manager["id"])
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_pay2/profile/import",
+        data={"doc_type": "history_report"},
+        files={"file": ("history.docx", _build_docx_bytes("旧报告"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "PROFILE_IMPORT_FAILED"
+
+
+def test_v27_profile_memory_query_supports_filters(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+
+    manager = _seed_user("memory_query_owner", "pwd123", ["manager"])
+    token = _login(client, "memory_query_owner", "pwd123")
+    _seed_system("PAY", "sys_pay_memory", owner_id=manager["id"])
+
+    service = memory_service.get_memory_service()
+    service.append_record(
+        system_id="sys_pay_memory",
+        memory_type="profile_update",
+        memory_subtype="document_suggestion",
+        scene_id="pm_document_ingest",
+        source_type="document",
+        source_id="exec_doc_001",
+        summary="需求文档导入生成建议",
+        payload={"changed_fields": ["system_positioning.canonical.service_scope"]},
+        decision_policy="suggestion_only",
+        confidence=0.7,
+        actor="memory_query_owner",
+    )
+    service.append_record(
+        system_id="sys_pay_memory",
+        memory_type="function_point_adjustment",
+        memory_subtype="task_feature_update",
+        scene_id="feature_breakdown",
+        source_type="task",
+        source_id="task_001",
+        summary="PM 合并功能点",
+        payload={"adjustment_type": "merge"},
+        decision_policy="manual",
+        confidence=1,
+        actor="memory_query_owner",
+    )
+
+    response = client.get(
+        "/api/v1/system-profiles/sys_pay_memory/memory",
+        params={"memory_type": "profile_update", "scene_id": "pm_document_ingest"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["memory_type"] == "profile_update"
+    assert payload["items"][0]["memory_subtype"] == "document_suggestion"
+
+
 def test_profile_import_passes_full_document_text_to_summary_job(client, monkeypatch):
     manager = _seed_user("import_full_text", "pwd123", ["manager"])
     token = _login(client, "import_full_text", "pwd123")
@@ -224,7 +351,7 @@ def test_profile_import_passes_full_document_text_to_summary_job(client, monkeyp
 
     response = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "requirement_doc"},
+        data={"doc_type": "requirements"},
         files={"file": ("requirements.csv", b"ignored", "text/csv")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -244,7 +371,7 @@ def test_profile_import_history_supports_pagination(client, monkeypatch):
 
     first = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "requirement_doc"},
+        data={"doc_type": "requirements"},
         files={"file": ("r1.csv", "字段,说明\nA,需求".encode("utf-8"), "text/csv")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -252,7 +379,7 @@ def test_profile_import_history_supports_pagination(client, monkeypatch):
 
     second = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "design_doc"},
+        data={"doc_type": "design"},
         files={"file": ("d1.csv", "字段,说明\nA,设计".encode("utf-8"), "text/csv")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -289,7 +416,7 @@ def test_profile_import_requires_owner_or_backup_permission(client):
 
     denied = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "requirement_doc"},
+        data={"doc_type": "requirements"},
         files={"file": ("requirements.csv", "字段,说明\nA,账户系统边界".encode("utf-8"), "text/csv")},
         headers={"Authorization": f"Bearer {other_token}", "X-Request-ID": "req_import_denied"},
     )
@@ -300,14 +427,14 @@ def test_profile_import_requires_owner_or_backup_permission(client):
 
     allowed = client.post(
         "/api/v1/system-profiles/sys_hop/profile/import",
-        data={"doc_type": "requirement_doc"},
+        data={"doc_type": "requirements"},
         files={"file": ("requirements.csv", "字段,说明\nA,账户系统边界".encode("utf-8"), "text/csv")},
         headers={"Authorization": f"Bearer {owner_token}"},
     )
     assert allowed.status_code == 200
 
 
-def test_profile_import_accepts_v24_doc_type_aliases(client, monkeypatch):
+def test_profile_import_accepts_v27_doc_type_canonical_values(client, monkeypatch):
     manager = _seed_user("import_doc_type_alias", "pwd123", ["manager"])
     token = _login(client, "import_doc_type_alias", "pwd123")
     _seed_system("HOP", "sys_hop", owner_id=manager["id"])
@@ -354,24 +481,26 @@ def test_profile_import_rejects_invalid_doc_type(client):
     assert payload["request_id"] == "req_import_bad_doc_type"
 
 
-def test_profile_template_download_supports_main_and_alias_paths(client):
+def test_profile_template_download_rejects_removed_types_on_main_and_alias_paths(client):
     manager = _seed_user("template_owner", "pwd123", ["manager"])
     token = _login(client, "template_owner", "pwd123")
     _seed_system("HOP", "sys_hop", owner_id=manager["id"])
 
     main_response = client.get(
         "/api/v1/system-profiles/template/history_report",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_template_removed_main"},
     )
-    assert main_response.status_code == 200
-    assert main_response.content == b"history-template"
+    assert main_response.status_code == 400
+    assert main_response.json()["error_code"] == "TEMPLATE_TYPE_INVALID"
+    assert main_response.json()["request_id"] == "req_template_removed_main"
 
     alias_response = client.get(
         "/api/system-profile/template/esb_document",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", "X-Request-ID": "req_template_removed_alias"},
     )
-    assert alias_response.status_code == 200
-    assert alias_response.content == b"esb-template"
+    assert alias_response.status_code == 400
+    assert alias_response.json()["error_code"] == "TEMPLATE_TYPE_INVALID"
+    assert alias_response.json()["request_id"] == "req_template_removed_alias"
 
 
 def test_profile_template_download_rejects_invalid_type(client):

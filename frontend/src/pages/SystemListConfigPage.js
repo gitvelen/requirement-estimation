@@ -1,21 +1,64 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, Button, Divider, Modal, Space, Switch, Tabs, Upload, message } from 'antd';
-import { DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons';
+import React, { useState } from 'react';
+import { Alert, Button, Card, Space, Switch, Typography, message } from 'antd';
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
-import DataTable from '../components/DataTable';
 import MainSystemConfigPage from './MainSystemConfigPage';
-import SubsystemConfigPage from './SubsystemConfigPage';
 
-const { TabPane } = Tabs;
+const { Text } = Typography;
+
+const EMPTY_RESULT = {
+  preview_errors: [],
+  updated_system_ids: [],
+  updated_systems: [],
+  skipped_items: [],
+  errors: [],
+};
+
+const SKIP_REASON_LABELS = {
+  profile_not_blank: '画像已有内容，已跳过初始化',
+  profile_not_found: '未找到对应系统，已跳过初始化',
+  mapping_incomplete: '系统清单信息不完整，已跳过初始化',
+};
+
+const getErrorMessage = (error, fallback) => {
+  const payload = error?.response?.data;
+  const detail = payload?.detail;
+  const reason = payload?.details?.reason;
+  const messageText = payload?.message;
+
+  if (messageText && reason && !String(messageText).includes(String(reason))) {
+    return `${messageText}：${reason}`;
+  }
+  if (messageText) {
+    return messageText;
+  }
+  if (detail?.message) {
+    return detail.message;
+  }
+  if (typeof detail === 'string' && detail) {
+    return detail;
+  }
+  if (reason) {
+    return reason;
+  }
+  return fallback;
+};
 
 const SystemListConfigPage = () => {
   const [importVisible, setImportVisible] = useState(false);
   const [importFile, setImportFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [replaceMode, setReplaceMode] = useState(true);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [replaceMode, setReplaceMode] = useState(true);
-  const [preview, setPreview] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [catalogImportResult, setCatalogImportResult] = useState(null);
+
+  const resetImportPanel = () => {
+    setImportFile(null);
+    setPreview(null);
+    setReplaceMode(true);
+  };
 
   const downloadTemplate = async () => {
     try {
@@ -23,249 +66,231 @@ const SystemListConfigPage = () => {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', '系统清单模板.xlsx');
+      link.setAttribute('download', 'syslist-template.xlsx');
       document.body.appendChild(link);
       link.click();
       link.remove();
       message.success('模板已下载');
     } catch (error) {
-      if (error.response?.status === 404) {
-        message.error('下载模板失败：后端接口不存在（请更新/重启后端服务）');
-        return;
-      }
-      message.error(error.response?.data?.detail || '下载模板失败');
+      message.error(getErrorMessage(error, '下载模板失败'));
     }
   };
 
-  const parseImport = async () => {
-    if (!importFile) {
+  const parseImport = async (selectedFile = importFile, { showSuccess = false } = {}) => {
+    if (!selectedFile) {
       message.warning('请先选择Excel文件');
-      return;
+      return null;
     }
+
     try {
       setParsing(true);
       const formData = new FormData();
-      formData.append('file', importFile);
-      const response = await axios.post('/api/v1/system-list/batch-import', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      setPreview(response.data?.data || null);
-      message.success('解析完成');
+      formData.append('file', selectedFile);
+      const response = await axios.post('/api/v1/system-list/batch-import', formData);
+      const nextPreview = response.data?.data || null;
+      setPreview(nextPreview);
+      if (showSuccess) {
+        message.success('预检完成');
+      }
+      return nextPreview;
     } catch (error) {
-      if (error.response?.status === 404) {
-        message.error('解析失败：后端接口不存在（请更新/重启后端服务）');
-        return;
-      }
-      const detail = error.response?.data?.detail;
-      if (detail?.message) {
-        message.error(detail.message);
-      } else {
-        message.error(detail || '解析失败');
-      }
+      message.error(getErrorMessage(error, '预检失败'));
+      return null;
     } finally {
       setParsing(false);
     }
   };
 
-  const hasErrors = useMemo(() => {
-    const systems = preview?.systems || [];
-    const mappings = preview?.mappings || [];
-    return (
-      systems.some((item) => item.errors && item.errors.length > 0)
-      || mappings.some((item) => item.errors && item.errors.length > 0)
-    );
-  }, [preview]);
-
   const confirmImport = async () => {
-    if (!preview) {
-      await parseImport();
+    const currentPreview = preview || await parseImport();
+    if (!currentPreview) {
       return;
     }
-    if (hasErrors) {
-      message.warning('存在提示信息，将按Excel内容继续导入');
-    }
+
     try {
       setImporting(true);
-      await axios.post('/api/v1/system-list/batch-import/confirm', {
+      const response = await axios.post('/api/v1/system-list/batch-import/confirm', {
         mode: replaceMode ? 'replace' : 'upsert',
-        systems: preview.systems || [],
-        mappings: preview.mappings || [],
+        systems: currentPreview.systems || [],
       });
-      message.success('导入成功');
+      setCatalogImportResult({
+        ...EMPTY_RESULT,
+        ...(response.data?.catalog_import_result || {}),
+      });
       setImportVisible(false);
-      setImportFile(null);
-      setPreview(null);
-      setReplaceMode(true);
-      setRefreshKey((val) => val + 1);
+      resetImportPanel();
+      setRefreshKey((value) => value + 1);
+      message.success('导入成功');
     } catch (error) {
-      if (error.response?.status === 404) {
-        message.error('导入失败：后端接口不存在（请更新/重启后端服务）');
-        return;
-      }
-      const detail = error.response?.data?.detail;
-      if (detail?.message) {
-        message.error(detail.message);
-      } else {
-        message.error(detail || '导入失败');
-      }
+      message.error(getErrorMessage(error, '导入失败'));
     } finally {
       setImporting(false);
     }
   };
 
-  const systemColumns = [
-    { title: '系统名称', dataIndex: 'name', key: 'name', width: 260, render: (v) => v || '-' },
-    { title: '英文简称', dataIndex: 'abbreviation', key: 'abbreviation', width: 140, render: (v) => v || '-' },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 120, render: (v) => v || '-' },
-    {
-      title: '提示',
-      dataIndex: 'errors',
-      key: 'errors',
-      render: (value) => (value && value.length ? <span style={{ color: '#cf1322' }}>{value.join('；')}</span> : '-'),
-    },
-  ];
-
-  const mappingColumns = [
-    { title: '子系统名称', dataIndex: 'subsystem', key: 'subsystem', width: 260, render: (v) => v || '-' },
-    { title: '所属系统', dataIndex: 'main_system', key: 'main_system', width: 200, render: (v) => v || '-' },
-    {
-      title: '提示',
-      dataIndex: 'errors',
-      key: 'errors',
-      render: (value) => (value && value.length ? <span style={{ color: '#cf1322' }}>{value.join('；')}</span> : '-'),
-    },
-  ];
+  const linkageResult = {
+    ...EMPTY_RESULT,
+    ...(catalogImportResult || {}),
+  };
+  const updatedSystems = Array.isArray(linkageResult.updated_systems) && linkageResult.updated_systems.length > 0
+    ? linkageResult.updated_systems
+    : linkageResult.updated_system_ids.map((item) => ({ system_id: item, system_name: item }));
 
   return (
     <div style={{ padding: '24px' }}>
-      <Tabs
-        defaultActiveKey="main"
-        tabBarExtraContent={{
-          right: (
-            <Space size={8}>
-              <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>
-                下载模板
-              </Button>
-              <Button type="primary" icon={<UploadOutlined />} onClick={() => setImportVisible(true)}>
-                批量导入（XLSX）
-              </Button>
-            </Space>
-          ),
-        }}
-      >
-        <TabPane tab="主系统清单" key="main">
-          <MainSystemConfigPage embedded key={`main-${refreshKey}`} />
-        </TabPane>
-        <TabPane tab="子系统映射" key="subsystem">
-          <SubsystemConfigPage embedded key={`sub-${refreshKey}`} />
-        </TabPane>
-      </Tabs>
+      <Space style={{ marginBottom: 16 }} wrap>
+        <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>
+          下载模板
+        </Button>
+        <Button
+          type="primary"
+          icon={<UploadOutlined />}
+          aria-label="批量导入（XLSX）"
+          onClick={() => setImportVisible((value) => !value)}
+        >
+          批量导入（XLSX）
+        </Button>
+      </Space>
 
-      <Modal
-        title="批量导入系统清单（XLSX）"
-        open={importVisible}
-        onCancel={() => {
-          setImportVisible(false);
-          setImportFile(null);
-          setPreview(null);
-          setReplaceMode(true);
-        }}
-        onOk={confirmImport}
-        okText={preview ? '确认导入' : '解析文件'}
-        cancelText="取消"
-        confirmLoading={parsing || importing}
-        width={1000}
-        destroyOnClose
-      >
-        <Alert
-          type="info"
-          showIcon
-          message="导入说明"
-          description="请使用“系统清单模板.xlsx”填写后导入。系统会按表头识别两个Sheet：主系统清单（系统名称/英文简称/状态）与子系统清单（子系统名称/所属系统）；其它列也会一并保存，导入后可在页面查看与修改。"
-          style={{ marginBottom: 16 }}
-        />
-
-        <Space style={{ marginBottom: 16 }} wrap>
-          <span>覆盖导入：</span>
-          <Switch checked={replaceMode} onChange={setReplaceMode} checkedChildren="覆盖" unCheckedChildren="增量" />
-          <span style={{ color: 'rgba(0,0,0,0.45)' }}>
-            {replaceMode ? '覆盖会用导入内容替换现有配置' : '增量会保留现有配置并追加导入'}
-          </span>
-        </Space>
-
-        <Upload.Dragger
-          accept=".xlsx"
-          maxCount={1}
-          beforeUpload={(file) => {
-            setImportFile(file);
-            setPreview(null);
-            return false;
-          }}
-          onRemove={() => {
-            setImportFile(null);
-            setPreview(null);
+      {importVisible ? (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '8px 0 12px',
+            borderBottom: '1px solid #f0f0f0',
           }}
         >
-          <p className="ant-upload-drag-icon">
-            <InboxOutlined />
-          </p>
-          <p className="ant-upload-text">点击或拖拽Excel文件到此区域</p>
-          <p className="ant-upload-hint">仅支持 .xlsx</p>
-        </Upload.Dragger>
-
-        <div style={{ marginTop: 12 }}>
-          <Button onClick={parseImport} loading={parsing} disabled={!importFile}>
-            解析文件
-          </Button>
-        </div>
-
-        {preview ? (
-          <>
-            <Divider />
-            <Space wrap style={{ marginBottom: 12 }}>
-              <span>主系统：{preview.summary?.systems_total || 0} 条</span>
-              <span style={{ color: preview.summary?.systems_error ? '#cf1322' : 'rgba(0,0,0,0.45)' }}>
-                错误：{preview.summary?.systems_error || 0} 条
-              </span>
-              <span>子系统：{preview.summary?.mappings_total || 0} 条</span>
-              <span style={{ color: preview.summary?.mappings_error ? '#cf1322' : 'rgba(0,0,0,0.45)' }}>
-                错误：{preview.summary?.mappings_error || 0} 条
-              </span>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Text type="secondary">
+              请使用最新系统清单模板；preview 仅校验，confirm 才会写入并按空画像规则联动初始化。
+            </Text>
+            <Space wrap size={12}>
+              <span>导入模式：</span>
+              <Switch checked={replaceMode} onChange={setReplaceMode} checkedChildren="覆盖" unCheckedChildren="增量" />
+              <Text type="secondary">{replaceMode ? '覆盖现有系统清单' : '保留现有系统清单并追加更新'}</Text>
             </Space>
 
-            <Tabs defaultActiveKey="systems">
-              <TabPane tab="主系统清单预览" key="systems">
-                <DataTable
-                  rowKey={(record, index) => `${record.name || 'row'}-${index}`}
-                  columns={systemColumns}
-                  dataSource={preview.systems || []}
-                  pagination={{ pageSize: 8 }}
-                  scroll={{ x: 900, y: 320 }}
-                />
-              </TabPane>
-              <TabPane tab="子系统清单预览" key="mappings">
-                <DataTable
-                  rowKey={(record, index) => `${record.subsystem || 'row'}-${index}`}
-                  columns={mappingColumns}
-                  dataSource={preview.mappings || []}
-                  pagination={{ pageSize: 8 }}
-                  scroll={{ x: 900, y: 320 }}
-                />
-              </TabPane>
-            </Tabs>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(event) => {
+                const nextFile = event.target.files?.[0] || null;
+                setImportFile(nextFile);
+                setPreview(null);
+                if (nextFile) {
+                  void parseImport(nextFile);
+                }
+              }}
+            />
 
-            {hasErrors ? (
+            <Space wrap size={8}>
+              <Button type="primary" onClick={confirmImport} loading={importing} disabled={!importFile || parsing}>
+                确认导入
+              </Button>
+            </Space>
+
+            {parsing ? <Text type="secondary">正在预检文件，请稍候。</Text> : null}
+
+            {preview ? (
+              <div
+                style={{
+                  paddingTop: 8,
+                  borderTop: '1px solid #f5f5f5',
+                }}
+              >
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Text>系统数：{preview.summary?.systems_total || 0}</Text>
+                  <div>
+                    {(preview.systems || []).map((item, index) => (
+                      <div key={`${item.name || 'row'}-${index}`} style={{ padding: '8px 0', borderTop: index === 0 ? 'none' : '1px solid #f0f0f0' }}>
+                        <div><strong>{item.name || '-'}</strong></div>
+                        <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>{item.abbreviation || '-'}</div>
+                        <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>{item.status || '-'}</div>
+                        {(item.errors || []).length > 0 ? (
+                          <div style={{ color: '#ff4d4f' }}>{item.errors.join('；')}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </Space>
+              </div>
+            ) : null}
+          </Space>
+        </div>
+      ) : null}
+
+      <MainSystemConfigPage embedded key={`main-${refreshKey}`} />
+
+      {catalogImportResult ? (
+        <Card title="画像联动结果" style={{ marginTop: 16 }}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <div>
+              <Text strong>已更新系统</Text>
+              {updatedSystems.length === 0 ? (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">本次没有新增画像初始化。</Text>
+                </div>
+              ) : (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                  {updatedSystems.map((item) => (
+                    <li key={item.system_id || item.system_name}>{item.system_name || item.system_id || '-'}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <Text strong>预检错误</Text>
+              {linkageResult.preview_errors.length === 0 ? (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">本次没有预检错误。</Text>
+                </div>
+              ) : (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                  {linkageResult.preview_errors.map((item, index) => (
+                    <li key={`${item.row_number || 'preview-error'}-${index}`}>
+                      <div><strong>{item.system_name || '-'}</strong></div>
+                      <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>{`第 ${item.row_number || '-'} 行`}</div>
+                      <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>
+                        {(item.errors || []).join('；') || '-'}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <Text strong>跳过项</Text>
+              {linkageResult.skipped_items.length === 0 ? (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">本次没有跳过项。</Text>
+                </div>
+              ) : (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                  {linkageResult.skipped_items.map((item, index) => (
+                    <li key={`${item.system_id || item.system_name || 'skip'}-${index}`}>
+                      <div><strong>{item.system_name || item.system_id || '-'}</strong></div>
+                      <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>
+                        {SKIP_REASON_LABELS[item.reason] || item.reason || '-'}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {linkageResult.errors.length > 0 ? (
               <Alert
                 type="warning"
                 showIcon
-                message="存在提示"
-                description="将按Excel内容导入，如需修正请在导入后修改。"
-                style={{ marginTop: 16 }}
+                message="导入存在异常"
+                description={linkageResult.errors.join('；')}
               />
             ) : null}
-          </>
-        ) : null}
-      </Modal>
+          </Space>
+        </Card>
+      ) : null}
     </div>
   );
 };

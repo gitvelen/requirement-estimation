@@ -29,6 +29,7 @@ from backend.utils.docx_parser import docx_parser
 from backend.agent.agent_orchestrator import get_agent_orchestrator
 from backend.config.config import settings
 from backend.service.knowledge_service import get_knowledge_service
+from backend.service.memory_service import get_memory_service
 from backend.service import user_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.utils.pdf_report import write_report_pdf
@@ -1300,6 +1301,11 @@ def process_task_sync(task_id: str, file_path: str):
         with _task_storage_context() as data:
             task = data.get(task_id)
             if task:
+                analysis_result_status = ""
+                analysis_context_degraded = False
+                if isinstance(ai_system_analysis, dict):
+                    analysis_result_status = str(ai_system_analysis.get("result_status") or "").strip()
+                    analysis_context_degraded = bool(ai_system_analysis.get("context_degraded"))
                 task["systems_data"] = systems_data
                 _ensure_feature_ids(task)
                 if not task.get("ai_initial_features"):
@@ -1316,9 +1322,9 @@ def process_task_sync(task_id: str, file_path: str):
                 task["ai_original_output"] = ai_original_output
                 # 更新任务状态
                 task["status"] = "completed"
-                task["ai_status"] = "completed"
+                task["ai_status"] = "partial_success" if (analysis_result_status == "partial_success" or analysis_context_degraded) else "completed"
                 task["progress"] = 100
-                task["message"] = "评估完成"
+                task["message"] = "评估完成（上下文已降级）" if task["ai_status"] == "partial_success" else "评估完成"
                 task["report_path"] = report_path
                 task["workflow_status"] = "draft"
                 task["systems"] = list(systems_data.keys())
@@ -1514,6 +1520,105 @@ def _requires_confirm_for_feature_update(changes: List[Dict[str, Any]]) -> bool:
             continue
         return True
     return False
+
+
+def _classify_feature_adjustment(modification: Dict[str, Any]) -> str:
+    operation = str(modification.get("operation") or "").strip()
+    field = str(modification.get("field") or "").strip()
+
+    if operation == "add":
+        return "addition"
+    if operation == "delete":
+        return "deletion"
+    if field == "功能点":
+        return "naming_normalization"
+    if field == "功能模块":
+        return "module_mapping"
+    if field in _ESTIMATED_DAY_FIELDS or field == "复杂度":
+        return "complexity_adjustment"
+    if field == "系统":
+        return "ownership_adjustment"
+    if field == "业务描述":
+        return "rewrite"
+    return "field_update"
+
+
+def _build_function_point_adjustment_payload(
+    *,
+    task_id: str,
+    system_name: str,
+    modifications: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    normalized_modifications: List[Dict[str, Any]] = []
+    adjustment_types: List[str] = []
+
+    for item in modifications:
+        if not isinstance(item, dict):
+            continue
+        adjustment_type = _classify_feature_adjustment(item)
+        if adjustment_type not in adjustment_types:
+            adjustment_types.append(adjustment_type)
+
+        normalized_modifications.append(
+            {
+                "modification_id": item.get("id"),
+                "adjustment_type": adjustment_type,
+                "feature_id": item.get("feature_id"),
+                "feature_name": item.get("feature_name"),
+                "module": item.get("module"),
+                "field": item.get("field"),
+                "old_value": item.get("old_value")
+                if item.get("old_value") is not None
+                else ((item.get("deleted_feature") or {}).get("功能点") if isinstance(item.get("deleted_feature"), dict) else None),
+                "new_value": item.get("new_value")
+                if item.get("new_value") is not None
+                else ((item.get("added_feature") or {}).get("功能点") if isinstance(item.get("added_feature"), dict) else None),
+                "operation": item.get("operation"),
+            }
+        )
+
+    return {
+        "task_id": task_id,
+        "system_name": system_name,
+        "adjustment_types": adjustment_types,
+        "modifications": normalized_modifications,
+    }
+
+
+def _record_function_point_adjustment_memory(
+    *,
+    task_id: str,
+    system_name: str,
+    actor_id: str,
+    actor_role: str,
+    modifications: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = _build_function_point_adjustment_payload(
+        task_id=task_id,
+        system_name=system_name,
+        modifications=modifications,
+    )
+    adjustment_types = payload.get("adjustment_types") or []
+    if not adjustment_types:
+        raise ValueError("missing_adjustment_types")
+
+    resolved = system_routes.resolve_system_owner(system_name=system_name)
+    system_id = str(resolved.get("system_id") or "").strip() or system_name
+    summary = f"PM确认功能点调整：{'/'.join(adjustment_types)}"
+
+    return get_memory_service().append_record(
+        system_id=system_id,
+        memory_type="function_point_adjustment",
+        memory_subtype="task_feature_update",
+        scene_id="task_feature_update",
+        source_type="requirement_task",
+        source_id=task_id,
+        summary=summary,
+        payload=payload,
+        decision_policy="manual",
+        confidence=1.0,
+        actor=f"{actor_role}:{actor_id}",
+    )
 
 
 def _read_task_remark_lines(task: Dict[str, Any]) -> List[str]:
@@ -1732,6 +1837,7 @@ async def update_features(task_id: str, request: FeatureUpdateRequest, http_requ
                 actor_role=actor_role,
             )
             last_mod_id = None
+            new_modifications: List[Dict[str, Any]] = []
 
             if request.operation == "update":
                 # 修改功能点
@@ -1794,6 +1900,7 @@ async def update_features(task_id: str, request: FeatureUpdateRequest, http_requ
                             "new_value": change["new_value"],
                         }
                         modifications.append(mod)
+                        new_modifications.append(mod)
                         last_mod_id = mod["id"]
 
                 logger.info(f"[任务 {task_id}] 更新功能点: 系统={request.system}, 索引={request.feature_index}")
@@ -1820,6 +1927,7 @@ async def update_features(task_id: str, request: FeatureUpdateRequest, http_requ
                     "feature_index": request.feature_index
                 }
                 modifications.append(mod)
+                new_modifications.append(mod)
                 last_mod_id = mod["id"]
 
                 logger.info(f"[任务 {task_id}] 删除功能点: 系统={request.system}, 索引={request.feature_index}")
@@ -1856,6 +1964,7 @@ async def update_features(task_id: str, request: FeatureUpdateRequest, http_requ
                     "feature_id": new_feature.get("id")
                 }
                 modifications.append(mod)
+                new_modifications.append(mod)
                 last_mod_id = mod["id"]
 
                 logger.info(f"[任务 {task_id}] 添加功能点: 系统={request.system}")
@@ -1874,14 +1983,31 @@ async def update_features(task_id: str, request: FeatureUpdateRequest, http_requ
         # 记录修改事件
         _safe_log_modification_event()
 
+        result_status = "success"
+        memory_error = None
+        if settings.ENABLE_V27_RUNTIME and new_modifications:
+            try:
+                _record_function_point_adjustment_memory(
+                    task_id=task_id,
+                    system_name=request.system,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                    modifications=new_modifications,
+                )
+            except Exception as exc:
+                result_status = "partial_success"
+                memory_error = str(exc)
+
         return {
             "code": 200,
-            "message": "更新成功",
+            "message": "更新成功" if result_status == "success" else "更新成功，但 Memory 写入失败",
+            "result_status": result_status,
             "data": {
                 "modification_id": last_mod_id,
                 "updated_systems_data": systems_data,
                 "actor_id": actor_id,
                 "actor_role": actor_role,
+                "memory_error": memory_error,
             }
         }
 
@@ -2082,7 +2208,7 @@ async def add_system(task_id: str, request: AddSystemRequest):
                 if not requirement_content:
                     raise HTTPException(status_code=400, detail="缺少requirement_content，无法自动拆分（可重新评估或重新上传）")
 
-            # 标准化系统名称（匹配系统清单 + 子系统映射）
+            # 标准化系统名称（匹配系统清单）
             from backend.agent.system_identification_agent import get_system_identification_agent
             from backend.agent.feature_breakdown_agent import get_feature_breakdown_agent
 
@@ -2090,8 +2216,6 @@ async def add_system(task_id: str, request: AddSystemRequest):
             sys_agent = get_system_identification_agent(knowledge_service)
             if not getattr(sys_agent, "system_list", None):
                 sys_agent.system_list = sys_agent._load_system_list()
-            if not getattr(sys_agent, "subsystem_mapping", None):
-                sys_agent.subsystem_mapping = sys_agent._load_subsystem_mapping()
 
             validated = sys_agent.validate_and_filter_systems([{"name": raw_name, "type": system_type, "description": ""}])
             final_name = validated[0]["name"] if validated else raw_name
@@ -2249,8 +2373,6 @@ async def rebreakdown_system(task_id: str, system_name: str, request: Rebreakdow
             sys_agent = get_system_identification_agent(knowledge_service)
             if not getattr(sys_agent, "system_list", None):
                 sys_agent.system_list = sys_agent._load_system_list()
-            if not getattr(sys_agent, "subsystem_mapping", None):
-                sys_agent.subsystem_mapping = sys_agent._load_subsystem_mapping()
 
             try:
                 feature_agent = get_feature_breakdown_agent(knowledge_service)

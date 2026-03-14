@@ -13,7 +13,7 @@ services:
     ports:
       - "443:443"
     env_file:
-      - .env.backend
+      - .env.backend.internal
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

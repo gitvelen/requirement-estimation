@@ -25,8 +25,11 @@ except ImportError:
     FCNTL_AVAILABLE = False
 
 from backend.config.config import settings
+from backend.service.code_scan_skill_adapter import get_code_scan_skill_adapter
 from backend.service.embedding_service import get_embedding_service
 from backend.service.local_vector_store import LocalVectorStore
+from backend.service.runtime_execution_service import get_runtime_execution_service
+from backend.service.skill_runtime_service import get_skill_runtime_service
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,9 @@ class CodeScanService:
         self.store_path = store_path or os.path.join(settings.REPORT_DIR, "knowledge_store.json")
         self.embedding_service = embedding_service
         self.vector_store = vector_store or LocalVectorStore(self.store_path)
+        self.execution_service = get_runtime_execution_service()
+        self.runtime_service = get_skill_runtime_service()
+        self.skill_adapter = get_code_scan_skill_adapter()
 
     @contextmanager
     def _lock(self):
@@ -138,6 +144,47 @@ class CodeScanService:
                 if isinstance(job, dict) and job.get("job_id") == job_id:
                     job.update(updates)
                     break
+
+    def _create_runtime_execution(
+        self,
+        *,
+        system_id: str,
+        source_file: str,
+        status: str,
+    ) -> str:
+        if not getattr(settings, "ENABLE_V27_RUNTIME", False):
+            return ""
+
+        scene = self.runtime_service.resolve_scene("code_scan_ingest", {})
+        execution = self.execution_service.create_execution(
+            scene_id=scene["scene_id"],
+            system_id=str(system_id or "").strip(),
+            source_type="code_scan",
+            source_file=str(source_file or "").strip(),
+            skill_chain=scene["skill_chain"],
+            status=str(status or "").strip() or "queued",
+        )
+        return str(execution.get("execution_id") or "").strip()
+
+    def _sync_runtime_execution(
+        self,
+        *,
+        execution_id: str,
+        status: str,
+        error: Optional[str] = None,
+        result_summary: Optional[Dict[str, Any]] = None,
+        policy_results: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        normalized_execution_id = str(execution_id or "").strip()
+        if not normalized_execution_id:
+            return
+        self.execution_service.update_execution(
+            normalized_execution_id,
+            status=str(status or "").strip() or "queued",
+            error=error,
+            result_summary=result_summary,
+            policy_results=policy_results,
+        )
 
     def _normalize_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized: Dict[str, Any] = {
@@ -357,6 +404,11 @@ class CodeScanService:
             "force": bool(force),
             "ingested": False,
             "ingested_at": "",
+            "execution_id": self._create_runtime_execution(
+                system_id=str(system_id or ""),
+                source_file=repo_input_value,
+                status=status,
+            ),
         }
 
         with self._jobs_context() as jobs:
@@ -379,6 +431,11 @@ class CodeScanService:
             while True:
                 if self._get_running_count() < self.max_workers:
                     self._update_job(job_id, {"status": "running", "progress": 0.01})
+                    self._sync_runtime_execution(
+                        execution_id=str(job.get("execution_id") or ""),
+                        status="running",
+                        result_summary={"updated_system_ids": [], "skipped_items": []},
+                    )
                     break
                 current_job = self._get_job(job_id) or {}
                 if current_job.get("status") not in {"queued", "running"}:
@@ -395,9 +452,20 @@ class CodeScanService:
                     "finished_at": datetime.now().isoformat(),
                 },
             )
+            self._sync_runtime_execution(
+                execution_id=str(job.get("execution_id") or ""),
+                status="failed",
+                error="当前环境未启用 Git URL 拉取，请改用本地路径或 repo_archive",
+                result_summary={"updated_system_ids": [], "skipped_items": []},
+            )
             return
 
         self._update_job(job_id, {"status": "running", "progress": 0.01})
+        self._sync_runtime_execution(
+            execution_id=str(job.get("execution_id") or ""),
+            status="running",
+            result_summary={"updated_system_ids": [], "skipped_items": []},
+        )
 
         try:
             items = self._scan_repo(repo_path, system_name, system_id, options, job_id)
@@ -421,6 +489,22 @@ class CodeScanService:
             with open(result_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
 
+            execution_status = "completed"
+            execution_error = None
+            policy_results: List[Dict[str, Any]] = []
+            if getattr(settings, "ENABLE_V27_RUNTIME", False) and str(system_name or "").strip():
+                adapter_result = self.skill_adapter.apply_scan_result(
+                    system_id=str(system_id or ""),
+                    system_name=str(system_name or ""),
+                    execution_id=str(job.get("execution_id") or ""),
+                    source_file=str(job.get("repo_input") or job.get("repo_path") or ""),
+                    result_payload=payload,
+                    actor=None,
+                )
+                execution_status = str(adapter_result.get("status") or "completed")
+                execution_error = adapter_result.get("memory_error")
+                policy_results = adapter_result.get("policy_results") or []
+
             self._update_job(
                 job_id,
                 {
@@ -429,6 +513,13 @@ class CodeScanService:
                     "result_path": result_path,
                     "finished_at": datetime.now().isoformat(),
                 },
+            )
+            self._sync_runtime_execution(
+                execution_id=str(job.get("execution_id") or ""),
+                status=execution_status,
+                error=execution_error,
+                result_summary={"updated_system_ids": [str(system_id or "")] if str(system_id or "").strip() else [], "skipped_items": []},
+                policy_results=policy_results,
             )
         except Exception as exc:
             logger.error(f"代码扫描失败: {exc}")
@@ -439,6 +530,12 @@ class CodeScanService:
                     "error": str(exc),
                     "finished_at": datetime.now().isoformat(),
                 },
+            )
+            self._sync_runtime_execution(
+                execution_id=str(job.get("execution_id") or ""),
+                status="failed",
+                error=str(exc),
+                result_summary={"updated_system_ids": [], "skipped_items": []},
             )
 
     def _scan_repo(
@@ -1221,6 +1318,18 @@ _code_scan_service = None
 
 def get_code_scan_service() -> CodeScanService:
     global _code_scan_service
-    if _code_scan_service is None:
-        _code_scan_service = CodeScanService()
+    expected_jobs = os.path.join(settings.REPORT_DIR, "code_scan_jobs.json")
+    expected_results = os.path.join(settings.REPORT_DIR, "code_scan_results")
+    expected_store = os.path.join(settings.REPORT_DIR, "knowledge_store.json")
+    if (
+        _code_scan_service is None
+        or os.path.realpath(_code_scan_service.jobs_path) != os.path.realpath(expected_jobs)
+        or os.path.realpath(_code_scan_service.result_dir) != os.path.realpath(expected_results)
+        or os.path.realpath(_code_scan_service.store_path) != os.path.realpath(expected_store)
+    ):
+        _code_scan_service = CodeScanService(
+            jobs_path=expected_jobs,
+            result_dir=expected_results,
+            store_path=expected_store,
+        )
     return _code_scan_service

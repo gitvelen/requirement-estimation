@@ -3,17 +3,218 @@
 从需求文本中识别涉及改造的所有系统
 支持知识库注入，提供系统上下文信息
 """
-import logging
-import json
-import os
+from __future__ import annotations
+
 import csv
+import json
+import logging
+import os
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-from backend.utils.llm_client import llm_client
-from backend.prompts.prompt_templates import SYSTEM_IDENTIFICATION_PROMPT
+from typing import Any, Dict, List, Optional
+
+from backend.api import system_routes
 from backend.config.config import settings
+from backend.prompts.prompt_templates import SYSTEM_IDENTIFICATION_PROMPT
+from backend.service.memory_service import get_memory_service
+from backend.service.system_profile_service import get_system_profile_service
+from backend.utils.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _normalize_text_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        normalized = (
+            value.replace("，", ",")
+            .replace("、", ",")
+            .replace("；", ",")
+            .replace(";", ",")
+            .replace("\n", ",")
+        )
+        raw_items = normalized.split(",")
+    else:
+        raw_items = [value]
+
+    result: List[str] = []
+    for item in raw_items:
+        text = _normalize_text(item)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+class DirectDecisionResolver:
+    def __init__(self, memory_service=None, profile_service=None) -> None:
+        self.memory_service = memory_service or get_memory_service()
+        self.profile_service = profile_service or get_system_profile_service()
+
+    def resolve(self, requirement_text: str) -> Optional[Dict[str, Any]]:
+        normalized_text = _normalize_text(requirement_text)
+        if not normalized_text:
+            return None
+
+        systems = system_routes._read_systems()
+        if not systems:
+            return None
+
+        alias_hits: Dict[str, List[Dict[str, Any]]] = {}
+        for system in systems:
+            for alias in self._collect_aliases(system):
+                if not self._contains_alias(normalized_text, alias):
+                    continue
+                alias_hits.setdefault(alias, []).append(system)
+
+        if not alias_hits:
+            return None
+
+        ambiguous_aliases = [
+            alias
+            for alias, matched_systems in alias_hits.items()
+            if len({str(item.get("id") or item.get("name") or "").strip() for item in matched_systems}) > 1
+        ]
+        if ambiguous_aliases:
+            candidate_systems = self._dedupe_systems(
+                [item for alias in ambiguous_aliases for item in alias_hits.get(alias, [])]
+            )
+            questions = [f"别名“{alias}”可对应多个系统，请补充标准系统名称。" for alias in ambiguous_aliases]
+            return {
+                "final_verdict": "ambiguous",
+                "selected_systems": [],
+                "candidate_systems": candidate_systems,
+                "questions": questions,
+                "reason_summary": f"直接判定命中了歧义别名：{', '.join(ambiguous_aliases)}",
+                "matched_aliases": ambiguous_aliases,
+                "context_degraded": False,
+                "degraded_reasons": [],
+                "result_status": "success",
+            }
+
+        selected_systems = self._dedupe_systems(
+            [system for matched_systems in alias_hits.values() for system in matched_systems]
+        )
+        matched_aliases = list(alias_hits.keys())
+        return {
+            "final_verdict": "matched",
+            "selected_systems": selected_systems,
+            "candidate_systems": list(selected_systems),
+            "questions": [],
+            "reason_summary": f"直接命中系统清单稳定别名：{', '.join(matched_aliases)}",
+            "matched_aliases": matched_aliases,
+            "context_degraded": False,
+            "degraded_reasons": [],
+            "result_status": "success",
+        }
+
+    def _contains_alias(self, text: str, alias: str) -> bool:
+        normalized_alias = _normalize_text(alias)
+        if len(normalized_alias) < 2:
+            return False
+        if normalized_alias.isascii():
+            return normalized_alias.lower() in text.lower()
+        return normalized_alias in text
+
+    def _collect_aliases(self, system: Dict[str, Any]) -> List[str]:
+        aliases: List[str] = []
+        name = _normalize_text(system.get("name"))
+        abbreviation = _normalize_text(system.get("abbreviation"))
+        extra = system.get("extra") if isinstance(system.get("extra"), dict) else {}
+        system_id = _normalize_text(system.get("id"))
+
+        for value in (
+            name,
+            abbreviation,
+            extra.get("aliases"),
+            extra.get("alias"),
+            extra.get("别名"),
+            extra.get("系统简称"),
+            extra.get("英文简称"),
+        ):
+            for item in _normalize_text_list(value):
+                if item not in aliases:
+                    aliases.append(item)
+
+        profile = self.profile_service.get_profile(name) if name else None
+        profile_aliases = (
+            (((profile or {}).get("profile_data") or {}).get("system_positioning") or {})
+            .get("canonical", {})
+            .get("extensions", {})
+            .get("aliases")
+        )
+        for item in _normalize_text_list(profile_aliases):
+            if item not in aliases:
+                aliases.append(item)
+
+        memory_aliases = self._collect_memory_aliases(system_id=system_id, system_name=name)
+        for item in memory_aliases:
+            if item not in aliases:
+                aliases.append(item)
+
+        return aliases
+
+    def _collect_memory_aliases(self, *, system_id: str, system_name: str) -> List[str]:
+        aliases: List[str] = []
+        try:
+            records = self.memory_service.list_records(memory_type="identification_decision", limit=200)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("读取 identification_decision Memory 失败: %s", exc)
+            return aliases
+
+        for record in records:
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            if str(payload.get("final_verdict") or "").strip() != "matched":
+                continue
+
+            selected_systems = payload.get("selected_systems") if isinstance(payload.get("selected_systems"), list) else []
+            selected_hit = False
+            for system in selected_systems:
+                if not isinstance(system, dict):
+                    continue
+                candidate_id = _normalize_text(system.get("system_id") or system.get("id"))
+                candidate_name = _normalize_text(system.get("name"))
+                if (system_id and candidate_id == system_id) or (system_name and candidate_name == system_name):
+                    selected_hit = True
+                    break
+            if not selected_hit:
+                continue
+
+            for item in _normalize_text_list(payload.get("matched_aliases")):
+                if item not in aliases:
+                    aliases.append(item)
+
+        return aliases
+
+    def _dedupe_systems(self, systems: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        seen = set()
+        for system in systems:
+            if not isinstance(system, dict):
+                continue
+            system_name = _normalize_text(system.get("name"))
+            system_id = _normalize_text(system.get("id"))
+            key = system_id or system_name
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(
+                {
+                    "system_id": system_id,
+                    "name": system_name,
+                    "type": "主系统",
+                    "description": "",
+                    "confidence": "高",
+                    "reasons": [],
+                    "is_standard": True,
+                }
+            )
+        return result
 
 
 class SystemIdentificationAgent:
@@ -29,12 +230,23 @@ class SystemIdentificationAgent:
         self.name = "系统识别Agent"
         self.prompt_template = SYSTEM_IDENTIFICATION_PROMPT
         self.system_list = []  # 延迟加载
-        self.subsystem_mapping = {}  # 延迟加载
         self.knowledge_service = knowledge_service
         self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
+        self.memory_service = get_memory_service()
+        self.profile_service = get_system_profile_service()
+        self.direct_resolver = DirectDecisionResolver(
+            memory_service=self.memory_service,
+            profile_service=self.profile_service,
+        )
         self._last_candidate_systems: List[Dict[str, Any]] = []
         self._last_questions: List[str] = []
         self._last_maybe_systems: List[Dict[str, Any]] = []
+        self._last_final_verdict: str = "unknown"
+        self._last_reason_summary: str = ""
+        self._last_matched_aliases: List[str] = []
+        self._last_context_degraded: bool = False
+        self._last_degraded_reasons: List[str] = []
+        self._last_result_status: str = "success"
         self.last_ai_system_analysis: Optional[Dict[str, Any]] = None
 
         if self.knowledge_enabled and self.knowledge_service:
@@ -48,19 +260,13 @@ class SystemIdentificationAgent:
 
         优先级：
         1. data/system_list.csv (CSV格式，系统清单单一数据源)
-
-        Markdown格式示例：
-        ```markdown
-        # 系统名称 | 英文简称 | 系统状态 | 系统分类
-        新一代核心 | CBS | 运行中 | 核心系统
-        ```
         """
         system_list = []
 
         csv_path = os.path.join(settings.REPORT_DIR, "system_list.csv")
         if os.path.exists(csv_path):
             try:
-                with open(csv_path, 'r', encoding='utf-8', newline='') as f:
+                with open(csv_path, "r", encoding="utf-8", newline="") as f:
                     rows = list(csv.reader(f))
                     if not rows:
                         return system_list
@@ -88,207 +294,241 @@ class SystemIdentificationAgent:
                 logger.warning(f"加载data/system_list.csv失败: {e}")
 
         if not system_list:
-            logger.info(f"未找到系统列表文件（MD或CSV），请在前端配置页面添加系统")
+            logger.info("未找到系统列表文件（MD或CSV），请在前端配置页面添加系统")
 
         return system_list
 
-    def _load_subsystem_mapping(self) -> Dict[str, str]:
-        """
-        加载子系统与主系统的映射关系
-
-        Returns:
-            Dict: 子系统名称 -> 主系统名称 的映射
-        """
-        subsystem_mapping = {}
-        csv_path = os.path.join(settings.REPORT_DIR, "subsystem_list.csv")
-
-        if os.path.exists(csv_path):
-            try:
-                with open(csv_path, 'r', encoding='utf-8', newline='') as f:
-                    rows = list(csv.reader(f))
-                    if not rows:
-                        return subsystem_mapping
-
-                    header = rows[0]
-                    header_map = {str(cell).strip(): idx for idx, cell in enumerate(header) if cell}
-
-                    subsystem_idx = header_map.get("子系统名称")
-                    if subsystem_idx is None:
-                        subsystem_idx = header_map.get("系统名称")
-                    if subsystem_idx is None:
-                        subsystem_idx = header_map.get("subsystem")
-
-                    main_idx = header_map.get("所属主系统")
-                    if main_idx is None:
-                        main_idx = header_map.get("所属系统")
-                    if main_idx is None:
-                        main_idx = header_map.get("main_system")
-                    if main_idx is None:
-                        main_idx = header_map.get("mainSystem")
-
-                    data_rows = rows[1:] if subsystem_idx is not None or main_idx is not None else rows
-                    if subsystem_idx is None:
-                        subsystem_idx = 0
-                    if main_idx is None:
-                        main_idx = 1
-
-                for row in data_rows:
-                    subsystem = str(row[subsystem_idx]).strip() if subsystem_idx < len(row) and row[subsystem_idx] is not None else ""
-                    main_system = str(row[main_idx]).strip() if main_idx < len(row) and row[main_idx] is not None else ""
-                    if subsystem and main_system:
-                        subsystem_mapping[subsystem] = main_system
-
-                logger.info(f"从data/subsystem_list.csv加载了{len(subsystem_mapping)}个子系统映射")
-            except Exception as e:
-                logger.warning(f"加载data/subsystem_list.csv失败: {e}")
-        else:
-            logger.info(f"未找到data/subsystem_list.csv文件，可通过前端配置页面添加映射")
-
-        return subsystem_mapping
-
     def identify(self, requirement_content: str, task_id: Optional[str] = None) -> List[Dict[str, str]]:
-        """
-        识别需求中涉及的所有系统
+        result = self.identify_with_verdict(requirement_content, task_id=task_id)
+        return result.get("selected_systems") or []
 
-        Args:
-            requirement_content: 需求内容文本
-
-        Returns:
-            List: 系统列表，每个系统包含name、type、description字段
-
-        Raises:
-            ValueError: 识别失败或返回格式错误
-        """
+    def identify_with_verdict(self, requirement_content: str, task_id: Optional[str] = None) -> Dict[str, Any]:
         try:
-            # 延迟加载系统列表（首次使用时）
             if not self.system_list:
                 logger.info("[系统识别] 首次使用，加载系统列表...")
                 self.system_list = self._load_system_list()
                 logger.info(f"[系统识别] 已加载 {len(self.system_list)} 个标准系统")
 
-            # 延迟加载子系统映射（首次使用时）
-            if not self.subsystem_mapping:
-                logger.info("[系统识别] 首次使用，加载子系统映射...")
-                self.subsystem_mapping = self._load_subsystem_mapping()
-                logger.info(f"[系统识别] 已加载 {len(self.subsystem_mapping)} 个子系统映射")
-
-            logger.info(f"[系统识别] 开始识别系统...")
+            logger.info("[系统识别] 开始识别系统...")
             logger.info(f"[内容长度] {len(requirement_content)} 字符")
 
-            # 【新增】知识库增强：检索系统级知识（system_profile）并构造候选系统榜单
-            knowledge_context = ""
-            system_profiles: List[Dict[str, Any]] = []
-            candidate_systems: List[Dict[str, Any]] = []
-            if self.knowledge_enabled and self.knowledge_service:
-                try:
-                    logger.info("[系统识别] 正在检索相关系统知识...")
-                    system_profiles = self.knowledge_service.search_similar_knowledge(
-                        query_text=requirement_content,
-                        knowledge_type="system_profile",
-                        top_k=settings.KNOWLEDGE_TOP_K,
-                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
-                        task_id=task_id,
-                        stage="system_identification"
-                    )
+            direct_result = self.direct_resolver.resolve(requirement_content)
+            if direct_result:
+                self._remember_result(direct_result)
+                self._write_identification_memory(direct_result, task_id=task_id)
+                self.last_ai_system_analysis = self.build_ai_system_analysis(direct_result.get("selected_systems") or [])
+                logger.info("[系统识别] 直接判定完成，verdict=%s", direct_result["final_verdict"])
+                return direct_result
 
-                    if system_profiles:
-                        logger.info(f"[系统识别] 检索到 {len(system_profiles)} 条相关系统知识")
-                        candidate_systems = self._build_candidate_systems(system_profiles, limit=8)
-                        knowledge_context = self._build_knowledge_context(system_profiles)
-                    else:
-                        logger.info("[系统识别] 未检索到相关系统知识")
-
-                except Exception as e:
-                    logger.warning(f"[系统识别] 知识库检索失败: {e}，继续使用传统方式")
-
-            self._last_candidate_systems = candidate_systems
-
-            # 构建提示词
-            user_prompt = f"需求内容：\n\n{requirement_content}\n\n"
-
-            if candidate_systems:
-                user_prompt += "【候选系统榜单（来自知识库system_profile命中，JSON）】\n"
-                user_prompt += json.dumps(candidate_systems, ensure_ascii=False, indent=2)
-                user_prompt += "\n\n"
-
-            # 【新增】注入知识上下文
-            if knowledge_context:
-                user_prompt += f"\n【系统知识参考】\n{knowledge_context}\n\n"
-                user_prompt += "请参考上述系统知识与候选系统榜单，识别该需求涉及的所有系统，并给出置信度与理由。"
-            else:
-                user_prompt += "请识别该需求涉及的所有系统，并给出置信度与理由。"
-
-            # 调用LLM
-            response = llm_client.chat_with_system_prompt(
-                system_prompt=self.prompt_template,
-                user_prompt=user_prompt,
-                temperature=0.3  # 使用较低温度以获得更稳定的结果
-            )
-
-            # 解析JSON响应
-            result = llm_client.extract_json(response)
-
-            if "systems" not in result:
-                raise ValueError("响应中缺少'systems'字段")
-
-            systems = result["systems"]
-            questions = result.get("questions") or []
-            maybe_systems = result.get("maybe_systems") or []
-
-            if not isinstance(questions, list):
-                questions = []
-            questions = [str(item).strip() for item in questions if str(item).strip()]
-
-            if not isinstance(maybe_systems, list):
-                maybe_systems = []
-            normalized_maybe = []
-            for item in maybe_systems:
-                if isinstance(item, dict) and str(item.get("name") or "").strip():
-                    normalized_maybe.append(item)
-                elif isinstance(item, str) and item.strip():
-                    normalized_maybe.append({"name": item.strip(), "confidence": "低", "reason": ""})
-            maybe_systems = normalized_maybe
-
-            self._last_questions = questions[:10]
-            self._last_maybe_systems = maybe_systems[:8]
-
-            # 验证数据格式并标准化系统名称
-            for system in systems:
-                if "name" not in system:
-                    raise ValueError("系统缺少'name'字段")
-
-                # 标准化系统名称：匹配标准系统列表
-                original_name = system["name"]
-                standard_name = self._match_standard_system(original_name)
-                system["name"] = standard_name
-                system["original_name"] = original_name  # 保留原始名称
-
-                if "type" not in system:
-                    system["type"] = "主系统"  # 默认类型
-                if "description" not in system:
-                    system["description"] = ""
-
-                if "confidence" not in system:
-                    system["confidence"] = "中"
-                if "reasons" not in system:
-                    system["reasons"] = []
-                if not isinstance(system.get("reasons"), list):
-                    system["reasons"] = [str(system.get("reasons"))] if system.get("reasons") else []
-
-                logger.debug(f"  └─ {original_name} → {standard_name}")
-
-            # 生成一份初步分析（最终以validate_and_filter_systems后的系统列表为准）
-            try:
-                self.last_ai_system_analysis = self.build_ai_system_analysis(systems)
-            except Exception as e:
-                logger.debug(f"构建系统校准分析失败（忽略）: {e}")
-
-            logger.info(f"[系统识别] 识别完成，共 {len(systems)} 个系统")
-            return systems
-
+            llm_result = self._identify_with_llm(requirement_content, task_id=task_id)
+            self._remember_result(llm_result)
+            self._write_identification_memory(llm_result, task_id=task_id)
+            self.last_ai_system_analysis = self.build_ai_system_analysis(llm_result.get("selected_systems") or [])
+            logger.info("[系统识别] 识别完成，verdict=%s", llm_result["final_verdict"])
+            return llm_result
         except Exception as e:
             logger.error(f"[系统识别] 识别失败: {str(e)}")
             raise
+
+    def _identify_with_llm(self, requirement_content: str, task_id: Optional[str] = None) -> Dict[str, Any]:
+        knowledge_context = ""
+        system_profiles: List[Dict[str, Any]] = []
+        candidate_systems: List[Dict[str, Any]] = []
+        if self.knowledge_enabled and self.knowledge_service:
+            try:
+                logger.info("[系统识别] 正在检索相关系统知识...")
+                system_profiles = self.knowledge_service.search_similar_knowledge(
+                    query_text=requirement_content,
+                    knowledge_type="system_profile",
+                    top_k=settings.KNOWLEDGE_TOP_K,
+                    similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
+                    task_id=task_id,
+                    stage="system_identification",
+                )
+
+                if system_profiles:
+                    logger.info(f"[系统识别] 检索到 {len(system_profiles)} 条相关系统知识")
+                    candidate_systems = self._build_candidate_systems(system_profiles, limit=8)
+                    knowledge_context = self._build_knowledge_context(system_profiles)
+                else:
+                    logger.info("[系统识别] 未检索到相关系统知识")
+            except Exception as e:
+                logger.warning(f"[系统识别] 知识库检索失败: {e}，继续使用传统方式")
+
+        self._last_candidate_systems = candidate_systems
+
+        user_prompt = f"需求内容：\n\n{requirement_content}\n\n"
+        if candidate_systems:
+            user_prompt += "【候选系统榜单（来自知识库system_profile命中，JSON）】\n"
+            user_prompt += json.dumps(candidate_systems, ensure_ascii=False, indent=2)
+            user_prompt += "\n\n"
+
+        if knowledge_context:
+            user_prompt += f"\n【系统知识参考】\n{knowledge_context}\n\n"
+            user_prompt += "请参考上述系统知识与候选系统榜单，识别该需求涉及的所有系统，并给出置信度与理由。"
+        else:
+            user_prompt += "请识别该需求涉及的所有系统，并给出置信度与理由。"
+
+        response = llm_client.chat_with_system_prompt(
+            system_prompt=self.prompt_template,
+            user_prompt=user_prompt,
+            temperature=0.3,
+        )
+        result = llm_client.extract_json(response)
+        if "systems" not in result:
+            raise ValueError("响应中缺少'systems'字段")
+
+        systems = result["systems"]
+        questions = result.get("questions") or []
+        maybe_systems = result.get("maybe_systems") or []
+
+        if not isinstance(questions, list):
+            questions = []
+        questions = [str(item).strip() for item in questions if str(item).strip()]
+
+        if not isinstance(maybe_systems, list):
+            maybe_systems = []
+        normalized_maybe = []
+        for item in maybe_systems:
+            if isinstance(item, dict) and str(item.get("name") or "").strip():
+                normalized_maybe.append(item)
+            elif isinstance(item, str) and item.strip():
+                normalized_maybe.append({"name": item.strip(), "confidence": "低", "reason": ""})
+        maybe_systems = normalized_maybe
+
+        normalized_systems: List[Dict[str, Any]] = []
+        for system in systems:
+            if "name" not in system:
+                raise ValueError("系统缺少'name'字段")
+
+            original_name = system["name"]
+            standard_name = self._match_standard_system(original_name)
+            normalized_system = dict(system)
+            normalized_system["name"] = standard_name
+            normalized_system["original_name"] = original_name
+            normalized_system.setdefault("type", "主系统")
+            normalized_system.setdefault("description", "")
+            normalized_system.setdefault("confidence", "中")
+            if not isinstance(normalized_system.get("reasons"), list):
+                normalized_system["reasons"] = [str(normalized_system.get("reasons"))] if normalized_system.get("reasons") else []
+            normalized_systems.append(normalized_system)
+            logger.debug(f"  └─ {original_name} → {standard_name}")
+
+        selected_systems = self.validate_and_filter_systems(normalized_systems)
+        if selected_systems:
+            self.validate_systems(selected_systems)
+
+        final_verdict = self._resolve_final_verdict(selected_systems, maybe_systems)
+        reason_summary = self._build_reason_summary(selected_systems, maybe_systems, questions, final_verdict)
+
+        return {
+            "final_verdict": final_verdict,
+            "selected_systems": selected_systems,
+            "candidate_systems": self._last_candidate_systems or [],
+            "maybe_systems": maybe_systems[:8],
+            "questions": questions[:10],
+            "reason_summary": reason_summary,
+            "matched_aliases": [],
+            "context_degraded": False,
+            "degraded_reasons": [],
+            "result_status": "success",
+        }
+
+    def _resolve_final_verdict(
+        self,
+        selected_systems: List[Dict[str, Any]],
+        maybe_systems: List[Dict[str, Any]],
+    ) -> str:
+        if selected_systems and not maybe_systems:
+            return "matched"
+        if selected_systems or maybe_systems:
+            return "ambiguous"
+        return "unknown"
+
+    def _build_reason_summary(
+        self,
+        selected_systems: List[Dict[str, Any]],
+        maybe_systems: List[Dict[str, Any]],
+        questions: List[str],
+        final_verdict: str,
+    ) -> str:
+        if final_verdict == "matched":
+            names = [str(item.get("name") or "").strip() for item in selected_systems if str(item.get("name") or "").strip()]
+            return f"LLM 已给出明确系统结论：{', '.join(names)}"
+        if final_verdict == "ambiguous":
+            candidate_names = [
+                str(item.get("name") or "").strip()
+                for item in maybe_systems
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            if candidate_names:
+                return f"LLM 仍保留待确认系统：{', '.join(candidate_names)}"
+            if questions:
+                return f"LLM 需要补充信息后才能确定：{questions[0]}"
+            return "LLM 未形成唯一稳定结论"
+        if questions:
+            return f"当前无法识别目标系统：{questions[0]}"
+        return "当前无法从需求文本中识别出稳定系统结论"
+
+    def _remember_result(self, result: Dict[str, Any]) -> None:
+        self._last_candidate_systems = list(result.get("candidate_systems") or [])
+        self._last_questions = list(result.get("questions") or [])[:10]
+        self._last_maybe_systems = list(result.get("maybe_systems") or [])[:8]
+        self._last_final_verdict = str(result.get("final_verdict") or "unknown").strip() or "unknown"
+        self._last_reason_summary = str(result.get("reason_summary") or "").strip()
+        self._last_matched_aliases = list(result.get("matched_aliases") or [])
+        self._last_context_degraded = bool(result.get("context_degraded"))
+        self._last_degraded_reasons = list(result.get("degraded_reasons") or [])
+        self._last_result_status = str(result.get("result_status") or "success").strip() or "success"
+
+    def _write_identification_memory(self, result: Dict[str, Any], *, task_id: Optional[str]) -> None:
+        target_systems = result.get("selected_systems") or result.get("candidate_systems") or []
+        if not target_systems:
+            return
+
+        errors: List[str] = []
+        payload = {
+            "task_id": str(task_id or "").strip(),
+            "final_verdict": result.get("final_verdict"),
+            "selected_systems": result.get("selected_systems") or [],
+            "candidate_systems": result.get("candidate_systems") or [],
+            "questions": result.get("questions") or [],
+            "reason_summary": result.get("reason_summary") or "",
+            "matched_aliases": result.get("matched_aliases") or [],
+        }
+
+        seen_ids = set()
+        for system in target_systems:
+            if not isinstance(system, dict):
+                continue
+            system_id = _normalize_text(system.get("system_id") or system.get("id") or system.get("name"))
+            if not system_id or system_id in seen_ids:
+                continue
+            seen_ids.add(system_id)
+            try:
+                self.memory_service.append_record(
+                    system_id=system_id,
+                    memory_type="identification_decision",
+                    memory_subtype="system_identification",
+                    scene_id="system_identification",
+                    source_type="requirement_task",
+                    source_id=str(task_id or ""),
+                    summary=f"系统识别结论：{result.get('final_verdict')}",
+                    payload=payload,
+                    decision_policy="direct_decision",
+                    confidence=1.0 if result.get("final_verdict") == "matched" else 0.6,
+                    actor="system",
+                )
+            except Exception as exc:  # pragma: no cover
+                errors.append(str(exc))
+
+        if errors:
+            degraded_reasons = list(result.get("degraded_reasons") or [])
+            degraded_reasons.append("identification_memory_write_failed")
+            result["context_degraded"] = True
+            result["degraded_reasons"] = degraded_reasons
+            result["result_status"] = "partial_success"
+            result["memory_error"] = "; ".join(errors)
 
     def _build_candidate_systems(self, system_profiles: List[Dict[str, Any]], limit: int = 8) -> List[Dict[str, Any]]:
         grouped: Dict[str, Dict[str, Any]] = {}
@@ -312,10 +552,7 @@ class SystemIdentificationAgent:
             excerpt = str(item.get("content") or "")
             excerpt = " ".join(excerpt.split())[:120]
 
-            slot = grouped.setdefault(
-                name,
-                {"name": name, "score": similarity, "kb_hits": []}
-            )
+            slot = grouped.setdefault(name, {"name": name, "score": similarity, "kb_hits": []})
             slot["score"] = max(float(slot.get("score") or 0.0), similarity)
             slot["kb_hits"].append(
                 {
@@ -328,13 +565,7 @@ class SystemIdentificationAgent:
         candidates: List[Dict[str, Any]] = []
         for name, slot in grouped.items():
             hits = sorted(slot.get("kb_hits") or [], key=lambda x: x.get("similarity", 0.0), reverse=True)[:2]
-            candidates.append(
-                {
-                    "name": name,
-                    "score": round(float(slot.get("score") or 0.0), 3),
-                    "kb_hits": hits,
-                }
-            )
+            candidates.append({"name": name, "score": round(float(slot.get("score") or 0.0), 3), "kb_hits": hits})
 
         candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return candidates[: max(int(limit or 0), 0)] if limit else candidates
@@ -363,11 +594,11 @@ class SystemIdentificationAgent:
                     "confidence": system.get("confidence") or "中",
                     "reasons": system.get("reasons") or [],
                     "kb_hits": kb_hits,
+                    "system_id": system.get("system_id") or system.get("id") or "",
                 }
             )
 
         missing_profiles = [item["name"] for item in selected_systems if not item.get("kb_hits")]
-
         analysis = {
             "generated_at": datetime.now().isoformat(),
             "knowledge_enabled": bool(self.knowledge_enabled and self.knowledge_service),
@@ -376,6 +607,12 @@ class SystemIdentificationAgent:
             "maybe_systems": self._last_maybe_systems or [],
             "questions": self._last_questions or [],
             "missing_system_profiles": missing_profiles,
+            "final_verdict": self._last_final_verdict,
+            "reason_summary": self._last_reason_summary,
+            "matched_aliases": self._last_matched_aliases or [],
+            "context_degraded": self._last_context_degraded,
+            "degraded_reasons": self._last_degraded_reasons or [],
+            "result_status": self._last_result_status,
         }
         self.last_ai_system_analysis = analysis
         return analysis
@@ -388,18 +625,15 @@ class SystemIdentificationAgent:
             system_name: 识别出的系统名称
 
         Returns:
-            str: 标准系统名称，如果无法匹配返回None
+            str: 标准系统名称，如果无法匹配返回原值
         """
-        # 首先尝试精确匹配
         if system_name in self.system_list:
             return system_name
 
-        # 尝试模糊匹配（包含关系）
         for standard_name in self.system_list:
             if system_name in standard_name or standard_name in system_name:
                 return standard_name
 
-        # 尝试关键词匹配
         keywords_map = {
             "支付": "支付中台",
             "核心": "新一代核心",
@@ -415,8 +649,7 @@ class SystemIdentificationAgent:
             "同业": "同业",
             "存款": "在线存款",
             "反欺诈": "交易反欺诈",
-            "中台": "支付中台",  # 默认支付中台，如果其他中台可以再添加
-            # 新增关键词映射
+            "中台": "支付中台",
             "网联": "统一支付",
             "云闪付": "统一支付",
             "银企": "银企对账",
@@ -490,10 +723,8 @@ class SystemIdentificationAgent:
 
         best_match = None
         best_score = 0
-
         for keyword, standard_name in keywords_map.items():
             if keyword in system_name:
-                # 计算匹配度
                 score = len(keyword) / len(system_name)
                 if score > best_score and standard_name in self.system_list:
                     best_score = score
@@ -502,106 +733,72 @@ class SystemIdentificationAgent:
         if best_match:
             return best_match
 
-        # 如果都匹配不上，保留原系统名称并标记为外部系统
         logger.warning(f"系统 '{system_name}' 无法匹配到标准系统名称，保留为外部系统")
-        return system_name  # 返回原系统名称，而不是None
+        return system_name
 
     def validate_and_filter_systems(self, systems: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
         验证并标准化系统列表，保留所有系统（包括无法匹配的）
-        将子系统映射到主系统
-
-        Args:
-            systems: 原始系统列表
-
-        Returns:
-            List: 验证后的系统列表
         """
         validated_systems = []
         standard_count = 0
         external_count = 0
-        subsystem_count = 0
 
         for system in systems:
             original_name = system.get("name", "")
             standard_name = self._match_standard_system(original_name)
-
-            # 检查是否为子系统，如果是则映射到主系统
-            if standard_name in self.subsystem_mapping:
-                main_system = self.subsystem_mapping[standard_name]
-                logger.info(f"  → 子系统映射: {original_name} → {standard_name} → 主系统: {main_system}")
-                standard_name = main_system
-                subsystem_count += 1
-
-            # 检查是否已经添加过（避免重复）
-            if not any(s["name"] == standard_name for s in validated_systems):
-                system["name"] = standard_name
-                system["original_name"] = original_name
-
-                # 标记是否为标准系统
-                if standard_name in self.system_list:
-                    system["is_standard"] = True
-                    standard_count += 1
-                    logger.debug(f"  ✓ {original_name} → {standard_name} (标准系统)")
-                else:
-                    system["is_standard"] = False
-                    external_count += 1
-                    logger.warning(f"  ! {original_name} → {standard_name} (外部系统)")
-
-                validated_systems.append(system)
-            else:
+            if any(s["name"] == standard_name for s in validated_systems):
                 logger.warning(f"  - 系统 '{standard_name}' 重复，已跳过")
+                continue
 
-        logger.info(f"[系统验证] 完成，共 {len(validated_systems)} 个系统（标准: {standard_count}，外部: {external_count}，子系统映射: {subsystem_count}）")
+            system["name"] = standard_name
+            system["original_name"] = original_name
+            resolved = system_routes.resolve_system_owner(system_name=standard_name)
+            resolved_system_id = _normalize_text(resolved.get("system_id"))
+            if resolved_system_id:
+                system["system_id"] = resolved_system_id
+
+            if standard_name in self.system_list:
+                system["is_standard"] = True
+                standard_count += 1
+                logger.debug(f"  ✓ {original_name} → {standard_name} (标准系统)")
+            else:
+                system["is_standard"] = False
+                external_count += 1
+                logger.warning(f"  ! {original_name} → {standard_name} (外部系统)")
+
+            validated_systems.append(system)
+
+        logger.info(f"[系统验证] 完成，共 {len(validated_systems)} 个系统（标准: {standard_count}，外部: {external_count}）")
         return validated_systems
 
     def validate_system_names_in_features(self, system_name: str, features: List[Dict]) -> List[Dict]:
         """
         校验功能点中的系统名称，修正不一致的系统引用
-
-        Args:
-            system_name: 当前系统的标准名称
-            features: 功能点列表
-
-        Returns:
-            List: 修正后的功能点列表
         """
         validated_features = []
-
         for feature in features:
-            # 检查功能点中的系统名称字段
             feature_system = feature.get("系统", "")
             if feature_system and feature_system != system_name:
-                # 尝试匹配标准系统
                 standard_name = self._match_standard_system(feature_system)
                 if standard_name == system_name:
-                    # 匹配成功，更新为标准名称
                     feature["系统"] = system_name
                     logger.info(f"功能点 '{feature.get('功能点', '')}' 的系统名称从 '{feature_system}' 修正为 '{system_name}'")
                 else:
-                    # 无法匹配，记录警告并使用当前系统
                     logger.warning(f"功能点 '{feature.get('功能点', '')}' 中的系统 '{feature_system}' 无法匹配当前系统 '{system_name}'，已修正")
                     feature["系统"] = system_name
 
             validated_features.append(feature)
-
         return validated_features
 
     def validate_systems(self, systems: List[Dict[str, str]]) -> bool:
         """
         验证识别结果的合理性
-
-        Args:
-            systems: 系统列表
-
-        Returns:
-            bool: 是否合理
         """
         if not systems:
             logger.warning("未识别到任何系统")
             return False
 
-        # 检查是否有主系统
         has_main_system = any(s.get("type") == "主系统" for s in systems)
         if not has_main_system:
             logger.warning("未识别到主系统，将第一个系统标记为主系统")
@@ -609,18 +806,9 @@ class SystemIdentificationAgent:
 
         return True
 
-    def _build_knowledge_context(
-        self,
-        system_profiles: List[Dict[str, Any]]
-    ) -> str:
+    def _build_knowledge_context(self, system_profiles: List[Dict[str, Any]]) -> str:
         """
         构建系统知识上下文（用于Agent Prompt）
-
-        Args:
-            system_profiles: 系统知识列表
-
-        Returns:
-            str: 格式化的知识上下文
         """
         if not system_profiles:
             return ""
@@ -661,8 +849,8 @@ class SystemIdentificationAgent:
         return "\n".join(context_parts)
 
 
-# 全局Agent实例（延迟初始化，在agent_orchestrator中注入knowledge_service）
 system_identification_agent = None
+
 
 def get_system_identification_agent(knowledge_service=None):
     """
@@ -675,6 +863,13 @@ def get_system_identification_agent(knowledge_service=None):
         SystemIdentificationAgent: Agent实例
     """
     global system_identification_agent
-    if system_identification_agent is None:
+    expected_memory_path = os.path.join(settings.REPORT_DIR, "memory_records.json")
+    expected_profile_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    if (
+        system_identification_agent is None
+        or os.path.realpath(system_identification_agent.memory_service.store_path) != os.path.realpath(expected_memory_path)
+        or os.path.realpath(system_identification_agent.profile_service.store_path) != os.path.realpath(expected_profile_path)
+        or (knowledge_service is not None and system_identification_agent.knowledge_service is not knowledge_service)
+    ):
         system_identification_agent = SystemIdentificationAgent(knowledge_service)
     return system_identification_agent

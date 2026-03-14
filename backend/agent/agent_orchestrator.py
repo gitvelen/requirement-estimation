@@ -109,19 +109,32 @@ class AgentOrchestrator:
 
             # 获取系统识别Agent（注入knowledge_service）
             sys_agent = get_system_identification_agent(self.knowledge_service)
-            systems = sys_agent.identify(
-                requirement_data.get("requirement_content", ""),
-                task_id=task_id
-            )
+            identification_result = None
+            if settings.ENABLE_V27_RUNTIME:
+                identification_result = sys_agent.identify_with_verdict(
+                    requirement_data.get("requirement_content", ""),
+                    task_id=task_id,
+                )
+                systems = identification_result.get("selected_systems") or []
+                if identification_result.get("final_verdict") != "matched":
+                    raise ValueError(
+                        f"系统识别结果为{identification_result.get('final_verdict')}，"
+                        f"{identification_result.get('reason_summary') or '无法继续自动拆分'}"
+                    )
+            else:
+                systems = sys_agent.identify(
+                    requirement_data.get("requirement_content", ""),
+                    task_id=task_id
+                )
 
-            # 验证和标准化系统名称
-            logger.info("[处理中] 验证和标准化系统名称...")
-            systems = sys_agent.validate_and_filter_systems(systems)
+                # 验证和标准化系统名称
+                logger.info("[处理中] 验证和标准化系统名称...")
+                systems = sys_agent.validate_and_filter_systems(systems)
 
-            if not systems:
-                raise ValueError("未识别到任何系统")
+                if not systems:
+                    raise ValueError("未识别到任何系统")
 
-            sys_agent.validate_systems(systems)
+                sys_agent.validate_systems(systems)
 
             # 【新增】构建系统校准分析（供编辑页展示与纠偏：候选系统/置信度/疑问清单）
             ai_system_analysis = None
@@ -144,7 +157,10 @@ class AgentOrchestrator:
             ai_original_output_step1 = {
                 "systems": [{"name": s["name"], "type": s.get("type"), "is_standard": s.get("is_standard", False)} for s in systems],
                 "system_count": len(systems),
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "final_verdict": (identification_result or {}).get("final_verdict") if identification_result else "matched",
+                "context_degraded": bool((ai_system_analysis or {}).get("context_degraded")),
+                "result_status": (ai_system_analysis or {}).get("result_status") or "success",
             }
 
             self._update_progress(progress_callback, 35, f"系统识别完成：{len(systems)}个系统")
@@ -159,6 +175,9 @@ class AgentOrchestrator:
 
             systems_data = {}
             total_features = 0
+            feature_context_degraded = False
+            degraded_reasons = list((ai_system_analysis or {}).get("degraded_reasons") or [])
+            applied_adjustments_summary: Dict[str, List[Dict[str, Any]]] = {}
 
             for idx, system in enumerate(systems, 1):
                 system_name = system["name"]
@@ -171,12 +190,26 @@ class AgentOrchestrator:
 
                 # 获取功能拆分Agent（注入knowledge_service）
                 feature_agent = get_feature_breakdown_agent(self.knowledge_service)
-                features = feature_agent.breakdown(
-                    requirement_data.get("requirement_content", ""),
-                    system_name,
-                    system_type,
-                    task_id=task_id
-                )
+                if settings.ENABLE_V27_RUNTIME:
+                    feature_result = feature_agent.breakdown_with_context(
+                        requirement_data.get("requirement_content", ""),
+                        system_name,
+                        system_type,
+                        task_id=task_id,
+                    )
+                    features = feature_result["features"]
+                    if feature_result.get("context_degraded"):
+                        feature_context_degraded = True
+                        degraded_reasons.extend(feature_result.get("degraded_reasons") or [])
+                    if feature_result.get("applied_adjustments"):
+                        applied_adjustments_summary[system_name] = feature_result.get("applied_adjustments") or []
+                else:
+                    features = feature_agent.breakdown(
+                        requirement_data.get("requirement_content", ""),
+                        system_name,
+                        system_type,
+                        task_id=task_id
+                    )
 
                 # 校验功能点中的系统名称
                 logger.info(f"  └─ 校验功能点系统名称...")
@@ -205,8 +238,25 @@ class AgentOrchestrator:
                     ] for sys_name, features in systems_data.items()
                 },
                 "total_features": total_features,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "context_degraded": feature_context_degraded,
+                "applied_adjustments": applied_adjustments_summary,
             }
+
+            if settings.ENABLE_V27_RUNTIME and ai_system_analysis is not None:
+                combined_reasons: List[str] = []
+                for item in degraded_reasons:
+                    normalized = str(item or "").strip()
+                    if normalized and normalized not in combined_reasons:
+                        combined_reasons.append(normalized)
+                ai_system_analysis["context_degraded"] = bool(
+                    ai_system_analysis.get("context_degraded") or feature_context_degraded
+                )
+                ai_system_analysis["degraded_reasons"] = combined_reasons
+                if ai_system_analysis.get("context_degraded"):
+                    ai_system_analysis["result_status"] = "partial_success"
+                else:
+                    ai_system_analysis["result_status"] = ai_system_analysis.get("result_status") or "success"
 
             self._update_progress(progress_callback, 60, f"功能点拆分完成：{total_features}个功能点")
 

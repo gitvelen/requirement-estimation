@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     V21_AI_REMARK_ENABLED: bool = _env_bool("V21_AI_REMARK_ENABLED", True)
     V21_DASHBOARD_MGMT_ENABLED: bool = _env_bool("V21_DASHBOARD_MGMT_ENABLED", True)
 
+    # v2.7 功能开关
+    ENABLE_V27_PROFILE_SCHEMA: bool = _env_bool("ENABLE_V27_PROFILE_SCHEMA", False)
+    ENABLE_V27_RUNTIME: bool = _env_bool("ENABLE_V27_RUNTIME", False)
+    ENABLE_SERVICE_GOVERNANCE_IMPORT: bool = _env_bool("ENABLE_SERVICE_GOVERNANCE_IMPORT", False)
+    ENABLE_SYSTEM_CATALOG_PROFILE_INIT: bool = _env_bool("ENABLE_SYSTEM_CATALOG_PROFILE_INIT", False)
+    RUNTIME_MEMORY_QUERY_LIMIT: int = int(os.getenv("RUNTIME_MEMORY_QUERY_LIMIT", "200"))
+    RUNTIME_EXECUTION_RETENTION_DAYS: int = int(os.getenv("RUNTIME_EXECUTION_RETENTION_DAYS", "180"))
+    MEMORY_RETENTION_DAYS: int = int(os.getenv("MEMORY_RETENTION_DAYS", "3650"))
+
     # 简单鉴权（生产环境建议启用）
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
 

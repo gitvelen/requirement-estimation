@@ -14,6 +14,8 @@ from backend.app import app
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import esb_service
+from backend.service import memory_service
+from backend.service import runtime_execution_service
 from backend.service import system_profile_service
 from backend.service import user_service
 
@@ -49,6 +51,8 @@ def client(tmp_path, monkeypatch):
 
     esb_service._esb_service = None
     system_profile_service._system_profile_service = None
+    memory_service._memory_service = None
+    runtime_execution_service._runtime_execution_service = None
 
     return TestClient(app)
 
@@ -264,6 +268,59 @@ def test_esb_import_accepts_system_abbreviation_or_name_when_tab_uses_uuid_syste
     profile = system_profile_service.get_system_profile_service().get_profile("贷款核算")
     assert profile
     assert profile.get("completeness", {}).get("esb") is True
+
+
+def test_v27_esb_import_requires_admin_for_global_governance_mode(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "ENABLE_SERVICE_GOVERNANCE_IMPORT", True)
+
+    manager = _seed_user("v27_governance_manager", "pwd123", ["manager"])
+    token = _login(client, "v27_governance_manager", "pwd123")
+
+    csv_content = (
+        "系统名称,服务场景码,交易名称,消费方系统名称,状态\n"
+        "统一支付平台,SC001,支付查询,核心账务,正常使用\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        files={"file": ("governance.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "AUTH_001"
+
+
+def test_v27_esb_import_returns_explicit_flag_error_when_global_governance_disabled(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", False)
+    monkeypatch.setattr(settings, "ENABLE_SERVICE_GOVERNANCE_IMPORT", False)
+
+    _seed_user("v27_governance_admin", "pwd123", ["admin"])
+    token = _login(client, "v27_governance_admin", "pwd123")
+
+    csv_content = (
+        "服务方系统名称,服务场景码,交易名称,消费方系统名称,状态\n"
+        "办公自动化,2022000601,cus提交流程,智能报销,正常使用\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        files={"file": ("governance.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "ESB_002"
+    assert payload["message"] == "服务治理全局导入未启用"
+    assert payload["details"]["missing_flags"] == [
+        "ENABLE_V27_PROFILE_SCHEMA",
+        "ENABLE_V27_RUNTIME",
+        "ENABLE_SERVICE_GOVERNANCE_IMPORT",
+    ]
 
 
 def test_esb_import_accepts_human_friendly_mapping_fields(client):

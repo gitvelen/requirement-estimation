@@ -21,36 +21,57 @@ except ImportError:
     FCNTL_AVAILABLE = False
 
 from backend.config.config import settings
+from backend.service.profile_schema_service import (
+    V27_DOMAIN_KEYS,
+    build_empty_profile_data,
+    normalize_profile_data,
+    set_field_value,
+)
+from backend.service.system_profile_legacy_helper import (
+    LEGACY_TREE_ERROR,
+    LEGACY_CONSTRAINT_KEY,
+    LEGACY_FIELDS_KEY,
+    LEGACY_INTERFACE_KEY,
+    LEGACY_MODULE_TREE_KEY,
+    LEGACY_PENDING_FIELDS_KEY,
+    LEGACY_PROFILE_DOMAIN_KEYS,
+    LEGACY_PROFILE_FIELD_KEYS,
+    LEGACY_PROFILE_FIELD_MAPPING,
+    LEGACY_SYSTEM_SCOPE_KEY,
+    default_legacy_profile_data,
+    extract_legacy_fields_from_profile_data,
+    is_v24_profile_shape,
+    merge_profile_data,
+    migrate_suggestions_structure,
+    normalize_module_structure,
+    normalize_domain_value_for_legacy_field,
+    normalize_fields_for_output,
+    normalize_fields_for_storage,
+    normalize_interface_payload as normalize_interface_entries,
+    normalize_constraint_payload as normalize_constraint_entries,
+    normalize_capability_payload as normalize_capability_tree,
+    normalize_metric_payload as normalize_metric_profile,
+    normalize_legacy_profile_value as normalize_legacy_profile_part,
+    normalize_text_payload as normalize_text_entries,
+    build_profile_data_from_legacy_fields,
+)
 
 logger = logging.getLogger(__name__)
 
-PROFILE_FIELD_KEYS = (
-    "system_scope",
-    "module_structure",
-    "integration_points",
-    "key_constraints",
-)
-
-PROFILE_TEXT_FIELD_KEYS = {
-    "system_scope",
-    "integration_points",
-    "key_constraints",
+PROFILE_FIELD_KEYS = LEGACY_PROFILE_FIELD_KEYS
+PROFILE_V24_DOMAIN_KEYS = LEGACY_PROFILE_DOMAIN_KEYS
+PROFILE_V24_TO_LEGACY_FIELD = LEGACY_PROFILE_FIELD_MAPPING
+V27_LEGACY_TO_CANONICAL_FIELD = {
+    ("system_positioning", "system_description"): "service_scope",
+    ("system_positioning", "boundaries"): "system_boundary",
+    ("business_capabilities", "core_processes"): "business_processes",
+    ("integration_interfaces", "integration_points"): "other_integrations",
+    ("technical_architecture", "architecture_positioning"): "architecture_style",
+    ("constraints_risks", "key_constraints"): "technical_constraints",
 }
-
-PROFILE_V24_DOMAIN_KEYS = (
-    "system_positioning",
-    "business_capabilities",
-    "integration_interfaces",
-    "technical_architecture",
-    "constraints_risks",
-)
-
-PROFILE_V24_TO_LEGACY_FIELD = {
-    ("system_positioning", "system_description"): "system_scope",
-    ("business_capabilities", "module_structure"): "module_structure",
-    ("integration_interfaces", "integration_points"): "integration_points",
-    ("constraints_risks", "key_constraints"): "key_constraints",
-}
+V27_CANONICAL_TO_LEGACY_FIELDS: Dict[tuple[str, str], List[str]] = {}
+for (_domain_key, _legacy_field), _canonical_field in V27_LEGACY_TO_CANONICAL_FIELD.items():
+    V27_CANONICAL_TO_LEGACY_FIELDS.setdefault((_domain_key, _canonical_field), []).append(_legacy_field)
 
 
 class SystemProfileService:
@@ -119,173 +140,17 @@ class SystemProfileService:
                 return item
         return None
 
-    def _normalize_module_node(
-        self,
-        node: Any,
-        *,
-        strict: bool,
-        depth: int,
-        max_depth: int,
-    ) -> tuple[Optional[Dict[str, Any]], bool]:
-        if not isinstance(node, dict):
-            if strict:
-                raise ValueError("invalid_module_structure")
-            return None, False
-
-        module_name = str(node.get("module_name") or "").strip()
-        if not module_name:
-            if strict:
-                raise ValueError("invalid_module_structure")
-            return None, False
-
-        description = "" if node.get("description") is None else str(node.get("description")).strip()
-        normalized_node: Dict[str, Any] = {
-            "module_name": module_name,
-            "description": description,
-            "children": [],
-        }
-        depth_truncated = False
-        normalized_children: List[Dict[str, Any]] = []
-
-        raw_children = node.get("children")
-        if raw_children is not None:
-            if not isinstance(raw_children, list):
-                if strict:
-                    raise ValueError("invalid_module_structure")
-            elif depth >= max_depth:
-                if raw_children:
-                    depth_truncated = True
-            else:
-                for child_item in raw_children:
-                    child_node, child_truncated = self._normalize_module_node(
-                        child_item,
-                        strict=strict,
-                        depth=depth + 1,
-                        max_depth=max_depth,
-                    )
-                    if child_node is not None:
-                        normalized_children.append(child_node)
-                    depth_truncated = depth_truncated or child_truncated
-
-        raw_functions = node.get("functions")
-        if raw_functions is not None:
-            if not isinstance(raw_functions, list):
-                if strict:
-                    raise ValueError("invalid_module_structure")
-            elif depth >= max_depth:
-                if raw_functions:
-                    depth_truncated = True
-            else:
-                seen_child_names = {
-                    str(child.get("module_name") or "").strip()
-                    for child in normalized_children
-                    if isinstance(child, dict)
-                }
-                for function_item in raw_functions:
-                    if isinstance(function_item, dict):
-                        function_name = str(function_item.get("name") or "").strip()
-                        function_desc = "" if function_item.get("desc") is None else str(function_item.get("desc")).strip()
-                    elif isinstance(function_item, str):
-                        function_name = function_item.strip()
-                        function_desc = ""
-                    else:
-                        if strict:
-                            raise ValueError("invalid_module_structure")
-                        continue
-
-                    if not function_name:
-                        if strict:
-                            raise ValueError("invalid_module_structure")
-                        continue
-                    if function_name in seen_child_names:
-                        continue
-
-                    normalized_children.append(
-                        {
-                            "module_name": function_name,
-                            "description": function_desc,
-                            "children": [],
-                        }
-                    )
-                    seen_child_names.add(function_name)
-
-        normalized_node["children"] = normalized_children
-        return normalized_node, depth_truncated
+    def _normalize_capability_tree(self, value: Any, *, strict: bool) -> List[Dict[str, Any]]:
+        return normalize_capability_tree(value, strict=strict)
 
     def _normalize_module_structure(self, value: Any, *, strict: bool) -> List[Dict[str, Any]]:
-        if value is None:
-            return []
-
-        parsed_value = value
-        if isinstance(parsed_value, str):
-            text = parsed_value.strip()
-            if not text:
-                return []
-            try:
-                parsed_value = json.loads(text)
-            except Exception:
-                if strict:
-                    raise ValueError("invalid_module_structure")
-                return []
-
-        if not isinstance(parsed_value, list):
-            if strict:
-                raise ValueError("invalid_module_structure")
-            return []
-
-        normalized_modules: List[Dict[str, Any]] = []
-        now = datetime.now().isoformat()
-        max_depth = 3
-        has_depth_truncated = False
-
-        for module_item in parsed_value:
-            normalized_module, depth_truncated = self._normalize_module_node(
-                module_item,
-                strict=strict,
-                depth=1,
-                max_depth=max_depth,
-            )
-            if normalized_module is None:
-                continue
-            normalized_module["last_updated"] = str(module_item.get("last_updated") or "").strip() or now
-            normalized_modules.append(normalized_module)
-            has_depth_truncated = has_depth_truncated or depth_truncated
-
-        if has_depth_truncated:
-            logger.warning(
-                "module_structure depth exceeds limit(%s), extra levels were truncated",
-                max_depth,
-            )
-
-        return normalized_modules
+        return normalize_module_structure(value, strict=strict)
 
     def _normalize_fields_for_storage(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        normalized: Dict[str, Any] = {}
-        raw_fields = fields if isinstance(fields, dict) else {}
-
-        for key in PROFILE_TEXT_FIELD_KEYS:
-            if key in raw_fields:
-                value = raw_fields.get(key)
-                normalized[key] = "" if value is None else str(value).strip()
-
-        if "module_structure" in raw_fields:
-            normalized["module_structure"] = self._normalize_module_structure(raw_fields.get("module_structure"), strict=True)
-
-        return normalized
+        return normalize_fields_for_storage(fields)
 
     def _normalize_fields_for_output(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        raw_fields = fields if isinstance(fields, dict) else {}
-
-        return {
-            "system_scope": "" if raw_fields.get("system_scope") is None else str(raw_fields.get("system_scope")).strip(),
-            "module_structure": self._normalize_module_structure(raw_fields.get("module_structure"), strict=False),
-            "integration_points": ""
-            if raw_fields.get("integration_points") is None
-            else str(raw_fields.get("integration_points")).strip(),
-            "key_constraints": ""
-            if raw_fields.get("key_constraints") is None
-            else str(raw_fields.get("key_constraints")).strip(),
-        }
+        return normalize_fields_for_output(fields)
 
     def _normalize_ai_suggestion_ignored_for_storage(self, value: Any) -> Dict[str, Any]:
         raw_ignored = value if isinstance(value, dict) else {}
@@ -302,10 +167,64 @@ class SystemProfileService:
             normalized[f"{domain_key}.{sub_field}"] = copy.deepcopy(raw_value)
         return normalized
 
+    def _normalize_v27_metadata_map(self, value: Any) -> Dict[str, Any]:
+        raw_map = value if isinstance(value, dict) else {}
+        normalized: Dict[str, Any] = {}
+        for raw_key, raw_value in raw_map.items():
+            field_path = str(raw_key or "").strip()
+            if not field_path:
+                continue
+            if isinstance(raw_value, dict):
+                normalized[field_path] = copy.deepcopy(raw_value)
+            else:
+                normalized[field_path] = {"value": copy.deepcopy(raw_value)}
+        return normalized
+
+    def _normalize_v27_ai_suggestions(self, value: Any) -> Dict[str, Any]:
+        raw_map = value if isinstance(value, dict) else {}
+        normalized: Dict[str, Any] = {}
+        for raw_key, raw_value in raw_map.items():
+            field_path = str(raw_key or "").strip()
+            if not field_path:
+                continue
+            normalized[field_path] = copy.deepcopy(raw_value)
+        return normalized
+
+    def _build_v27_profile_record(self, system_name: str, system_id: str, now: str) -> Dict[str, Any]:
+        return {
+            "system_id": system_id,
+            "system_name": system_name,
+            "status": "draft",
+            "created_at": now,
+            "updated_at": now,
+            "profile_data": build_empty_profile_data(),
+            "field_sources": {},
+            "ai_suggestions": {},
+            "evidence_refs": [],
+        }
+
     def _normalize_profile_for_output(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            payload = dict(profile or {})
+            payload["profile_data"] = normalize_profile_data(payload.get("profile_data"))
+            payload["field_sources"] = self._normalize_v27_metadata_map(payload.get("field_sources"))
+            payload["ai_suggestions"] = self._normalize_v27_ai_suggestions(payload.get("ai_suggestions"))
+            payload["ai_suggestions_previous"] = (
+                self._normalize_v27_ai_suggestions(payload.get("ai_suggestions_previous"))
+                if isinstance(payload.get("ai_suggestions_previous"), dict)
+                else None
+            )
+            payload["ai_suggestion_ignored"] = self._normalize_ai_suggestion_ignored_for_storage(
+                payload.get("ai_suggestion_ignored")
+            )
+            payload["evidence_refs"] = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
+            payload.pop(LEGACY_FIELDS_KEY, None)
+            payload.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            return payload
+
         payload = dict(profile or {})
-        raw_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-        payload["fields"] = self._normalize_fields_for_output(raw_fields)
+        raw_fields = payload.get(LEGACY_FIELDS_KEY) if isinstance(payload.get(LEGACY_FIELDS_KEY), dict) else {}
+        payload[LEGACY_FIELDS_KEY] = self._normalize_fields_for_output(raw_fields)
         if not isinstance(payload.get("field_sources"), dict):
             payload["field_sources"] = {}
         if not isinstance(payload.get("ai_suggestions"), dict):
@@ -321,165 +240,12 @@ class SystemProfileService:
         return payload
 
     def _empty_profile_data(self) -> Dict[str, Any]:
-        return {
-            "system_positioning": {
-                "system_description": "",
-                "target_users": [],
-                "boundaries": [],
-            },
-            "business_capabilities": {
-                "module_structure": [],
-                "core_processes": [],
-            },
-            "integration_interfaces": {
-                "integration_points": [],
-                "external_dependencies": [],
-            },
-            "technical_architecture": {
-                "architecture_positioning": "",
-                "tech_stack": [],
-                "performance_profile": {},
-            },
-            "constraints_risks": {
-                "key_constraints": [],
-                "known_risks": [],
-            },
-        }
-
-    def _normalize_text_list(self, value: Any) -> List[str]:
-        if isinstance(value, list):
-            items = []
-            for item in value:
-                text = str(item or "").strip()
-                if text:
-                    items.append(text)
-            return items
-
-        if isinstance(value, str):
-            normalized = (
-                value.replace("，", ",")
-                .replace("、", ",")
-                .replace("；", ",")
-                .replace(";", ",")
-            )
-            items = []
-            for line in normalized.splitlines():
-                for part in line.split(","):
-                    text = part.strip()
-                    if text:
-                        items.append(text)
-            return items
-
-        return []
-
-    def _normalize_integration_points(self, value: Any) -> List[Dict[str, Any]]:
-        if isinstance(value, str):
-            text = value.strip()
-            return [{"description": text}] if text else []
-
-        if not isinstance(value, list):
-            return []
-
-        normalized_points: List[Dict[str, Any]] = []
-        for item in value:
-            if isinstance(item, dict):
-                point = {
-                    "peer_system": str(item.get("peer_system") or "").strip(),
-                    "protocol": str(item.get("protocol") or "").strip(),
-                    "direction": str(item.get("direction") or "").strip(),
-                    "description": str(item.get("description") or item.get("name") or "").strip(),
-                }
-                # 保持数据可读，去掉空字段
-                compact = {k: v for k, v in point.items() if str(v).strip()}
-                if compact:
-                    normalized_points.append(compact)
-                continue
-
-            text = str(item or "").strip()
-            if text:
-                normalized_points.append({"description": text})
-
-        return normalized_points
-
-    def _normalize_key_constraints(self, value: Any) -> List[Dict[str, str]]:
-        if isinstance(value, str):
-            text = value.strip()
-            return [{"category": "通用", "description": text}] if text else []
-
-        if not isinstance(value, list):
-            return []
-
-        constraints: List[Dict[str, str]] = []
-        for item in value:
-            if isinstance(item, dict):
-                description = str(item.get("description") or item.get("value") or "").strip()
-                if not description:
-                    continue
-                category = str(item.get("category") or "通用").strip() or "通用"
-                constraints.append({"category": category, "description": description})
-                continue
-
-            text = str(item or "").strip()
-            if text:
-                constraints.append({"category": "通用", "description": text})
-
-        return constraints
-
-    def _normalize_performance_profile(self, value: Any) -> Dict[str, str]:
-        if isinstance(value, dict):
-            normalized: Dict[str, str] = {}
-            for key, raw_value in value.items():
-                metric = str(key or "").strip()
-                if not metric:
-                    continue
-                normalized[metric] = str(raw_value or "").strip()
-            return normalized
-
-        if not isinstance(value, list):
-            return {}
-
-        normalized = {}
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or item.get("metric") or "").strip()
-            if not key:
-                continue
-            normalized[key] = str(item.get("value") or "").strip()
-        return normalized
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            return build_empty_profile_data()
+        return default_legacy_profile_data()
 
     def _normalize_profile_data_sub_field(self, domain_key: str, sub_field: str, value: Any) -> Any:
-        if domain_key == "system_positioning" and sub_field in {"target_users", "boundaries"}:
-            return self._normalize_text_list(value)
-
-        if domain_key == "business_capabilities":
-            if sub_field == "module_structure":
-                return self._normalize_module_structure(value, strict=False)
-            if sub_field == "core_processes":
-                return self._normalize_text_list(value)
-
-        if domain_key == "integration_interfaces":
-            if sub_field == "integration_points":
-                return self._normalize_integration_points(value)
-            if sub_field == "external_dependencies":
-                return self._normalize_text_list(value)
-
-        if domain_key == "technical_architecture":
-            if sub_field == "tech_stack":
-                return self._normalize_text_list(value)
-            if sub_field == "performance_profile":
-                return self._normalize_performance_profile(value)
-
-        if domain_key == "constraints_risks":
-            if sub_field == "key_constraints":
-                return self._normalize_key_constraints(value)
-            if sub_field == "known_risks":
-                return self._normalize_text_list(value)
-
-        if isinstance(value, str):
-            return value.strip()
-
-        return copy.deepcopy(value)
+        return normalize_legacy_profile_part(domain_key, sub_field, value)
 
     def _default_ai_correction_history(self) -> Dict[str, Any]:
         return {
@@ -492,41 +258,13 @@ class SystemProfileService:
         }
 
     def _build_profile_data_from_legacy_fields(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = self._normalize_fields_for_output(fields if isinstance(fields, dict) else {})
-        module_structure = self._normalize_module_structure(normalized.get("module_structure"), strict=False)
-        integration_points = str(normalized.get("integration_points") or "").strip()
-        key_constraints = str(normalized.get("key_constraints") or "").strip()
-
-        profile_data = self._empty_profile_data()
-        profile_data["system_positioning"]["system_description"] = str(normalized.get("system_scope") or "").strip()
-        profile_data["business_capabilities"]["module_structure"] = module_structure
-
-        if integration_points:
-            profile_data["integration_interfaces"]["integration_points"] = [{"description": integration_points}]
-        if key_constraints:
-            profile_data["constraints_risks"]["key_constraints"] = [
-                {"category": "通用", "description": key_constraints}
-            ]
-        return profile_data
+        return build_profile_data_from_legacy_fields(self._empty_profile_data, fields)
 
     def _is_v24_profile_shape(self, value: Any) -> bool:
-        if not isinstance(value, dict):
-            return False
-        return any(domain in value for domain in PROFILE_V24_DOMAIN_KEYS)
+        return is_v24_profile_shape(value)
 
     def _migrate_suggestions_structure(self, value: Any, fallback_fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(value, dict):
-            return {}
-        if self._is_v24_profile_shape(value):
-            return value
-
-        legacy = {
-            "system_scope": value.get("system_scope", fallback_fields.get("system_scope")),
-            "module_structure": value.get("module_structure", fallback_fields.get("module_structure")),
-            "integration_points": value.get("integration_points", fallback_fields.get("integration_points")),
-            "key_constraints": value.get("key_constraints", fallback_fields.get("key_constraints")),
-        }
-        return self._build_profile_data_from_legacy_fields(legacy)
+        return migrate_suggestions_structure(self._empty_profile_data, value, fallback_fields)
 
     def _migrate_profile_record(self, profile: Dict[str, Any]) -> bool:
         if not isinstance(profile, dict):
@@ -534,7 +272,7 @@ class SystemProfileService:
 
         changed = False
         now = datetime.now().isoformat()
-        fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+        fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
         fields = self._normalize_fields_for_output(fields)
 
         if not isinstance(profile.get("profile_data"), dict):
@@ -582,34 +320,7 @@ class SystemProfileService:
             logger.warning(f"系统画像启动迁移失败: {exc}")
 
     def _normalize_domain_value_for_legacy_field(self, legacy_field: str, value: Any) -> Any:
-        field_key = str(legacy_field or "").strip()
-        if field_key == "module_structure":
-            return self._normalize_module_structure(value, strict=False)
-        if field_key == "integration_points":
-            if isinstance(value, list):
-                segments: List[str] = []
-                for item in value:
-                    if isinstance(item, dict):
-                        text = str(item.get("description") or item.get("name") or "").strip()
-                    else:
-                        text = str(item or "").strip()
-                    if text:
-                        segments.append(text)
-                return "；".join(segments)
-            return "" if value is None else str(value).strip()
-        if field_key == "key_constraints":
-            if isinstance(value, list):
-                segments = []
-                for item in value:
-                    if isinstance(item, dict):
-                        text = str(item.get("description") or item.get("value") or "").strip()
-                    else:
-                        text = str(item or "").strip()
-                    if text:
-                        segments.append(text)
-                return "；".join(segments)
-            return "" if value is None else str(value).strip()
-        return "" if value is None else str(value).strip()
+        return normalize_domain_value_for_legacy_field(legacy_field, value)
 
     def _append_profile_event(
         self,
@@ -635,6 +346,10 @@ class SystemProfileService:
         profile["profile_events"] = events
 
     def _ensure_profile_data_shape(self, profile: Dict[str, Any], fields: Dict[str, Any]) -> Dict[str, Any]:
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            profile_data = normalize_profile_data(profile.get("profile_data"))
+            profile["profile_data"] = profile_data
+            return profile_data
         profile_data = profile.get("profile_data") if isinstance(profile.get("profile_data"), dict) else None
         if profile_data is None:
             profile_data = self._build_profile_data_from_legacy_fields(fields)
@@ -642,6 +357,8 @@ class SystemProfileService:
         return profile_data
 
     def _merge_profile_data(self, base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            return normalize_profile_data(incoming if isinstance(incoming, dict) else base)
         merged = copy.deepcopy(base if isinstance(base, dict) else self._empty_profile_data())
         if not isinstance(incoming, dict):
             return merged
@@ -697,6 +414,64 @@ class SystemProfileService:
         profile[key] = migrated
         return migrated
 
+    def _resolve_v27_canonical_sub_field(self, domain: str, sub_field: str) -> str:
+        normalized_domain = str(domain or "").strip()
+        normalized_sub_field = str(sub_field or "").strip()
+        return V27_LEGACY_TO_CANONICAL_FIELD.get((normalized_domain, normalized_sub_field), normalized_sub_field)
+
+    def _iter_v27_suggestion_field_candidates(self, domain: str, sub_field: str) -> List[str]:
+        normalized_domain = str(domain or "").strip()
+        normalized_sub_field = str(sub_field or "").strip()
+        canonical_sub_field = self._resolve_v27_canonical_sub_field(normalized_domain, normalized_sub_field)
+
+        candidates: List[str] = []
+        for candidate in [
+            normalized_sub_field,
+            canonical_sub_field,
+            *V27_CANONICAL_TO_LEGACY_FIELDS.get((normalized_domain, canonical_sub_field), []),
+        ]:
+            candidate_text = str(candidate or "").strip()
+            if candidate_text and candidate_text not in candidates:
+                candidates.append(candidate_text)
+        return candidates
+
+    def _read_v27_suggestion_value(
+        self,
+        domain_payload: Any,
+        *,
+        domain: str,
+        sub_field: str,
+    ) -> tuple[Optional[str], Any]:
+        if not isinstance(domain_payload, dict):
+            return None, None
+
+        canonical_payload = domain_payload.get("canonical") if isinstance(domain_payload.get("canonical"), dict) else None
+        for candidate in self._iter_v27_suggestion_field_candidates(domain, sub_field):
+            if canonical_payload is not None and candidate in canonical_payload:
+                return candidate, copy.deepcopy(canonical_payload.get(candidate))
+            if candidate in domain_payload:
+                return candidate, copy.deepcopy(domain_payload.get(candidate))
+        return None, None
+
+    def _set_v27_suggestion_value(
+        self,
+        domain_payload: Any,
+        *,
+        sub_field: str,
+        value: Any,
+    ) -> Dict[str, Any]:
+        if not isinstance(domain_payload, dict):
+            domain_payload = {}
+
+        canonical_payload = domain_payload.get("canonical")
+        if isinstance(canonical_payload, dict) and sub_field in canonical_payload:
+            canonical_payload[sub_field] = copy.deepcopy(value)
+            domain_payload["canonical"] = canonical_payload
+            return domain_payload
+
+        domain_payload[sub_field] = copy.deepcopy(value)
+        return domain_payload
+
     def get_profile_events(self, system_name: str, *, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         name = str(system_name or "").strip()
         if not name:
@@ -747,36 +522,65 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+            fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
             profile_data = self._ensure_profile_data_shape(profile, fields)
             ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
 
             domain_payload = ai_suggestions.get(normalized_domain)
-            if not isinstance(domain_payload, dict) or (normalized_sub_field not in domain_payload):
+            matched_sub_field, accepted_value = self._read_v27_suggestion_value(
+                domain_payload,
+                domain=normalized_domain,
+                sub_field=normalized_sub_field,
+            )
+            if matched_sub_field is None:
                 raise ValueError("SUGGESTION_NOT_FOUND")
 
-            accepted_value = copy.deepcopy(domain_payload.get(normalized_sub_field))
+            target_sub_field = self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)
             current_domain_payload = profile_data.get(normalized_domain)
             if not isinstance(current_domain_payload, dict):
                 current_domain_payload = {}
                 profile_data[normalized_domain] = current_domain_payload
-            current_domain_payload[normalized_sub_field] = accepted_value
+
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                current_canonical_payload = current_domain_payload.get("canonical")
+                if not isinstance(current_canonical_payload, dict):
+                    current_canonical_payload = {}
+                    current_domain_payload["canonical"] = current_canonical_payload
+                current_canonical_payload[target_sub_field] = copy.deepcopy(accepted_value)
+            else:
+                current_domain_payload[matched_sub_field] = self._normalize_profile_data_sub_field(
+                    normalized_domain,
+                    matched_sub_field,
+                    accepted_value,
+                )
+
             profile["profile_data"] = profile_data
 
-            legacy_field = PROFILE_V24_TO_LEGACY_FIELD.get((normalized_domain, normalized_sub_field))
+            legacy_field = (
+                PROFILE_V24_TO_LEGACY_FIELD.get((normalized_domain, matched_sub_field))
+                or PROFILE_V24_TO_LEGACY_FIELD.get((normalized_domain, target_sub_field))
+            )
             if legacy_field:
-                normalized_for_storage = self._normalize_fields_for_storage(profile.get("fields") or {})
+                normalized_for_storage = self._normalize_fields_for_storage(profile.get(LEGACY_FIELDS_KEY) or {})
                 normalized_for_storage[legacy_field] = self._normalize_domain_value_for_legacy_field(
                     legacy_field,
                     accepted_value,
                 )
-                profile["fields"] = normalized_for_storage
+                profile[LEGACY_FIELDS_KEY] = normalized_for_storage
 
-            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
-            if ignored_key in ignored_map:
-                ignored_map.pop(ignored_key, None)
+            ignored_keys = {
+                f"{normalized_domain}.{normalized_sub_field}",
+                f"{normalized_domain}.{matched_sub_field}",
+                f"{normalized_domain}.{target_sub_field}",
+            }
+            changed_ignored = False
+            for ignored_key in ignored_keys:
+                if ignored_key in ignored_map:
+                    ignored_map.pop(ignored_key, None)
+                    changed_ignored = True
+            if changed_ignored:
                 profile["ai_suggestion_ignored"] = ignored_map
 
             self._append_profile_event(
@@ -817,13 +621,18 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+            fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
             ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
             previous = self._ensure_suggestions_shape(profile, key="ai_suggestions_previous", fields=fields)
 
             prev_domain_payload = previous.get(normalized_domain) if isinstance(previous, dict) else None
-            if not isinstance(prev_domain_payload, dict) or (normalized_sub_field not in prev_domain_payload):
+            matched_sub_field, rolled_back_value = self._read_v27_suggestion_value(
+                prev_domain_payload,
+                domain=normalized_domain,
+                sub_field=normalized_sub_field,
+            )
+            if matched_sub_field is None:
                 raise ValueError("ROLLBACK_NO_PREVIOUS")
 
             target_domain = ai_suggestions.get(normalized_domain)
@@ -831,14 +640,26 @@ class SystemProfileService:
                 target_domain = {}
                 ai_suggestions[normalized_domain] = target_domain
 
-            rolled_back_value = copy.deepcopy(prev_domain_payload.get(normalized_sub_field))
-            target_domain[normalized_sub_field] = rolled_back_value
+            target_domain = self._set_v27_suggestion_value(
+                target_domain,
+                sub_field=matched_sub_field,
+                value=rolled_back_value,
+            )
+            ai_suggestions[normalized_domain] = target_domain
             profile["ai_suggestions"] = ai_suggestions
 
-            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
-            if ignored_key in ignored_map:
-                ignored_map.pop(ignored_key, None)
+            ignored_keys = {
+                f"{normalized_domain}.{normalized_sub_field}",
+                f"{normalized_domain}.{matched_sub_field}",
+                f"{normalized_domain}.{self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)}",
+            }
+            changed_ignored = False
+            for ignored_key in ignored_keys:
+                if ignored_key in ignored_map:
+                    ignored_map.pop(ignored_key, None)
+                    changed_ignored = True
+            if changed_ignored:
                 profile["ai_suggestion_ignored"] = ignored_map
 
             self._append_profile_event(
@@ -882,16 +703,20 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+            fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
             ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
 
             domain_payload = ai_suggestions.get(normalized_domain)
-            if not isinstance(domain_payload, dict) or (normalized_sub_field not in domain_payload):
+            matched_sub_field, ignored_value = self._read_v27_suggestion_value(
+                domain_payload,
+                domain=normalized_domain,
+                sub_field=normalized_sub_field,
+            )
+            if matched_sub_field is None:
                 raise ValueError("SUGGESTION_NOT_FOUND")
 
-            ignored_key = f"{normalized_domain}.{normalized_sub_field}"
-            ignored_value = copy.deepcopy(domain_payload.get(normalized_sub_field))
+            ignored_key = f"{normalized_domain}.{matched_sub_field}"
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
             ignored_map[ignored_key] = ignored_value
             profile["ai_suggestion_ignored"] = ignored_map
@@ -918,6 +743,7 @@ class SystemProfileService:
         status: str,
         operator_id: str,
         failure_reason: Optional[str] = None,
+        execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         normalized_system_id = str(system_id or "").strip()
         if not normalized_system_id:
@@ -932,6 +758,7 @@ class SystemProfileService:
             "status": str(status or "").strip() or "failed",
             "failure_reason": None if not str(failure_reason or "").strip() else str(failure_reason or "").strip(),
             "operator_id": str(operator_id or "").strip() or "unknown",
+            "execution_id": None if not str(execution_id or "").strip() else str(execution_id or "").strip(),
         }
 
         with self._lock():
@@ -1148,17 +975,65 @@ class SystemProfileService:
             items = [item for item in items if item.get("status") == status]
         return [self._normalize_profile_for_output(item) for item in items if isinstance(item, dict)]
 
-    def upsert_profile(
+    def ensure_profile(
         self,
         system_name: str,
-        payload: Dict[str, Any],
+        *,
+        system_id: Optional[str] = None,
         actor: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         name = str(system_name or "").strip()
         if not name:
             raise ValueError("system_name不能为空")
 
-        incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            return self.upsert_profile(
+                name,
+                {"system_id": str(system_id or "").strip(), LEGACY_FIELDS_KEY: {}, "evidence_refs": []},
+                actor=actor,
+            )
+
+        now = datetime.now().isoformat()
+        normalized_system_id = str(system_id or "").strip()
+        actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+
+        with self._lock():
+            items = self._load_unlocked()
+            existing = self._find_profile(items, name)
+            if not existing:
+                existing = self._build_v27_profile_record(name, normalized_system_id, now)
+                existing["updated_by"] = actor_id
+                existing["updated_by_name"] = actor_name
+                items.append(existing)
+            else:
+                existing["profile_data"] = normalize_profile_data(existing.get("profile_data"))
+                existing["field_sources"] = self._normalize_v27_metadata_map(existing.get("field_sources"))
+                existing["ai_suggestions"] = self._normalize_v27_ai_suggestions(existing.get("ai_suggestions"))
+                if normalized_system_id and not str(existing.get("system_id") or "").strip():
+                    existing["system_id"] = normalized_system_id
+                existing.pop(LEGACY_FIELDS_KEY, None)
+                existing.pop(LEGACY_PENDING_FIELDS_KEY, None)
+                existing["updated_at"] = str(existing.get("updated_at") or now)
+
+            self._save_unlocked(items)
+
+        return self._normalize_profile_for_output(existing)
+
+    def upsert_profile(
+        self,
+        system_name: str,
+        payload: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            return self._upsert_profile_v27(system_name, payload, actor=actor)
+
+        name = str(system_name or "").strip()
+        if not name:
+            raise ValueError("system_name不能为空")
+
+        incoming_fields = payload.get(LEGACY_FIELDS_KEY) if isinstance(payload.get(LEGACY_FIELDS_KEY), dict) else {}
         incoming_fields = self._normalize_fields_for_storage(incoming_fields)
         incoming_profile_data = payload.get("profile_data") if isinstance(payload.get("profile_data"), dict) else None
         evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
@@ -1178,9 +1053,9 @@ class SystemProfileService:
                     "system_id": system_id,
                     "system_name": name,
                     "status": "draft",
-                    "fields": {},
+                    LEGACY_FIELDS_KEY: {},
                     "evidence_refs": [],
-                    "pending_fields": [],
+                    LEGACY_PENDING_FIELDS_KEY: [],
                     "field_sources": {},
                     "ai_suggestions": {},
                     "ai_suggestion_ignored": {},
@@ -1190,7 +1065,7 @@ class SystemProfileService:
                 items.append(existing)
 
             existing["system_id"] = system_id or existing.get("system_id") or ""
-            existing_fields = existing.get("fields") if isinstance(existing.get("fields"), dict) else {}
+            existing_fields = existing.get(LEGACY_FIELDS_KEY) if isinstance(existing.get(LEGACY_FIELDS_KEY), dict) else {}
             existing_fields = self._normalize_fields_for_storage(existing_fields)
 
             if incoming_profile_data is not None:
@@ -1203,7 +1078,7 @@ class SystemProfileService:
             for field_key in PROFILE_FIELD_KEYS:
                 if field_key in incoming_fields:
                     existing_fields[field_key] = incoming_fields.get(field_key)
-            existing["fields"] = existing_fields
+            existing[LEGACY_FIELDS_KEY] = existing_fields
             existing["evidence_refs"] = evidence_refs
 
             # field_sources: manual by default for user-provided fields; allow overriding to ai on accept action
@@ -1233,6 +1108,137 @@ class SystemProfileService:
             self._save_unlocked(items)
 
         return self._normalize_profile_for_output(existing)
+
+    def _upsert_profile_v27(
+        self,
+        system_name: str,
+        payload: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        if not name:
+            raise ValueError("system_name不能为空")
+
+        now = datetime.now().isoformat()
+        normalized_system_id = str(payload.get("system_id") or "").strip()
+        incoming_profile_data = normalize_profile_data(payload.get("profile_data"))
+        evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
+        incoming_sources = self._normalize_v27_metadata_map(payload.get("field_sources"))
+        actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+
+        with self._lock():
+            items = self._load_unlocked()
+            existing = self._find_profile(items, name)
+            if not existing:
+                existing = self._build_v27_profile_record(name, normalized_system_id, now)
+                items.append(existing)
+
+            if normalized_system_id:
+                existing["system_id"] = normalized_system_id
+            elif not str(existing.get("system_id") or "").strip():
+                existing["system_id"] = ""
+
+            existing["profile_data"] = incoming_profile_data
+            existing["field_sources"] = {
+                **self._normalize_v27_metadata_map(existing.get("field_sources")),
+                **incoming_sources,
+            }
+            existing["ai_suggestions"] = self._normalize_v27_ai_suggestions(existing.get("ai_suggestions"))
+            existing["evidence_refs"] = evidence_refs
+            existing["updated_by"] = actor_id
+            existing["updated_by_name"] = actor_name
+            existing["updated_at"] = now
+            existing.pop(LEGACY_FIELDS_KEY, None)
+            existing.pop(LEGACY_PENDING_FIELDS_KEY, None)
+
+            self._save_unlocked(items)
+
+        return self._normalize_profile_for_output(existing)
+
+    def update_ai_suggestions_map(
+        self,
+        system_name: str,
+        *,
+        suggestions: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        if not name:
+            raise ValueError("system_name不能为空")
+
+        now = datetime.now().isoformat()
+        actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                profile = self._build_v27_profile_record(name, "", now)
+                items.append(profile)
+            profile["ai_suggestions"] = self._normalize_v27_ai_suggestions(suggestions)
+            profile["updated_by"] = actor_id
+            profile["updated_by_name"] = actor_name
+            profile["updated_at"] = now
+            profile.pop(LEGACY_FIELDS_KEY, None)
+            profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            self._save_unlocked(items)
+
+        return self._normalize_profile_for_output(profile)
+
+    def apply_v27_field_updates(
+        self,
+        system_name: str,
+        *,
+        system_id: Optional[str] = None,
+        field_updates: Optional[Dict[str, Any]] = None,
+        field_sources: Optional[Dict[str, Any]] = None,
+        actor: Optional[Dict[str, Any]] = None,
+        evidence_refs: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        if not name:
+            raise ValueError("system_name不能为空")
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            raise ValueError("v27_schema_disabled")
+
+        now = datetime.now().isoformat()
+        normalized_system_id = str(system_id or "").strip()
+        actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        normalized_updates = field_updates if isinstance(field_updates, dict) else {}
+        normalized_sources = self._normalize_v27_metadata_map(field_sources)
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                profile = self._build_v27_profile_record(name, normalized_system_id, now)
+                items.append(profile)
+
+            if normalized_system_id:
+                profile["system_id"] = normalized_system_id
+
+            profile_data = normalize_profile_data(profile.get("profile_data"))
+            for field_path, value in normalized_updates.items():
+                profile_data = set_field_value(profile_data, field_path, value)
+            profile["profile_data"] = profile_data
+            profile["field_sources"] = {
+                **self._normalize_v27_metadata_map(profile.get("field_sources")),
+                **normalized_sources,
+            }
+            if evidence_refs is not None:
+                profile["evidence_refs"] = evidence_refs if isinstance(evidence_refs, list) else []
+            profile["updated_by"] = actor_id
+            profile["updated_by_name"] = actor_name
+            profile["updated_at"] = now
+            profile.pop(LEGACY_FIELDS_KEY, None)
+            profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
+
+            self._save_unlocked(items)
+
+        return self._normalize_profile_for_output(profile)
 
     def get_or_create_ai_suggestions_job(
         self,
@@ -1343,7 +1349,7 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+            fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
 
             existing_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
@@ -1452,9 +1458,9 @@ class SystemProfileService:
                     "system_id": normalized_system_id,
                     "system_name": name,
                     "status": "draft",
-                    "fields": {},
+                    LEGACY_FIELDS_KEY: {},
                     "evidence_refs": [],
-                    "pending_fields": [],
+                    LEGACY_PENDING_FIELDS_KEY: [],
                     "created_at": now,
                 }
                 items.append(profile)
@@ -1531,9 +1537,9 @@ class SystemProfileService:
                     "system_id": normalized_system_id,
                     "system_name": name,
                     "status": "draft",
-                    "fields": {},
+                    LEGACY_FIELDS_KEY: {},
                     "evidence_refs": [],
-                    "pending_fields": [],
+                    LEGACY_PENDING_FIELDS_KEY: [],
                     "created_at": now,
                 }
                 items.append(profile)
@@ -1612,9 +1618,9 @@ class SystemProfileService:
                     "system_id": normalized_system_id,
                     "system_name": name,
                     "status": "draft",
-                    "fields": {},
+                    LEGACY_FIELDS_KEY: {},
                     "evidence_refs": [],
-                    "pending_fields": [],
+                    LEGACY_PENDING_FIELDS_KEY: [],
                     "created_at": now,
                 }
                 items.append(profile)
@@ -1689,13 +1695,19 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
-            fields = self._normalize_fields_for_storage(fields)
-
             profile_snapshot = copy.deepcopy(profile)
-            profile_snapshot["fields"] = fields
-            pending_fields = self._calc_pending_fields(profile_snapshot)
-            profile_snapshot["pending_fields"] = pending_fields
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                profile_snapshot["profile_data"] = normalize_profile_data(profile_snapshot.get("profile_data"))
+                profile_snapshot["field_sources"] = self._normalize_v27_metadata_map(profile_snapshot.get("field_sources"))
+                profile_snapshot["ai_suggestions"] = self._normalize_v27_ai_suggestions(profile_snapshot.get("ai_suggestions"))
+                profile_snapshot.pop(LEGACY_FIELDS_KEY, None)
+                profile_snapshot.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            else:
+                fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
+                fields = self._normalize_fields_for_storage(fields)
+                profile_snapshot[LEGACY_FIELDS_KEY] = fields
+                pending_fields = self._calc_pending_fields(profile_snapshot)
+                profile_snapshot[LEGACY_PENDING_FIELDS_KEY] = pending_fields
             profile_snapshot["status"] = "published"
             profile_snapshot["published_at"] = now
             profile_snapshot["updated_by"] = actor_id
@@ -1706,13 +1718,23 @@ class SystemProfileService:
             from backend.service.knowledge_service import get_knowledge_service
             knowledge_service = get_knowledge_service()
             text = self._build_profile_text(profile_snapshot)
+            metadata = (
+                {
+                    "system_id": str(profile_snapshot.get("system_id") or "").strip(),
+                    "status": "published",
+                    "profile_data": normalize_profile_data(profile_snapshot.get("profile_data")),
+                    "field_sources": self._normalize_v27_metadata_map(profile_snapshot.get("field_sources")),
+                }
+                if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False)
+                else profile_snapshot.get(LEGACY_FIELDS_KEY) or {}
+            )
             embedding = knowledge_service.embedding_service.generate_embedding(text)
             knowledge_service.vector_store.insert_knowledge(
                 system_name=profile_snapshot.get("system_name"),
                 knowledge_type="system_profile",
                 content=text,
                 embedding=embedding,
-                metadata=profile_snapshot.get("fields") or {},
+                metadata=metadata,
                 source_file="system_profile_manual",
             )
         except Exception as exc:
@@ -1724,11 +1746,16 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
-            if isinstance(profile.get("fields"), dict):
-                profile["fields"] = self._normalize_fields_for_storage(profile.get("fields") or {})
-
-            pending_fields = self._calc_pending_fields(profile)
-            profile["pending_fields"] = pending_fields
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                profile["profile_data"] = normalize_profile_data(profile.get("profile_data"))
+                profile["field_sources"] = self._normalize_v27_metadata_map(profile.get("field_sources"))
+                profile.pop(LEGACY_FIELDS_KEY, None)
+                profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            else:
+                if isinstance(profile.get(LEGACY_FIELDS_KEY), dict):
+                    profile[LEGACY_FIELDS_KEY] = self._normalize_fields_for_storage(profile.get(LEGACY_FIELDS_KEY) or {})
+                pending_fields = self._calc_pending_fields(profile)
+                profile[LEGACY_PENDING_FIELDS_KEY] = pending_fields
             profile["status"] = "published"
             profile["published_at"] = now
             profile["updated_by"] = actor_id
@@ -1740,7 +1767,7 @@ class SystemProfileService:
             return self._normalize_profile_for_output(profile)
 
     def _calc_pending_fields(self, profile: Dict[str, Any]) -> List[str]:
-        fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
+        fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
         evidence_refs = profile.get("evidence_refs") if isinstance(profile.get("evidence_refs"), list) else []
 
         filled_fields = [key for key, value in fields.items() if self._has_value(value)]
@@ -1802,23 +1829,58 @@ class SystemProfileService:
         return names[:limit]
 
     def _build_profile_text(self, profile: Dict[str, Any]) -> str:
-        fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
-        module_structure = self._normalize_module_structure(fields.get("module_structure"), strict=False)
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            profile_data = normalize_profile_data(profile.get("profile_data"))
+            positioning = profile_data["system_positioning"]["canonical"]
+            business = profile_data["business_capabilities"]["canonical"]
+            integration = profile_data["integration_interfaces"]["canonical"]
+            constraints = profile_data["constraints_risks"]["canonical"]
+
+            def _join_values(items: Any, key_candidates: Optional[List[str]] = None) -> str:
+                if not isinstance(items, list):
+                    return ""
+                result: List[str] = []
+                for item in items:
+                    if isinstance(item, dict):
+                        key_candidates_local = key_candidates or ["service_name", "description", "name", "peer_system"]
+                        value = ""
+                        for key in key_candidates_local:
+                            value = str(item.get(key) or "").strip()
+                            if value:
+                                break
+                    else:
+                        value = str(item or "").strip()
+                    if value:
+                        result.append(value)
+                return "、".join(result[:20])
+
+            return (
+                f"系统名称:{profile.get('system_name','')} | "
+                f"系统类型:{positioning.get('system_type', '')} | "
+                f"服务范围:{positioning.get('service_scope', '')} | "
+                f"功能模块:{_join_values(business.get('functional_modules'))} | "
+                f"提供服务:{_join_values(integration.get('provided_services'))} | "
+                f"依赖服务:{_join_values(integration.get('consumed_services'))} | "
+                f"已知风险:{_join_values(constraints.get('known_risks'))}"
+            )
+
+        fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
+        module_tree = self._normalize_capability_tree(fields.get(LEGACY_MODULE_TREE_KEY), strict=False)
         module_segments: List[str] = []
-        for module_item in module_structure[:20]:
+        for module_item in module_tree[:20]:
             module_name = str(module_item.get("module_name") or "").strip()
             function_names = self._collect_module_leaf_names(module_item, limit=20)
             if module_name and function_names:
                 module_segments.append(f"{module_name}({ '、'.join(function_names[:20]) })")
             elif module_name:
                 module_segments.append(module_name)
-        module_structure_text = "；".join(module_segments)
+        module_text = "；".join(module_segments)
         return (
             f"系统名称:{profile.get('system_name','')} | "
-            f"系统定位与边界:{fields.get('system_scope','')} | "
-            f"模块结构:{module_structure_text} | "
-            f"主要集成点:{fields.get('integration_points','')} | "
-            f"关键约束:{fields.get('key_constraints','')}"
+            f"系统定位与边界:{fields.get(LEGACY_SYSTEM_SCOPE_KEY,'')} | "
+            f"模块结构:{module_text} | "
+            f"主要集成点:{fields.get(LEGACY_INTERFACE_KEY,'')} | "
+            f"关键约束:{fields.get(LEGACY_CONSTRAINT_KEY,'')}"
         )
 
     def has_published_profile(self, system_name: str) -> bool:
@@ -1827,9 +1889,19 @@ class SystemProfileService:
 
     def get_minimal_profile_flags(self, system_name: str) -> Dict[str, Any]:
         profile = self.get_profile(system_name) or {}
-        fields = profile.get("fields") if isinstance(profile.get("fields"), dict) else {}
-        minimal_keys = ["system_scope", "module_structure"]
-        missing = [key for key in minimal_keys if not self._has_value(fields.get(key))]
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            profile_data = normalize_profile_data(profile.get("profile_data"))
+            positioning = profile_data["system_positioning"]["canonical"]
+            business = profile_data["business_capabilities"]["canonical"]
+            missing = []
+            if not self._has_value(positioning.get("service_scope")):
+                missing.append("system_positioning.canonical.service_scope")
+            if not self._has_value(business.get("functional_modules")):
+                missing.append("business_capabilities.canonical.functional_modules")
+        else:
+            fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
+            minimal_keys = [LEGACY_SYSTEM_SCOPE_KEY, LEGACY_MODULE_TREE_KEY]
+            missing = [key for key in minimal_keys if not self._has_value(fields.get(key))]
         return {
             "has_profile": bool(profile),
             "is_published": profile.get("status") == "published",
@@ -1849,6 +1921,10 @@ _system_profile_service = None
 
 def get_system_profile_service() -> SystemProfileService:
     global _system_profile_service
-    if _system_profile_service is None:
-        _system_profile_service = SystemProfileService()
+    expected_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    if (
+        _system_profile_service is None
+        or os.path.realpath(_system_profile_service.store_path) != os.path.realpath(expected_path)
+    ):
+        _system_profile_service = SystemProfileService(store_path=expected_path)
     return _system_profile_service

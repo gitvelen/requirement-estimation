@@ -3,14 +3,211 @@
 按系统维度拆分功能点
 支持知识库注入，提供系统知识参考
 """
-import logging
+from __future__ import annotations
+
+import copy
 import json
-from typing import Dict, List, Optional, Any
-from backend.utils.llm_client import llm_client
-from backend.prompts.prompt_templates import FEATURE_BREAKDOWN_PROMPT
+import logging
+import os
+from typing import Any, Dict, List, Optional
+
+from backend.api import system_routes
 from backend.config.config import settings
+from backend.prompts.prompt_templates import FEATURE_BREAKDOWN_PROMPT
+from backend.service.memory_service import get_memory_service
+from backend.service.system_profile_service import get_system_profile_service
+from backend.utils.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+class FeatureAdjustmentMemoryAdapter:
+    def __init__(self, memory_service=None, profile_service=None) -> None:
+        self.memory_service = memory_service or get_memory_service()
+        self.profile_service = profile_service or get_system_profile_service()
+
+    def build_context(self, system_name: str) -> Dict[str, Any]:
+        resolved = system_routes.resolve_system_owner(system_name=system_name)
+        profile = self.profile_service.get_profile(system_name)
+        profile_system_id = _normalize_text((profile or {}).get("system_id"))
+        system_id = _normalize_text(resolved.get("system_id")) or profile_system_id or _normalize_text(system_name)
+
+        try:
+            adjustment_records = self.memory_service.query_records(
+                system_id,
+                memory_type="function_point_adjustment",
+                limit=20,
+            )["items"]
+            profile_records = self.memory_service.query_records(
+                system_id,
+                memory_type="profile_update",
+                limit=5,
+            )["items"]
+            identification_records = self.memory_service.query_records(
+                system_id,
+                memory_type="identification_decision",
+                limit=5,
+            )["items"]
+        except Exception as exc:
+            return {
+                "system_id": system_id,
+                "profile": None,
+                "prompt_context": "",
+                "patterns": {"rename_map": {}, "module_map": {}},
+                "context_degraded": True,
+                "degraded_reasons": [str(exc)],
+                "adjustment_records": [],
+                "profile_records": [],
+                "identification_records": [],
+            }
+
+        patterns = self._extract_patterns(adjustment_records)
+        return {
+            "system_id": system_id,
+            "profile": profile,
+            "prompt_context": self._build_prompt_context(profile, patterns, identification_records, profile_records),
+            "patterns": patterns,
+            "context_degraded": False,
+            "degraded_reasons": [],
+            "adjustment_records": adjustment_records,
+            "profile_records": profile_records,
+            "identification_records": identification_records,
+        }
+
+    def _extract_patterns(self, records: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+        rename_map: Dict[str, str] = {}
+        module_map: Dict[str, str] = {}
+
+        for record in records or []:
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            modifications = payload.get("modifications") if isinstance(payload.get("modifications"), list) else []
+            for item in modifications:
+                if not isinstance(item, dict):
+                    continue
+                adjustment_type = _normalize_text(item.get("adjustment_type"))
+                feature_name = _normalize_text(item.get("feature_name"))
+                old_value = _normalize_text(item.get("old_value"))
+                new_value = _normalize_text(item.get("new_value"))
+
+                if adjustment_type == "naming_normalization" and old_value and new_value:
+                    rename_map[old_value] = new_value
+                elif adjustment_type == "module_mapping" and feature_name and new_value:
+                    module_map[feature_name] = new_value
+
+        return {"rename_map": rename_map, "module_map": module_map}
+
+    def _build_prompt_context(
+        self,
+        profile: Optional[Dict[str, Any]],
+        patterns: Dict[str, Dict[str, str]],
+        identification_records: List[Dict[str, Any]],
+        profile_records: List[Dict[str, Any]],
+    ) -> str:
+        lines: List[str] = []
+
+        profile_data = (profile or {}).get("profile_data") if isinstance((profile or {}).get("profile_data"), dict) else {}
+        positioning = ((profile_data.get("system_positioning") or {}).get("canonical") or {}) if isinstance(profile_data, dict) else {}
+        business = ((profile_data.get("business_capabilities") or {}).get("canonical") or {}) if isinstance(profile_data, dict) else {}
+
+        service_scope = _normalize_text(positioning.get("service_scope"))
+        if service_scope:
+            lines.append(f"- 系统服务范围: {service_scope}")
+
+        modules = business.get("functional_modules") if isinstance(business.get("functional_modules"), list) else []
+        if modules:
+            lines.append(f"- 已确认稳定模块: {', '.join(str(item).strip() for item in modules if str(item).strip())}")
+
+        rename_map = patterns.get("rename_map") or {}
+        if rename_map:
+            sample = [f"{old} -> {new}" for old, new in list(rename_map.items())[:5]]
+            lines.append(f"- 历史命名归一: {'; '.join(sample)}")
+
+        module_map = patterns.get("module_map") or {}
+        if module_map:
+            sample = [f"{name} => {module}" for name, module in list(module_map.items())[:5]]
+            lines.append(f"- 历史模块归属: {'; '.join(sample)}")
+
+        if identification_records:
+            payload = identification_records[0].get("payload") if isinstance(identification_records[0].get("payload"), dict) else {}
+            verdict = _normalize_text(payload.get("final_verdict"))
+            reason_summary = _normalize_text(payload.get("reason_summary"))
+            if verdict or reason_summary:
+                lines.append(f"- 最近识别结论: {verdict or 'unknown'} {reason_summary}".strip())
+
+        if profile_records:
+            payload = profile_records[0].get("payload") if isinstance(profile_records[0].get("payload"), dict) else {}
+            changed_fields = payload.get("changed_fields") if isinstance(payload.get("changed_fields"), list) else []
+            if changed_fields:
+                lines.append(f"- 最近画像更新字段: {', '.join(str(item).strip() for item in changed_fields[:5] if str(item).strip())}")
+
+        return "\n".join(lines)
+
+    def apply_adjustments(
+        self,
+        features: List[Dict[str, Any]],
+        context: Dict[str, Any],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        rename_map = (context.get("patterns") or {}).get("rename_map") or {}
+        module_map = (context.get("patterns") or {}).get("module_map") or {}
+
+        updated_features = copy.deepcopy(features or [])
+        applied_adjustments: List[Dict[str, Any]] = []
+
+        for feature in updated_features:
+            if not isinstance(feature, dict):
+                continue
+            original_name = _normalize_text(feature.get("功能点"))
+            if original_name in rename_map:
+                renamed = rename_map[original_name]
+                if renamed and renamed != original_name:
+                    feature["功能点"] = renamed
+                    applied_adjustments.append(
+                        {
+                            "adjustment_type": "naming_normalization",
+                            "feature_name": original_name,
+                            "new_value": renamed,
+                        }
+                    )
+
+            current_name = _normalize_text(feature.get("功能点"))
+            target_module = module_map.get(current_name) or module_map.get(original_name)
+            current_module = _normalize_text(feature.get("功能模块"))
+            if target_module and target_module != current_module:
+                feature["功能模块"] = target_module
+                applied_adjustments.append(
+                    {
+                        "adjustment_type": "module_mapping",
+                        "feature_name": current_name or original_name,
+                        "new_value": target_module,
+                    }
+                )
+
+        deduped_features: List[Dict[str, Any]] = []
+        seen = set()
+        for feature in updated_features:
+            if not isinstance(feature, dict):
+                continue
+            dedupe_key = (
+                _normalize_text(feature.get("功能模块")),
+                _normalize_text(feature.get("功能点")),
+            )
+            if dedupe_key in seen:
+                applied_adjustments.append(
+                    {
+                        "adjustment_type": "deduplicate",
+                        "feature_name": dedupe_key[1],
+                        "new_value": "removed_duplicate",
+                    }
+                )
+                continue
+            seen.add(dedupe_key)
+            deduped_features.append(feature)
+
+        return deduped_features, applied_adjustments
 
 
 class FeatureBreakdownAgent:
@@ -27,6 +224,7 @@ class FeatureBreakdownAgent:
         self.prompt_template = FEATURE_BREAKDOWN_PROMPT
         self.knowledge_service = knowledge_service
         self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
+        self.memory_adapter = FeatureAdjustmentMemoryAdapter()
 
         if self.knowledge_enabled and self.knowledge_service:
             logger.info(f"{self.name}初始化完成（知识库功能：已启用）")
@@ -38,26 +236,31 @@ class FeatureBreakdownAgent:
         requirement_content: str,
         system_name: str,
         system_type: str = "主系统",
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
     ) -> List[Dict[str, any]]:
+        result = self.breakdown_with_context(
+            requirement_content=requirement_content,
+            system_name=system_name,
+            system_type=system_type,
+            task_id=task_id,
+        )
+        return result["features"]
+
+    def breakdown_with_context(
+        self,
+        requirement_content: str,
+        system_name: str,
+        system_type: str = "主系统",
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        对指定系统进行功能点拆分
-
-        Args:
-            requirement_content: 需求内容文本
-            system_name: 系统名称
-            system_type: 系统类型
-
-        Returns:
-            List: 功能点列表
-
-        Raises:
-            ValueError: 拆分失败或返回格式错误
+        对指定系统进行功能点拆分，并返回 Memory 上下文状态。
         """
         try:
             logger.info(f"[功能拆分] 开始拆分: {system_name} ({system_type})")
 
-            # 【新增】知识库增强：检索系统知识（系统边界/核心功能/技术栈等）
+            memory_context = self.memory_adapter.build_context(system_name)
+
             knowledge_context = ""
             system_profiles: List[Dict[str, Any]] = []
             if self.knowledge_enabled and self.knowledge_service:
@@ -70,7 +273,7 @@ class FeatureBreakdownAgent:
                         top_k=settings.KNOWLEDGE_TOP_K,
                         similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
                         task_id=task_id,
-                        stage="feature_breakdown"
+                        stage="feature_breakdown",
                     )
 
                     if system_profiles:
@@ -78,15 +281,17 @@ class FeatureBreakdownAgent:
                         knowledge_context = self.knowledge_service.build_knowledge_context(system_profiles, max_length=1500)
                     else:
                         logger.info(f"[功能拆分] 未检索到【{system_name}】的系统知识")
-
                 except Exception as e:
                     logger.warning(f"[功能拆分] 知识库检索失败: {e}，继续使用传统方式")
 
-            # 构建提示词
             user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
             user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
 
-            # 【新增】注入系统知识上下文
+            prompt_context = _normalize_text(memory_context.get("prompt_context"))
+            if prompt_context:
+                user_prompt += f"""【画像与Memory约束】\n{prompt_context}\n\n"""
+                user_prompt += "请优先复用已确认的命名、模块归属和系统边界，避免与历史稳定模式冲突。\n\n"
+
             if knowledge_context:
                 user_prompt += f"""【系统知识参考】\n{knowledge_context}\n\n"""
                 user_prompt += "请参考上述系统知识（系统边界、核心功能、技术栈等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
@@ -98,52 +303,56 @@ class FeatureBreakdownAgent:
 4. 评估复杂度（高/中/低）
 5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
 
-            # 调用LLM
             response = llm_client.chat_with_system_prompt(
                 system_prompt=self.prompt_template,
                 user_prompt=user_prompt,
                 temperature=0.5,
-                max_tokens=3000
+                max_tokens=3000,
             )
-
-            # 解析JSON响应
             result = llm_client.extract_json(response)
 
             if "features" not in result:
                 raise ValueError("响应中缺少'features'字段")
 
             features = result["features"]
-
-            # 为每个功能点添加序号
             for idx, feature in enumerate(features, start=1):
                 if "序号" not in feature:
                     feature["序号"] = f"1.{idx}"
 
-            # 验证功能点数据
             for feature in features:
                 self._validate_feature(feature)
 
-            # 统计复杂度分布
+            try:
+                self._apply_kb_calibration_to_features(
+                    features=features,
+                    system_name=system_name,
+                    system_profiles=system_profiles,
+                    task_id=task_id,
+                )
+            except Exception as e:
+                logger.debug(f"[功能拆分] 系统校准提示写入失败（忽略）: {e}")
+
+            features, applied_adjustments = self.memory_adapter.apply_adjustments(features, memory_context)
+
             complexity_count = {"高": 0, "中": 0, "低": 0}
             for feature in features:
                 complexity = feature.get("复杂度", "中")
                 if complexity in complexity_count:
                     complexity_count[complexity] += 1
 
-            # 【新增】系统校准：写入知识引用与归属复核提示（只提示，不自动调整归属）
-            try:
-                self._apply_kb_calibration_to_features(
-                    features=features,
-                    system_name=system_name,
-                    system_profiles=system_profiles,
-                    task_id=task_id
-                )
-            except Exception as e:
-                logger.debug(f"[功能拆分] 系统校准提示写入失败（忽略）: {e}")
-
-            logger.info(f"[功能拆分] 完成，共 {len(features)} 个功能点（高:{complexity_count['高']} 中:{complexity_count['中']} 低:{complexity_count['低']}）")
-            return features
-
+            logger.info(
+                "[功能拆分] 完成，共 %s 个功能点（高:%s 中:%s 低:%s）",
+                len(features),
+                complexity_count["高"],
+                complexity_count["中"],
+                complexity_count["低"],
+            )
+            return {
+                "features": features,
+                "context_degraded": bool(memory_context.get("context_degraded")),
+                "degraded_reasons": memory_context.get("degraded_reasons") or [],
+                "applied_adjustments": applied_adjustments,
+            }
         except Exception as e:
             logger.error(f"[功能拆分] 拆分失败 ({system_name}): {str(e)}")
             raise
@@ -151,20 +360,12 @@ class FeatureBreakdownAgent:
     def _validate_feature(self, feature: Dict[str, any]):
         """
         验证功能点数据的完整性
-
-        Args:
-            feature: 功能点数据
-
-        Raises:
-            ValueError: 数据不完整或格式错误
         """
         required_fields = ["序号", "功能模块", "功能点", "业务描述", "预估人天", "复杂度"]
-
         for field in required_fields:
             if field not in feature:
                 raise ValueError(f"功能点缺少必需字段: {field}")
 
-        # 验证人天范围
         try:
             man_days = float(feature["预估人天"])
             if man_days < 0.5 or man_days > 5:
@@ -172,7 +373,6 @@ class FeatureBreakdownAgent:
         except ValueError:
             raise ValueError(f"功能点{feature['序号']}的预估人天格式错误: {feature['预估人天']}")
 
-        # 验证复杂度
         if feature["复杂度"] not in ["高", "中", "低"]:
             raise ValueError(f"功能点{feature['序号']}的复杂度值错误: {feature['复杂度']}")
 
@@ -196,7 +396,6 @@ class FeatureBreakdownAgent:
                 parts.append(kb_ref_line)
             feature["备注"] = "\n".join(parts).strip()
 
-        # 高风险功能点才做跨系统归属复核（减少embedding调用）
         if not (self.knowledge_enabled and self.knowledge_service):
             return
 
@@ -290,55 +489,41 @@ class FeatureBreakdownAgent:
     def refine_breakdown(
         self,
         features: List[Dict[str, any]],
-        feedback: str
+        feedback: str,
     ) -> List[Dict[str, any]]:
         """
         根据反馈优化功能点拆分
-
-        Args:
-            features: 原始功能点列表
-            feedback: 反馈意见
-
-        Returns:
-            List: 优化后的功能点列表
         """
         try:
             logger.info("根据反馈优化功能点拆分")
 
-            # 将现有功能点格式化为文本
             features_text = json.dumps(features, ensure_ascii=False, indent=2)
-
             user_prompt = f"""当前功能点拆分结果：\n\n{features_text}\n\n"""
             user_prompt += f"""反馈意见：\n{feedback}\n\n"""
             user_prompt += """请根据反馈意见优化功能点拆分，保持相同的JSON格式。"""
 
-            # 调用LLM
             response = llm_client.chat_with_system_prompt(
                 system_prompt=self.prompt_template,
                 user_prompt=user_prompt,
                 temperature=0.5,
-                max_tokens=3000
+                max_tokens=3000,
             )
-
-            # 解析结果
             result = llm_client.extract_json(response)
 
             if "features" not in result:
                 raise ValueError("响应中缺少'features'字段")
 
             optimized_features = result["features"]
-
             logger.info(f"功能点优化完成，{len(features)} -> {len(optimized_features)}")
-
             return optimized_features
 
         except Exception as e:
             logger.error(f"功能点优化失败: {str(e)}")
-            # 如果优化失败，返回原始结果
             return features
 
-# 全局Agent实例（延迟初始化，在agent_orchestrator中注入knowledge_service）
+
 feature_breakdown_agent = None
+
 
 def get_feature_breakdown_agent(knowledge_service=None):
     """
@@ -351,6 +536,23 @@ def get_feature_breakdown_agent(knowledge_service=None):
         FeatureBreakdownAgent: Agent实例
     """
     global feature_breakdown_agent
-    if feature_breakdown_agent is None:
+    expected_memory_path = os.path.join(settings.REPORT_DIR, "memory_records.json")
+    expected_profile_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    current_memory_path = (
+        feature_breakdown_agent.memory_adapter.memory_service.store_path
+        if feature_breakdown_agent is not None
+        else ""
+    )
+    current_profile_path = (
+        feature_breakdown_agent.memory_adapter.profile_service.store_path
+        if feature_breakdown_agent is not None
+        else ""
+    )
+    if (
+        feature_breakdown_agent is None
+        or os.path.realpath(current_memory_path) != os.path.realpath(expected_memory_path)
+        or os.path.realpath(current_profile_path) != os.path.realpath(expected_profile_path)
+        or (knowledge_service is not None and feature_breakdown_agent.knowledge_service is not knowledge_service)
+    ):
         feature_breakdown_agent = FeatureBreakdownAgent(knowledge_service)
     return feature_breakdown_agent

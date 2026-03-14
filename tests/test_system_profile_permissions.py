@@ -12,7 +12,6 @@ from backend.app import app
 from backend.config.config import settings
 from backend.service import user_service
 from backend.api import system_routes
-from backend.api import system_profile_routes
 from backend.service import system_profile_service
 
 
@@ -252,21 +251,19 @@ def test_system_profile_completeness_api_formula(client, monkeypatch):
     assert missing_payload.get("completeness_score") == 0
 
 
-def test_profile_template_download_requires_manager_role(client, tmp_path):
+def test_profile_template_download_requires_manager_role(client):
     manager = _seed_user("template_manager_acl", "pwd123", ["manager"])
     admin = _seed_user("template_admin_acl", "pwd123", ["admin"])
     manager_token = _login(client, "template_manager_acl", "pwd123")
     admin_token = _login(client, "template_admin_acl", "pwd123")
 
-    history_template = tmp_path / "工作量评估模板.xlsx"
-    history_template.write_bytes(b"template")
-    system_profile_routes.TEMPLATE_FILE_MAPPING = {"history_report": str(history_template)}
-
     manager_response = client.get(
         "/api/v1/system-profiles/template/history_report",
-        headers={"Authorization": f"Bearer {manager_token}"},
+        headers={"Authorization": f"Bearer {manager_token}", "X-Request-ID": "req_template_removed_for_manager"},
     )
-    assert manager_response.status_code == 200
+    assert manager_response.status_code == 400
+    assert manager_response.json()["error_code"] == "TEMPLATE_TYPE_INVALID"
+    assert manager_response.json()["request_id"] == "req_template_removed_for_manager"
 
     admin_response = client.get(
         "/api/v1/system-profiles/template/history_report",

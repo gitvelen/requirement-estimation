@@ -4,72 +4,81 @@ import {
   Card,
   Input,
   List,
-  message,
   Space,
   Tabs,
   Tag,
   Typography,
+  message,
 } from 'antd';
-import { LeftOutlined, ReloadOutlined, RightOutlined, SaveOutlined, SendOutlined } from '@ant-design/icons';
-import { useLocation, useNavigate } from 'react-router-dom';
+import {
+  LeftOutlined,
+  ReloadOutlined,
+  RightOutlined,
+  SaveOutlined,
+  SendOutlined,
+} from '@ant-design/icons';
 import axios from 'axios';
+import { useLocation, useNavigate } from 'react-router-dom';
 import useAuth from '../hooks/useAuth';
 import usePermission from '../hooks/usePermission';
 import { formatDateTime } from '../utils/time';
 import { filterResponsibleSystems, resolveSystemOwnership } from '../utils/systemOwnership';
-import ModuleStructurePreview from '../components/systemProfile/ModuleStructurePreview';
-import StructuredFieldPreview from '../components/systemProfile/StructuredFieldPreview';
-import StructuredFieldDiffPreview from '../components/systemProfile/StructuredFieldDiffPreview';
-import { normalizeModuleStructureNodes, sanitizeModuleStructureNodes } from '../utils/systemProfileModuleStructure';
 
 const { Text } = Typography;
 
-const PROFILE_DOMAIN_CONFIG = [
+const DOMAIN_CONFIG = [
   {
     key: 'system_positioning',
     label: 'D1 系统定位与边界',
     fields: [
-      { key: 'system_description', label: '系统描述', type: 'text', empty: '' },
-      { key: 'target_users', label: '目标用户', type: 'list', empty: [] },
-      { key: 'boundaries', label: '边界说明', type: 'list', empty: [] },
+      { key: 'system_type', label: '系统类型', type: 'text' },
+      { key: 'business_domain', label: '业务域', type: 'list' },
+      { key: 'architecture_layer', label: '架构层级', type: 'text' },
+      { key: 'target_users', label: '目标用户', type: 'list' },
+      { key: 'service_scope', label: '服务范围', type: 'text' },
+      { key: 'system_boundary', label: '系统边界', type: 'list' },
     ],
   },
   {
     key: 'business_capabilities',
     label: 'D2 业务能力与流程',
     fields: [
-      { key: 'module_structure', label: '模块结构', type: 'structured', empty: [] },
-      { key: 'core_processes', label: '核心流程', type: 'list', empty: [] },
+      { key: 'functional_modules', label: '功能模块', type: 'list' },
+      { key: 'business_processes', label: '业务流程', type: 'list' },
+      { key: 'data_assets', label: '数据资产', type: 'list' },
     ],
   },
   {
     key: 'integration_interfaces',
     label: 'D3 集成与接口',
     fields: [
-      { key: 'integration_points', label: '集成点', type: 'structured', empty: [] },
-      { key: 'external_dependencies', label: '外部依赖', type: 'list', empty: [] },
+      { key: 'provided_services', label: '作为服务方', type: 'service_list' },
+      { key: 'consumed_services', label: '作为消费方', type: 'service_list' },
+      { key: 'other_integrations', label: '其他集成', type: 'integration_list' },
     ],
   },
   {
     key: 'technical_architecture',
     label: 'D4 技术架构',
     fields: [
-      { key: 'architecture_positioning', label: '架构定位', type: 'text', empty: '' },
-      { key: 'tech_stack', label: '技术栈', type: 'list', empty: [] },
-      { key: 'performance_profile', label: '性能画像', type: 'structured', empty: {} },
+      { key: 'architecture_style', label: '架构风格', type: 'text' },
+      { key: 'tech_stack', label: '技术栈', type: 'tech_stack' },
+      { key: 'network_zone', label: '网络分区', type: 'text' },
+      { key: 'performance_baseline', label: '性能基线', type: 'performance' },
     ],
   },
   {
     key: 'constraints_risks',
     label: 'D5 约束与风险',
     fields: [
-      { key: 'key_constraints', label: '关键约束', type: 'structured', empty: [] },
-      { key: 'known_risks', label: '已知风险', type: 'list', empty: [] },
+      { key: 'technical_constraints', label: '技术约束', type: 'list' },
+      { key: 'business_constraints', label: '业务约束', type: 'list' },
+      { key: 'known_risks', label: '已知风险', type: 'list' },
     ],
   },
 ];
 
-const PROFILE_DOMAIN_BY_KEY = Object.fromEntries(PROFILE_DOMAIN_CONFIG.map((item) => [item.key, item]));
+const DOMAIN_BY_KEY = Object.fromEntries(DOMAIN_CONFIG.map((item) => [item.key, item]));
 
 const EVENT_TYPE_LABELS = {
   document_import: '文档导入',
@@ -80,243 +89,526 @@ const EVENT_TYPE_LABELS = {
   profile_publish: '画像发布',
 };
 
-const getFieldPath = (domainKey, fieldKey) => `${domainKey}.${fieldKey}`;
+const TECH_STACK_GROUPS = [
+  { key: 'languages', label: '语言' },
+  { key: 'frameworks', label: '框架' },
+  { key: 'databases', label: '数据库' },
+  { key: 'middleware', label: '中间件' },
+  { key: 'others', label: '其他' },
+];
 
-const deepClone = (value) => JSON.parse(JSON.stringify(value));
+const PERFORMANCE_SECTIONS = [
+  {
+    key: 'online',
+    label: '在线指标',
+    fields: [
+      { key: 'peak_tps', label: '峰值 TPS' },
+      { key: 'p95_latency_ms', label: 'P95 延迟(ms)' },
+      { key: 'availability_target', label: '可用性目标' },
+    ],
+  },
+  {
+    key: 'batch',
+    label: '批处理指标',
+    fields: [
+      { key: 'window', label: '处理窗口' },
+      { key: 'data_volume', label: '数据量' },
+      { key: 'peak_duration', label: '峰值耗时' },
+    ],
+  },
+];
 
-const FIELD_EDITOR_KIND = {
-  [getFieldPath('business_capabilities', 'module_structure')]: 'module_structure',
-  [getFieldPath('integration_interfaces', 'integration_points')]: 'integration_points',
-  [getFieldPath('technical_architecture', 'performance_profile')]: 'performance_profile',
-  [getFieldPath('constraints_risks', 'key_constraints')]: 'key_constraints',
+const LEGACY_SUGGESTION_FIELD_ALIASES = {
+  system_positioning: {
+    service_scope: ['system_description'],
+    system_boundary: ['boundaries'],
+  },
+  business_capabilities: {
+    business_processes: ['core_processes'],
+  },
+  integration_interfaces: {
+    other_integrations: ['integration_points'],
+  },
+  technical_architecture: {
+    architecture_style: ['architecture_positioning'],
+  },
+  constraints_risks: {
+    technical_constraints: ['key_constraints'],
+  },
 };
 
-const MODULE_STRUCTURE_FIELD_PATH = getFieldPath('business_capabilities', 'module_structure');
-const INTEGRATION_POINTS_FIELD_PATH = getFieldPath('integration_interfaces', 'integration_points');
-const PERFORMANCE_PROFILE_FIELD_PATH = getFieldPath('technical_architecture', 'performance_profile');
-const KEY_CONSTRAINTS_FIELD_PATH = getFieldPath('constraints_risks', 'key_constraints');
-const KNOWN_RISKS_FIELD_PATH = getFieldPath('constraints_risks', 'known_risks');
+const EMPTY_SERVICE_ROW = {
+  service_name: '',
+  transaction_name: '',
+  scenario_code: '',
+  peer_system: '',
+  status: '',
+};
+
+const EMPTY_INTEGRATION_ROW = {
+  integration_name: '',
+  peer_system: '',
+  notes: '',
+};
+
+const buildEmptyProfileData = () => ({
+  system_positioning: {
+    canonical: {
+      system_type: '',
+      business_domain: [],
+      architecture_layer: '',
+      target_users: [],
+      service_scope: '',
+      system_boundary: [],
+      extensions: {},
+    },
+  },
+  business_capabilities: {
+    canonical: {
+      functional_modules: [],
+      business_processes: [],
+      data_assets: [],
+      extensions: {},
+    },
+  },
+  integration_interfaces: {
+    canonical: {
+      provided_services: [],
+      consumed_services: [],
+      other_integrations: [],
+      extensions: {},
+    },
+  },
+  technical_architecture: {
+    canonical: {
+      architecture_style: '',
+      tech_stack: {
+        languages: [],
+        frameworks: [],
+        databases: [],
+        middleware: [],
+        others: [],
+      },
+      network_zone: '',
+      performance_baseline: {
+        online: {
+          peak_tps: '',
+          p95_latency_ms: '',
+          availability_target: '',
+        },
+        batch: {
+          window: '',
+          data_volume: '',
+          peak_duration: '',
+        },
+        processing_model: '',
+      },
+      extensions: {},
+    },
+  },
+  constraints_risks: {
+    canonical: {
+      technical_constraints: [],
+      business_constraints: [],
+      known_risks: [],
+      extensions: {},
+    },
+  },
+});
+
+const deepClone = (value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+  return JSON.parse(JSON.stringify(value));
+};
+
+const normalizeString = (value) => String(value ?? '').trim();
 
 const normalizeStringList = (value) => {
   if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item ?? '').trim())
-      .filter(Boolean);
+    return value.map((item) => normalizeString(item)).filter(Boolean);
   }
-  if (typeof value === 'string') {
-    return value
-      .split(/[\n,，、;；]+/)
-      .map((item) => item.trim())
-      .filter(Boolean);
+
+  const text = normalizeString(value);
+  if (!text) {
+    return [];
   }
-  return [];
+
+  return text
+    .replace(/[，、；;]/g, ',')
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 };
 
+const coerceServiceDraftRow = (value) => ({
+  service_name: normalizeString(value?.service_name || value?.name || value?.service || value?.description),
+  transaction_name: normalizeString(
+    value?.transaction_name
+      || value?.scenario_name
+      || value?.trade_name
+  ),
+  scenario_code: normalizeString(value?.scenario_code || value?.service_code || value?.trade_code || value?.code),
+  peer_system: normalizeString(
+    value?.peer_system
+      || value?.system_name
+      || value?.target_system
+      || value?.provider_system
+      || value?.consumer_system
+  ),
+  status: normalizeString(value?.status || value?.state || value?.usage_status),
+});
 
-const normalizeIntegrationPointsDraft = (value) => {
-  if (typeof value === 'string') {
-    const text = value.trim();
-    return text ? [{ description: text, peer_system: '', protocol: '', direction: '' }] : [];
-  }
+const normalizeServiceEntries = (value) => {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.map((item) => ({
-    peer_system: String(item?.peer_system ?? '').trim(),
-    protocol: String(item?.protocol ?? '').trim(),
-    direction: String(item?.direction ?? '').trim(),
-    description: String(item?.description ?? item?.name ?? '').trim(),
-  }));
+
+  return value
+    .map((item) => {
+      if (typeof item === 'string') {
+        return {
+          ...EMPTY_SERVICE_ROW,
+          service_name: normalizeString(item),
+        };
+      }
+      return coerceServiceDraftRow(item || {});
+    })
+    .filter((item) => item.service_name || item.transaction_name || item.scenario_code || item.peer_system || item.status);
 };
 
-const normalizeKeyConstraintsDraft = (value) => {
-  if (typeof value === 'string') {
-    const text = value.trim();
-    return text ? [{ category: '通用', description: text }] : [];
-  }
+const coerceIntegrationDraftRow = (value) => ({
+  integration_name: normalizeString(
+    value?.integration_name || value?.name || value?.service_name || value?.title || value?.description
+  ),
+  peer_system: normalizeString(value?.peer_system || value?.system_name || value?.target_system),
+  notes: normalizeString(value?.notes || value?.remark || value?.protocol || value?.status || value?.description),
+});
+
+const normalizeIntegrationEntries = (value) => {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.map((item) => ({
-    category: String(item?.category ?? '通用').trim() || '通用',
-    description: String(item?.description ?? item?.value ?? '').trim(),
-  }));
+
+  return value
+    .map((item) => {
+      if (typeof item === 'string') {
+        return {
+          ...EMPTY_INTEGRATION_ROW,
+          integration_name: normalizeString(item),
+        };
+      }
+      return coerceIntegrationDraftRow(item || {});
+    })
+    .filter((item) => item.integration_name || item.peer_system || item.notes);
 };
 
-const normalizePerformanceRowsDraft = (value) => {
-  if (Array.isArray(value)) {
-    return value.map((item) => ({
-      key: String(item?.key ?? item?.metric ?? '').trim(),
-      value: String(item?.value ?? '').trim(),
-    }));
-  }
-  if (value && typeof value === 'object') {
-    return Object.entries(value).map(([metric, metricValue]) => ({
-      key: String(metric || '').trim(),
-      value: String(metricValue ?? '').trim(),
-    }));
-  }
-  return [];
-};
+const normalizeTechStack = (value) => {
+  const template = buildEmptyProfileData().technical_architecture.canonical.tech_stack;
+  const source = value && typeof value === 'object' ? value : {};
+  const next = deepClone(template);
 
-const performanceRowsToObject = (rows) => {
-  const profile = {};
-  if (!Array.isArray(rows)) {
-    return profile;
-  }
-  rows.forEach((row) => {
-    const key = String(row?.key ?? '').trim();
-    if (!key) {
-      return;
-    }
-    profile[key] = String(row?.value ?? '').trim();
+  TECH_STACK_GROUPS.forEach((group) => {
+    next[group.key] = normalizeStringList(source[group.key]);
   });
-  return profile;
+
+  return next;
 };
 
-const buildEmptyProfileData = () => {
-  const result = {};
-  PROFILE_DOMAIN_CONFIG.forEach((domain) => {
-    result[domain.key] = {};
-    domain.fields.forEach((field) => {
-      result[domain.key][field.key] = deepClone(field.empty);
+const normalizePerformanceBaseline = (value) => {
+  const template = buildEmptyProfileData().technical_architecture.canonical.performance_baseline;
+  const source = value && typeof value === 'object' ? value : {};
+  const next = deepClone(template);
+
+  PERFORMANCE_SECTIONS.forEach((section) => {
+    const sectionSource = source[section.key] && typeof source[section.key] === 'object' ? source[section.key] : {};
+    section.fields.forEach((field) => {
+      next[section.key][field.key] = normalizeString(sectionSource[field.key]);
     });
   });
-  return result;
+
+  next.processing_model = normalizeString(source.processing_model);
+  return next;
+};
+
+const normalizeExtensions = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return deepClone(value);
 };
 
 const normalizeProfileData = (value) => {
-  const normalized = buildEmptyProfileData();
+  const template = buildEmptyProfileData();
   if (!value || typeof value !== 'object') {
-    return normalized;
+    return template;
   }
 
-  PROFILE_DOMAIN_CONFIG.forEach((domain) => {
-    const incomingDomain = value[domain.key];
-    if (!incomingDomain || typeof incomingDomain !== 'object') {
-      return;
-    }
+  DOMAIN_CONFIG.forEach((domain) => {
+    const rawDomain = value[domain.key];
+    const rawCanonical = rawDomain?.canonical;
+    const source = rawCanonical && typeof rawCanonical === 'object'
+      ? rawCanonical
+      : rawDomain && typeof rawDomain === 'object'
+        ? rawDomain
+        : {};
+
     domain.fields.forEach((field) => {
-      if (Object.prototype.hasOwnProperty.call(incomingDomain, field.key)) {
-        normalized[domain.key][field.key] = deepClone(incomingDomain[field.key]);
+      if (!Object.prototype.hasOwnProperty.call(source, field.key)) {
+        return;
+      }
+
+      if (field.type === 'text') {
+        template[domain.key].canonical[field.key] = normalizeString(source[field.key]);
+        return;
+      }
+
+      if (field.type === 'list') {
+        template[domain.key].canonical[field.key] = normalizeStringList(source[field.key]);
+        return;
+      }
+
+      if (field.type === 'service_list') {
+        template[domain.key].canonical[field.key] = normalizeServiceEntries(source[field.key]);
+        return;
+      }
+
+      if (field.type === 'integration_list') {
+        template[domain.key].canonical[field.key] = normalizeIntegrationEntries(source[field.key]);
+        return;
+      }
+
+      if (field.type === 'tech_stack') {
+        template[domain.key].canonical[field.key] = normalizeTechStack(source[field.key]);
+        return;
+      }
+
+      if (field.type === 'performance') {
+        template[domain.key].canonical[field.key] = normalizePerformanceBaseline(source[field.key]);
       }
     });
+
+    template[domain.key].canonical.extensions = normalizeExtensions(source.extensions);
   });
-  return normalized;
+
+  return template;
 };
 
-const parseErrorMessage = (error, fallback) => {
-  const responseData = error?.response?.data;
-  return responseData?.message || responseData?.detail || fallback;
+const getFieldPath = (domainKey, fieldKey) => `${domainKey}.${fieldKey}`;
+
+const parseErrorMessage = (error, fallback) => (
+  error?.response?.data?.message
+  || error?.response?.data?.detail
+  || fallback
+);
+
+const hasMeaningfulValue = (value) => {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    return normalizeString(value).length > 0;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasMeaningfulValue(item));
+  }
+  if (typeof value === 'object') {
+    return Object.values(value).some((item) => hasMeaningfulValue(item));
+  }
+  return false;
 };
 
-const normalizeComparableValue = (domainKey, fieldKey, value) => {
-  const fieldPath = getFieldPath(domainKey, fieldKey);
-  const editorKind = FIELD_EDITOR_KIND[fieldPath] || PROFILE_DOMAIN_BY_KEY?.[domainKey]?.fields?.find((field) => field.key === fieldKey)?.type;
+const unwrapSuggestionValue = (value) => {
+  if (
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, 'value')
+  ) {
+    return deepClone(value.value);
+  }
+  return deepClone(value);
+};
 
-  if (editorKind === 'module_structure') {
-    return sanitizeModuleStructureNodes(value);
+const getSuggestionFieldCandidates = (domainKey, fieldKey) => {
+  const aliasFields = LEGACY_SUGGESTION_FIELD_ALIASES[domainKey]?.[fieldKey] || [];
+  return [fieldKey, ...aliasFields].filter((item, index, array) => item && array.indexOf(item) === index);
+};
+
+const readSuggestionValue = (payload, domainKey, fieldKey) => {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
   }
-  if (editorKind === 'integration_points') {
-    return sanitizeIntegrationPointsForPersist(value);
+
+  const fieldCandidates = getSuggestionFieldCandidates(domainKey, fieldKey);
+  const flatPathCandidates = fieldCandidates.flatMap((candidate) => [
+    `${domainKey}.canonical.${candidate}`,
+    `${domainKey}.${candidate}`,
+  ]);
+
+  for (const fieldPath of flatPathCandidates) {
+    if (Object.prototype.hasOwnProperty.call(payload, fieldPath)) {
+      return unwrapSuggestionValue(payload[fieldPath]);
+    }
   }
-  if (editorKind === 'key_constraints') {
-    return sanitizeKeyConstraintsForPersist(value);
+
+  const domainPayload = payload[domainKey];
+  if (!domainPayload || typeof domainPayload !== 'object') {
+    return undefined;
   }
-  if (editorKind === 'performance_profile') {
-    return performanceRowsToObject(normalizePerformanceRowsDraft(value));
+
+  const canonicalPayload = domainPayload.canonical;
+  if (canonicalPayload && typeof canonicalPayload === 'object') {
+    for (const candidate of fieldCandidates) {
+      if (Object.prototype.hasOwnProperty.call(canonicalPayload, candidate)) {
+        return unwrapSuggestionValue(canonicalPayload[candidate]);
+      }
+    }
   }
-  if (editorKind === 'list') {
+
+  for (const candidate of fieldCandidates) {
+    if (Object.prototype.hasOwnProperty.call(domainPayload, candidate)) {
+      return unwrapSuggestionValue(domainPayload[candidate]);
+    }
+  }
+
+  return undefined;
+};
+
+const normalizeComparableValue = (field, value) => {
+  if (field.type === 'text') {
+    return normalizeString(value);
+  }
+  if (field.type === 'list') {
     return normalizeStringList(value);
   }
-  if (editorKind === 'text') {
-    return String(value ?? '').trim();
+  if (field.type === 'service_list') {
+    return normalizeServiceEntries(value);
   }
-  return value ?? null;
+  if (field.type === 'integration_list') {
+    return normalizeIntegrationEntries(value);
+  }
+  if (field.type === 'tech_stack') {
+    return normalizeTechStack(value);
+  }
+  if (field.type === 'performance') {
+    return normalizePerformanceBaseline(value);
+  }
+  return deepClone(value);
 };
 
-const isSameValue = (domainKey, fieldKey, left, right) => (
-  JSON.stringify(normalizeComparableValue(domainKey, fieldKey, left))
-  === JSON.stringify(normalizeComparableValue(domainKey, fieldKey, right))
+const isSameFieldValue = (field, left, right) => (
+  JSON.stringify(normalizeComparableValue(field, left))
+  === JSON.stringify(normalizeComparableValue(field, right))
 );
 
-const buildDraftValues = (profileData) => {
-  const draft = {};
-  PROFILE_DOMAIN_CONFIG.forEach((domain) => {
-    domain.fields.forEach((field) => {
-      const path = getFieldPath(domain.key, field.key);
-      const currentValue = profileData?.[domain.key]?.[field.key];
-      const editorKind = FIELD_EDITOR_KIND[path] || field.type;
+const splitPeerSystems = (value) => normalizeString(value)
+  .replace(/[，,；;]/g, '、')
+  .split('、')
+  .map((item) => item.trim())
+  .filter(Boolean);
 
-      if (editorKind === 'text') {
-        draft[path] = String(currentValue ?? '');
-      } else if (editorKind === 'list') {
-        draft[path] = normalizeStringList(currentValue);
-      } else if (editorKind === 'module_structure') {
-        draft[path] = normalizeModuleStructureNodes(currentValue);
-      } else if (editorKind === 'integration_points') {
-        draft[path] = normalizeIntegrationPointsDraft(currentValue);
-      } else if (editorKind === 'performance_profile') {
-        draft[path] = normalizePerformanceRowsDraft(currentValue);
-      } else if (editorKind === 'key_constraints') {
-        draft[path] = normalizeKeyConstraintsDraft(currentValue);
-      } else {
-        draft[path] = deepClone(currentValue ?? field.empty);
+const buildServicePreviewRows = (value) => {
+  const rows = normalizeServiceEntries(value);
+  if (!rows.length) {
+    return [];
+  }
+
+  const groupedRows = new Map();
+  rows.forEach((row) => {
+    const serviceName = normalizeString(row.service_name);
+    const transactionName = normalizeString(row.transaction_name);
+    const groupKey = `${serviceName}__${transactionName}`;
+    const existing = groupedRows.get(groupKey) || {
+      service_name: serviceName,
+      transaction_name: transactionName,
+      peer_systems: [],
+    };
+
+    splitPeerSystems(row.peer_system).forEach((peerSystem) => {
+      if (!existing.peer_systems.includes(peerSystem)) {
+        existing.peer_systems.push(peerSystem);
       }
     });
+    groupedRows.set(groupKey, existing);
   });
-  return draft;
+
+  return Array.from(groupedRows.values()).map((row) => ({
+    service_name: row.service_name,
+    transaction_name: row.transaction_name,
+    peer_system: row.peer_systems.join('、'),
+  }));
 };
 
+const SimpleTable = ({ headers, rows }) => {
+  if (!rows.length) {
+    return <Text type="secondary">—</Text>;
+  }
 
-const sanitizeIntegrationPointsForPersist = (value) => (
-  normalizeIntegrationPointsDraft(value)
-    .filter((item) => (
-      Boolean(item.peer_system) || Boolean(item.protocol) || Boolean(item.direction) || Boolean(item.description)
-    ))
-);
-
-const sanitizeKeyConstraintsForPersist = (value) => (
-  normalizeKeyConstraintsDraft(value)
-    .filter((item) => Boolean(item.category) || Boolean(item.description))
-);
-
-const parseDraftToProfileData = (draftValues) => {
-  const nextProfileData = buildEmptyProfileData();
-  PROFILE_DOMAIN_CONFIG.forEach((domain) => {
-    domain.fields.forEach((field) => {
-      const path = getFieldPath(domain.key, field.key);
-      const editorKind = FIELD_EDITOR_KIND[path] || field.type;
-      const rawValue = draftValues[path];
-
-      if (editorKind === 'text') {
-        nextProfileData[domain.key][field.key] = String(rawValue ?? '').trim();
-      } else if (editorKind === 'list') {
-        nextProfileData[domain.key][field.key] = normalizeStringList(rawValue);
-      } else if (editorKind === 'module_structure') {
-        nextProfileData[domain.key][field.key] = sanitizeModuleStructureNodes(rawValue);
-      } else if (editorKind === 'integration_points') {
-        nextProfileData[domain.key][field.key] = sanitizeIntegrationPointsForPersist(rawValue);
-      } else if (editorKind === 'performance_profile') {
-        nextProfileData[domain.key][field.key] = performanceRowsToObject(rawValue);
-      } else if (editorKind === 'key_constraints') {
-        nextProfileData[domain.key][field.key] = sanitizeKeyConstraintsForPersist(rawValue);
-      } else {
-        nextProfileData[domain.key][field.key] = deepClone(rawValue ?? field.empty);
-      }
-    });
-  });
-  return nextProfileData;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            {headers.map((header) => (
+              <th
+                key={header.key}
+                style={{
+                  borderBottom: '1px solid #f0f0f0',
+                  padding: '8px',
+                  textAlign: 'left',
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {header.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>
+              {headers.map((header) => (
+                <td
+                  key={`${rowIndex}-${header.key}`}
+                  style={{
+                    borderBottom: '1px solid #f5f5f5',
+                    padding: '8px',
+                    verticalAlign: 'top',
+                  }}
+                >
+                  {normalizeString(row[header.key]) || <Text type="secondary">—</Text>}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 };
 
 const SystemProfileBoardPage = () => {
   const { user } = useAuth();
-  const { isManager } = usePermission();
+  const permission = usePermission();
+  const {
+    isManager = false,
+    isAdmin = false,
+    isExpert = false,
+  } = permission || {};
   const location = useLocation();
   const navigate = useNavigate();
 
   const [systems, setSystems] = useState([]);
-  const [selectedSystemName, setSelectedSystemName] = useState('');
+  const [selectedSystemName, setSelectedSystemName] = useState(() => (
+    normalizeString(new URLSearchParams(location.search).get('system_name'))
+  ));
+  const [activeDomain, setActiveDomain] = useState(DOMAIN_CONFIG[0].key);
 
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -331,38 +623,74 @@ const SystemProfileBoardPage = () => {
   });
 
   const [savedProfileData, setSavedProfileData] = useState(buildEmptyProfileData());
-  const [draftValues, setDraftValues] = useState({});
+  const [draftProfileData, setDraftProfileData] = useState(buildEmptyProfileData());
   const [editingFields, setEditingFields] = useState({});
+
   const [aiSuggestions, setAiSuggestions] = useState({});
   const [aiSuggestionsPrevious, setAiSuggestionsPrevious] = useState(null);
   const [ignoredSuggestions, setIgnoredSuggestions] = useState({});
-  const [activeDomain, setActiveDomain] = useState(PROFILE_DOMAIN_CONFIG[0].key);
 
-  const [timelineExpanded, setTimelineExpanded] = useState(true);
   const [timelineItems, setTimelineItems] = useState([]);
   const [timelineTotal, setTimelineTotal] = useState(0);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineLoadingMore, setTimelineLoadingMore] = useState(false);
+  const [timelineExpanded, setTimelineExpanded] = useState(true);
 
   const [completenessInfo, setCompletenessInfo] = useState(null);
   const [completenessUnknown, setCompletenessUnknown] = useState(false);
 
   const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
-
-  const responsibleSystems = useMemo(() => filterResponsibleSystems(systems, user), [systems, user]);
-
-  const selectedSystem = useMemo(
-    () => responsibleSystems.find((item) => item.name === selectedSystemName),
-    [responsibleSystems, selectedSystemName]
+  const requestedSystemName = useMemo(
+    () => normalizeString(queryParams.get('system_name')),
+    [queryParams]
+  );
+  const requestedSystemId = useMemo(
+    () => normalizeString(queryParams.get('system_id')),
+    [queryParams]
   );
 
-  const effectiveSystemId = useMemo(() => {
-    const currentSystemId = String(selectedSystem?.id || '').trim();
-    if (currentSystemId) {
-      return currentSystemId;
+  useEffect(() => {
+    if (!selectedSystemName && requestedSystemName) {
+      setSelectedSystemName(requestedSystemName);
     }
-    return String(profileMeta.system_id || '').trim();
-  }, [profileMeta.system_id, selectedSystem?.id]);
+  }, [requestedSystemName, selectedSystemName]);
+
+  const visibleSystems = useMemo(() => {
+    if (isManager) {
+      return filterResponsibleSystems(systems, user);
+    }
+    if (isAdmin || isExpert) {
+      return Array.isArray(systems) ? systems : [];
+    }
+    return [];
+  }, [isAdmin, isExpert, isManager, systems, user]);
+
+  const effectiveSystems = useMemo(() => {
+    if (visibleSystems.length > 0) {
+      return visibleSystems;
+    }
+    if (!requestedSystemName) {
+      return [];
+    }
+    return [
+      {
+        id: requestedSystemId || requestedSystemName,
+        name: requestedSystemName,
+        status: '',
+        extra: isManager ? { owner_username: user?.username || '' } : {},
+      },
+    ];
+  }, [isManager, requestedSystemId, requestedSystemName, user?.username, visibleSystems]);
+
+  const selectedSystem = useMemo(
+    () => effectiveSystems.find((item) => item.name === selectedSystemName),
+    [effectiveSystems, selectedSystemName]
+  );
+
+  const effectiveSystemId = useMemo(
+    () => normalizeString(selectedSystem?.id || profileMeta.system_id || requestedSystemId),
+    [profileMeta.system_id, requestedSystemId, selectedSystem?.id]
+  );
 
   const canWrite = useMemo(() => {
     if (!isManager || !selectedSystem) {
@@ -371,16 +699,16 @@ const SystemProfileBoardPage = () => {
     return resolveSystemOwnership(selectedSystem, user).canWrite;
   }, [isManager, selectedSystem, user]);
 
-  const profileStatusTag = useMemo(() => (
-    <Tag color={profileMeta.status === 'published' ? 'green' : 'gold'}>
-      {profileMeta.status === 'published' ? '已发布' : '草稿'}
-    </Tag>
-  ), [profileMeta.status]);
+  const activeDomainConfig = DOMAIN_BY_KEY[activeDomain] || DOMAIN_CONFIG[0];
 
-  const activeDomainConfig = PROFILE_DOMAIN_BY_KEY[activeDomain] || PROFILE_DOMAIN_CONFIG[0];
-
-  const totalScore = completenessInfo?.completeness_score ?? 0;
-  const breakdown = completenessInfo?.breakdown || {};
+  const loadSystems = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/v1/system/systems');
+      setSystems(Array.isArray(response.data?.data?.systems) ? response.data.data.systems : []);
+    } catch (error) {
+      message.error(parseErrorMessage(error, '加载系统清单失败'));
+    }
+  }, []);
 
   const loadCompleteness = useCallback(async (systemName) => {
     if (!systemName) {
@@ -423,65 +751,30 @@ const SystemProfileBoardPage = () => {
 
   const applyProfilePayload = useCallback((payload, fallbackSystemId = '') => {
     const normalizedProfileData = normalizeProfileData(payload?.profile_data);
+
     setSavedProfileData(normalizedProfileData);
-    setDraftValues(buildDraftValues(normalizedProfileData));
-    setEditingFields({});
+    setDraftProfileData(deepClone(normalizedProfileData));
     setAiSuggestions(payload?.ai_suggestions && typeof payload.ai_suggestions === 'object' ? payload.ai_suggestions : {});
-    setAiSuggestionsPrevious(payload?.ai_suggestions_previous && typeof payload.ai_suggestions_previous === 'object'
-      ? payload.ai_suggestions_previous
-      : null);
-    setIgnoredSuggestions(payload?.ai_suggestion_ignored && typeof payload.ai_suggestion_ignored === 'object'
-      ? payload.ai_suggestion_ignored
-      : {});
+    setAiSuggestionsPrevious(
+      payload?.ai_suggestions_previous && typeof payload.ai_suggestions_previous === 'object'
+        ? payload.ai_suggestions_previous
+        : null
+    );
+    setIgnoredSuggestions(
+      payload?.ai_suggestion_ignored && typeof payload.ai_suggestion_ignored === 'object'
+        ? payload.ai_suggestion_ignored
+        : {}
+    );
     setProfileMeta({
       status: payload?.status || 'draft',
       pending_fields: Array.isArray(payload?.pending_fields) ? payload.pending_fields : [],
       updated_at: payload?.updated_at || payload?.created_at || '',
       is_stale: Boolean(payload?.is_stale),
-      system_id: String(payload?.system_id || fallbackSystemId || ''),
+      system_id: normalizeString(payload?.system_id || fallbackSystemId),
     });
-    setActiveDomain((prev) => (PROFILE_DOMAIN_BY_KEY[prev] ? prev : PROFILE_DOMAIN_CONFIG[0].key));
   }, []);
 
-  const syncSelectedSystemFromUrl = useCallback((items) => {
-    if (!items.length) {
-      setSelectedSystemName('');
-      return;
-    }
-
-    const systemNameInUrl = String(queryParams.get('system_name') || '').trim();
-    const existsInList = systemNameInUrl && items.some((item) => item.name === systemNameInUrl);
-    const nextName = existsInList ? systemNameInUrl : items[0].name;
-
-    setSelectedSystemName(nextName);
-
-    const nextSystem = items.find((item) => item.name === nextName);
-    const nextId = String(nextSystem?.id || '').trim();
-    const urlName = String(queryParams.get('system_name') || '').trim();
-    const urlId = String(queryParams.get('system_id') || '').trim();
-    if (urlName !== nextName || urlId !== nextId) {
-      const nextParams = new URLSearchParams(location.search);
-      nextParams.set('system_name', nextName);
-      if (nextId) {
-        nextParams.set('system_id', nextId);
-      } else {
-        nextParams.delete('system_id');
-      }
-      navigate({ pathname: location.pathname, search: `?${nextParams.toString()}` }, { replace: true });
-    }
-  }, [location.pathname, location.search, navigate, queryParams]);
-
-  const loadSystems = useCallback(async () => {
-    try {
-      const response = await axios.get('/api/v1/system/systems');
-      const items = response.data?.data?.systems || [];
-      setSystems(items);
-    } catch (error) {
-      message.error(parseErrorMessage(error, '加载系统清单失败'));
-    }
-  }, []);
-
-  const loadProfileDetail = useCallback(async (systemName) => {
+  const loadProfileDetail = useCallback(async (systemName, systemIdHint = '') => {
     if (!systemName) {
       return;
     }
@@ -490,33 +783,33 @@ const SystemProfileBoardPage = () => {
     try {
       const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemName)}`);
       const payload = response.data?.data;
-      const resolvedSystemId = String(selectedSystem?.id || payload?.system_id || '').trim();
+      const resolvedSystemId = normalizeString(payload?.system_id || systemIdHint);
 
-      if (payload) {
-        applyProfilePayload(payload, resolvedSystemId);
-      } else {
-        applyProfilePayload(
-          {
-            profile_data: buildEmptyProfileData(),
-            ai_suggestions: {},
-            ai_suggestions_previous: null,
-            pending_fields: [],
-            status: 'draft',
-            updated_at: '',
-            is_stale: false,
-            system_id: resolvedSystemId,
-          },
-          resolvedSystemId
-        );
-      }
+      applyProfilePayload(
+        payload || {
+          profile_data: buildEmptyProfileData(),
+          field_sources: {},
+          ai_suggestions: {},
+          ai_suggestions_previous: null,
+          ai_suggestion_ignored: {},
+          pending_fields: [],
+          status: 'draft',
+          updated_at: '',
+          is_stale: false,
+          system_id: resolvedSystemId,
+        },
+        resolvedSystemId
+      );
 
+      setLoadingProfile(false);
       setTimelineLoading(true);
-      const timeline = await loadTimelinePage(resolvedSystemId, 0);
+      const [timeline] = await Promise.all([
+        loadTimelinePage(resolvedSystemId, 0),
+        loadCompleteness(systemName),
+      ]);
       setTimelineItems(timeline.items);
       setTimelineTotal(timeline.total);
       setTimelineLoading(false);
-
-      await loadCompleteness(systemName);
     } catch (error) {
       message.error(parseErrorMessage(error, '加载系统画像详情失败'));
       setTimelineItems([]);
@@ -525,274 +818,543 @@ const SystemProfileBoardPage = () => {
     } finally {
       setLoadingProfile(false);
     }
-  }, [applyProfilePayload, loadCompleteness, loadTimelinePage, selectedSystem?.id]);
+  }, [applyProfilePayload, loadCompleteness, loadTimelinePage]);
+
+  const syncSelectedSystemFromUrl = useCallback((items) => {
+    if (!items.length) {
+      setSelectedSystemName('');
+      return;
+    }
+
+    const existsInList = requestedSystemName && items.some((item) => item.name === requestedSystemName);
+    const nextName = existsInList ? requestedSystemName : items[0].name;
+    const nextSystem = items.find((item) => item.name === nextName);
+    const nextSystemId = normalizeString(nextSystem?.id);
+
+    setSelectedSystemName(nextName);
+
+    if (requestedSystemName !== nextName || requestedSystemId !== nextSystemId) {
+      const nextParams = new URLSearchParams(location.search);
+      nextParams.set('system_name', nextName);
+      if (nextSystemId) {
+        nextParams.set('system_id', nextSystemId);
+      } else {
+        nextParams.delete('system_id');
+      }
+      navigate(
+        {
+          pathname: location.pathname,
+          search: `?${nextParams.toString()}`,
+        },
+        { replace: true }
+      );
+    }
+  }, [location.pathname, location.search, navigate, requestedSystemId, requestedSystemName]);
 
   useEffect(() => {
     loadSystems();
   }, [loadSystems]);
 
   useEffect(() => {
-    if (!responsibleSystems.length) {
+    if (!effectiveSystems.length) {
+      setSelectedSystemName('');
       return;
     }
-    syncSelectedSystemFromUrl(responsibleSystems);
-  }, [responsibleSystems, syncSelectedSystemFromUrl]);
+
+    syncSelectedSystemFromUrl(effectiveSystems);
+  }, [effectiveSystems, syncSelectedSystemFromUrl]);
 
   useEffect(() => {
     if (!selectedSystemName) {
       return;
     }
-    loadProfileDetail(selectedSystemName);
-  }, [loadProfileDetail, selectedSystemName]);
+    loadProfileDetail(selectedSystemName, selectedSystem?.id || requestedSystemId);
+  }, [loadProfileDetail, requestedSystemId, selectedSystem?.id, selectedSystemName]);
 
-  const handleSystemTabChange = (systemName) => {
-    const nextName = String(systemName || '').trim();
-    if (!nextName) {
-      return;
+  const setDraftFieldValue = useCallback((domainKey, fieldKey, nextValue) => {
+    setDraftProfileData((previous) => {
+      const next = deepClone(previous);
+      const currentValue = next?.[domainKey]?.canonical?.[fieldKey];
+      next[domainKey].canonical[fieldKey] = typeof nextValue === 'function' ? nextValue(currentValue) : nextValue;
+      return next;
+    });
+  }, []);
+
+  const toggleFieldEditMode = useCallback((fieldPath) => {
+    setEditingFields((previous) => ({ ...previous, [fieldPath]: !previous[fieldPath] }));
+  }, []);
+
+  const domainHasDiff = useCallback((domainKey) => {
+    const domain = DOMAIN_BY_KEY[domainKey];
+    if (!domain) {
+      return false;
     }
 
-    const system = responsibleSystems.find((item) => item.name === nextName);
-    const nextParams = new URLSearchParams(location.search);
-    nextParams.set('system_name', nextName);
-    const systemId = String(system?.id || '').trim();
-    if (systemId) {
-      nextParams.set('system_id', systemId);
-    } else {
-      nextParams.delete('system_id');
-    }
-    navigate({ pathname: location.pathname, search: `?${nextParams.toString()}` }, { replace: true });
-    setSelectedSystemName(nextName);
-  };
+    return domain.fields.some((field) => {
+      const currentValue = savedProfileData?.[domainKey]?.canonical?.[field.key];
+      const suggestionValue = readSuggestionValue(aiSuggestions, domainKey, field.key);
+      const ignoredValue = readSuggestionValue(ignoredSuggestions, domainKey, field.key);
 
-  const handleDraftValueChange = (path, value) => {
-    setDraftValues((prev) => ({ ...prev, [path]: value }));
-  };
+      if (suggestionValue === undefined || !hasMeaningfulValue(suggestionValue)) {
+        return false;
+      }
+      if (ignoredValue !== undefined && isSameFieldValue(field, ignoredValue, suggestionValue)) {
+        return false;
+      }
+      return !isSameFieldValue(field, currentValue, suggestionValue);
+    });
+  }, [aiSuggestions, ignoredSuggestions, savedProfileData]);
 
-  const toggleFieldEditMode = (fieldPath) => {
-    setEditingFields((prev) => ({ ...prev, [fieldPath]: !prev[fieldPath] }));
-  };
-
-  const renderFieldPreview = (field, fieldPath, value) => {
-    if (fieldPath === MODULE_STRUCTURE_FIELD_PATH) {
-      return (
-        <Card size="small">
-          <ModuleStructurePreview value={value} />
-        </Card>
-      );
-    }
-    if (fieldPath === INTEGRATION_POINTS_FIELD_PATH) {
-      return <StructuredFieldPreview kind="integration_points" value={value} />;
-    }
-    if (fieldPath === KEY_CONSTRAINTS_FIELD_PATH) {
-      return <StructuredFieldPreview kind="key_constraints" value={value} />;
-    }
-    if (fieldPath === KNOWN_RISKS_FIELD_PATH) {
-      return <StructuredFieldPreview kind="known_risks" value={value} />;
-    }
-    if (fieldPath === PERFORMANCE_PROFILE_FIELD_PATH) {
-      return <StructuredFieldPreview kind="performance_profile" value={value} />;
-    }
-
-    if (field.type === 'text') {
-      const text = String(value ?? '').trim();
-      return (
-        <Card size="small">
-          {text ? (
-            <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{text}</div>
-          ) : (
-            <Text type="secondary">—</Text>
-          )}
-        </Card>
-      );
-    }
-
-    if (field.type === 'list') {
-      const items = normalizeStringList(value);
-      return (
-        <Card size="small">
-          {items.length > 0 ? (
-            <Space wrap size={[6, 6]}>
-              {items.map((item, index) => <Tag key={`${fieldPath}-preview-${index}`}>{item}</Tag>)}
-            </Space>
-          ) : (
-            <Text type="secondary">—</Text>
-          )}
-        </Card>
-      );
-    }
-
-    return null;
-  };
-
-  const renderListEditor = (fieldPath, value, itemLabel = '条目', { showPreview = true } = {}) => {
-    const items = normalizeStringList(value);
-    const visibleItems = items.length > 0 ? items : [''];
-    const preview = showPreview ? null : null;
+  const renderTextPreview = (value) => {
+    const text = normalizeString(value);
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
-        {preview}
+      <Card size="small">
+        {text ? (
+          <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{text}</div>
+        ) : (
+          <Text type="secondary">—</Text>
+        )}
+      </Card>
+    );
+  };
+
+  const renderListPreview = (value) => {
+    const items = normalizeStringList(value);
+    return (
+      <Card size="small">
+        {items.length > 0 ? (
+          <Space wrap size={[6, 6]}>
+            {items.map((item, index) => <Tag key={`tag-${index}`}>{item}</Tag>)}
+          </Space>
+        ) : (
+          <Text type="secondary">—</Text>
+        )}
+      </Card>
+    );
+  };
+
+  const renderServicePreview = (value) => (
+    <Card size="small">
+      <SimpleTable
+        headers={[
+          { key: 'service_name', label: '服务名称' },
+          { key: 'transaction_name', label: '交易名称' },
+          { key: 'peer_system', label: '对端系统' },
+        ]}
+        rows={buildServicePreviewRows(value)}
+      />
+    </Card>
+  );
+
+  const renderIntegrationPreview = (value) => (
+    <Card size="small">
+      <SimpleTable
+        headers={[
+          { key: 'integration_name', label: '集成项' },
+          { key: 'peer_system', label: '对端系统' },
+          { key: 'notes', label: '说明' },
+        ]}
+        rows={normalizeIntegrationEntries(value)}
+      />
+    </Card>
+  );
+
+  const renderTechStackPreview = (value) => {
+    const techStack = normalizeTechStack(value);
+    const groups = TECH_STACK_GROUPS
+      .map((group) => ({ ...group, items: normalizeStringList(techStack[group.key]) }))
+      .filter((group) => group.items.length > 0);
+
+    return (
+      <Card size="small">
+        {groups.length > 0 ? (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            {groups.map((group) => (
+              <div key={group.key}>
+                <Text strong>{group.label}</Text>
+                <div style={{ marginTop: 6 }}>
+                  <Space wrap size={[6, 6]}>
+                    {group.items.map((item, index) => <Tag key={`${group.key}-${index}`}>{item}</Tag>)}
+                  </Space>
+                </div>
+              </div>
+            ))}
+          </Space>
+        ) : (
+          <Text type="secondary">—</Text>
+        )}
+      </Card>
+    );
+  };
+
+  const renderPerformancePreview = (value) => {
+    const performance = normalizePerformanceBaseline(value);
+    const onlineRows = PERFORMANCE_SECTIONS[0].fields.map((field) => ({
+      metric: field.label,
+      value: performance.online[field.key],
+    }));
+    const batchRows = PERFORMANCE_SECTIONS[1].fields.map((field) => ({
+      metric: field.label,
+      value: performance.batch[field.key],
+    }));
+
+    return (
+      <Card size="small">
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <div>
+            <Text strong>处理模式</Text>
+            <div style={{ marginTop: 4 }}>
+              {normalizeString(performance.processing_model) || <Text type="secondary">—</Text>}
+            </div>
+          </div>
+          <div>
+            <Text strong>在线指标</Text>
+            <div style={{ marginTop: 6 }}>
+              <SimpleTable
+                headers={[
+                  { key: 'metric', label: '指标' },
+                  { key: 'value', label: '值' },
+                ]}
+                rows={onlineRows.filter((row) => normalizeString(row.value))}
+              />
+            </div>
+          </div>
+          <div>
+            <Text strong>批处理指标</Text>
+            <div style={{ marginTop: 6 }}>
+              <SimpleTable
+                headers={[
+                  { key: 'metric', label: '指标' },
+                  { key: 'value', label: '值' },
+                ]}
+                rows={batchRows.filter((row) => normalizeString(row.value))}
+              />
+            </div>
+          </div>
+        </Space>
+      </Card>
+    );
+  };
+
+  const renderFieldPreview = (field, value) => {
+    if (field.type === 'text') {
+      return renderTextPreview(value);
+    }
+    if (field.type === 'list') {
+      return renderListPreview(value);
+    }
+    if (field.type === 'service_list') {
+      return renderServicePreview(value);
+    }
+    if (field.type === 'integration_list') {
+      return renderIntegrationPreview(value);
+    }
+    if (field.type === 'tech_stack') {
+      return renderTechStackPreview(value);
+    }
+    if (field.type === 'performance') {
+      return renderPerformancePreview(value);
+    }
+    return renderTextPreview('');
+  };
+
+  const renderStringListEditor = (domainKey, field, value) => {
+    const items = Array.isArray(value) ? value.map((item) => String(item ?? '')) : [];
+    const visibleItems = items.length > 0 ? items : [''];
+
+    return (
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
         {visibleItems.map((item, index) => (
-          <Space key={`${fieldPath}-list-${index}`} style={{ width: '100%' }}>
+          <Space key={`${field.key}-${index}`} style={{ width: '100%' }} align="start">
             <Input
               value={item}
-              placeholder={`请输入${itemLabel}`}
+              placeholder={`请输入${field.label}`}
               disabled={!canWrite}
               onChange={(event) => {
                 const next = [...visibleItems];
                 next[index] = event.target.value;
-                handleDraftValueChange(fieldPath, next);
+                setDraftFieldValue(domainKey, field.key, next);
               }}
             />
+            {visibleItems.length > 1 && (
+              <Button
+                size="small"
+                disabled={!canWrite}
+                onClick={() => {
+                  const next = visibleItems.filter((_, itemIndex) => itemIndex !== index);
+                  setDraftFieldValue(domainKey, field.key, next);
+                }}
+              >
+                删除
+              </Button>
+            )}
           </Space>
         ))}
+        <Button
+          size="small"
+          disabled={!canWrite}
+          onClick={() => setDraftFieldValue(domainKey, field.key, [...visibleItems, ''])}
+        >
+          新增一项
+        </Button>
       </Space>
     );
   };
 
-  const renderModuleStructureEditor = (fieldPath, value, { showPreview = true } = {}) => {
-    const modules = normalizeModuleStructureNodes(value);
-    const visibleModules = modules.length > 0 ? modules : [{ module_name: '', description: '', children: [] }];
+  const renderServiceListEditor = (domainKey, field, value) => {
+    const rows = Array.isArray(value)
+      ? value.map((item) => ({ ...EMPTY_SERVICE_ROW, ...coerceServiceDraftRow(item || {}) }))
+      : [];
+    const visibleRows = rows.length > 0 ? rows : [deepClone(EMPTY_SERVICE_ROW)];
 
-    const updateModuleNode = (nodes, pathIndexes, updater) => {
-      const next = deepClone(nodes);
-      let cursor = next;
-      for (let index = 0; index < pathIndexes.length - 1; index += 1) {
-        cursor = cursor[pathIndexes[index]].children;
-      }
-      const targetIndex = pathIndexes[pathIndexes.length - 1];
-      cursor[targetIndex] = updater(cursor[targetIndex]);
-      return next;
-    };
+    return (
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        {visibleRows.map((row, index) => (
+          <Card key={`${field.key}-${index}`} size="small">
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space style={{ width: '100%' }} align="start">
+                <Input
+                  value={row.service_name}
+                  placeholder="服务名称"
+                  disabled={!canWrite}
+                  onChange={(event) => {
+                    const next = deepClone(visibleRows);
+                    next[index].service_name = event.target.value;
+                    setDraftFieldValue(domainKey, field.key, next);
+                  }}
+                />
+                <Input
+                  value={row.transaction_name}
+                  placeholder="交易名称"
+                  disabled={!canWrite}
+                  onChange={(event) => {
+                    const next = deepClone(visibleRows);
+                    next[index].transaction_name = event.target.value;
+                    setDraftFieldValue(domainKey, field.key, next);
+                  }}
+                />
+              </Space>
+              <Input
+                value={row.peer_system}
+                placeholder="对端系统"
+                disabled={!canWrite}
+                onChange={(event) => {
+                  const next = deepClone(visibleRows);
+                  next[index].peer_system = event.target.value;
+                  setDraftFieldValue(domainKey, field.key, next);
+                }}
+              />
+              {visibleRows.length > 1 && (
+                <div>
+                  <Button
+                    size="small"
+                    disabled={!canWrite}
+                    onClick={() => {
+                      const next = visibleRows.filter((_, rowIndex) => rowIndex !== index);
+                      setDraftFieldValue(domainKey, field.key, next);
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              )}
+            </Space>
+          </Card>
+        ))}
+        <Button
+          size="small"
+          disabled={!canWrite}
+          onClick={() => setDraftFieldValue(domainKey, field.key, [...visibleRows, deepClone(EMPTY_SERVICE_ROW)])}
+        >
+          新增服务
+        </Button>
+      </Space>
+    );
+  };
 
-    const renderEditors = (nodes, pathIndexes = [], depth = 1) => (
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        {nodes.map((moduleItem, moduleIndex) => {
-          const currentPath = [...pathIndexes, moduleIndex];
+  const renderIntegrationListEditor = (domainKey, field, value) => {
+    const rows = Array.isArray(value)
+      ? value.map((item) => ({ ...EMPTY_INTEGRATION_ROW, ...coerceIntegrationDraftRow(item || {}) }))
+      : [];
+    const visibleRows = rows.length > 0 ? rows : [deepClone(EMPTY_INTEGRATION_ROW)];
+
+    return (
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        {visibleRows.map((row, index) => (
+          <Card key={`${field.key}-${index}`} size="small">
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space style={{ width: '100%' }} align="start">
+                <Input
+                  value={row.integration_name}
+                  placeholder="集成项"
+                  disabled={!canWrite}
+                  onChange={(event) => {
+                    const next = deepClone(visibleRows);
+                    next[index].integration_name = event.target.value;
+                    setDraftFieldValue(domainKey, field.key, next);
+                  }}
+                />
+                <Input
+                  value={row.peer_system}
+                  placeholder="对端系统"
+                  disabled={!canWrite}
+                  onChange={(event) => {
+                    const next = deepClone(visibleRows);
+                    next[index].peer_system = event.target.value;
+                    setDraftFieldValue(domainKey, field.key, next);
+                  }}
+                />
+              </Space>
+              <Input.TextArea
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                value={row.notes}
+                placeholder="说明"
+                disabled={!canWrite}
+                onChange={(event) => {
+                  const next = deepClone(visibleRows);
+                  next[index].notes = event.target.value;
+                  setDraftFieldValue(domainKey, field.key, next);
+                }}
+              />
+              {visibleRows.length > 1 && (
+                <div>
+                  <Button
+                    size="small"
+                    disabled={!canWrite}
+                    onClick={() => {
+                      const next = visibleRows.filter((_, rowIndex) => rowIndex !== index);
+                      setDraftFieldValue(domainKey, field.key, next);
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              )}
+            </Space>
+          </Card>
+        ))}
+        <Button
+          size="small"
+          disabled={!canWrite}
+          onClick={() => setDraftFieldValue(domainKey, field.key, [...visibleRows, deepClone(EMPTY_INTEGRATION_ROW)])}
+        >
+          新增集成项
+        </Button>
+      </Space>
+    );
+  };
+
+  const renderTechStackEditor = (domainKey, field, value) => {
+    const techStack = value && typeof value === 'object' ? value : {};
+
+    return (
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {TECH_STACK_GROUPS.map((group) => {
+          const items = Array.isArray(techStack[group.key])
+            ? techStack[group.key].map((item) => String(item ?? ''))
+            : [];
+          const visibleItems = items.length > 0 ? items : [''];
+
           return (
-            <div
-              key={`${fieldPath}-module-${currentPath.join('-')}`}
-              style={{
-                marginLeft: Math.max(0, depth - 1) * 14,
-                paddingLeft: depth > 1 ? 8 : 0,
-                borderLeft: depth > 1 ? '3px solid #d9d9d9' : 'none',
-              }}
-            >
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'minmax(140px, 200px) minmax(0, 1fr)',
-                    gap: 4,
-                    alignItems: 'start',
-                    padding: '4px 0',
+            <Card key={group.key} size="small" title={group.label}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {visibleItems.map((item, index) => (
+                  <Space key={`${group.key}-${index}`} style={{ width: '100%' }} align="start">
+                    <Input
+                      value={item}
+                      placeholder={`请输入${group.label}`}
+                      disabled={!canWrite}
+                      onChange={(event) => {
+                        const nextGroupItems = [...visibleItems];
+                        nextGroupItems[index] = event.target.value;
+                        const nextTechStack = {
+                          ...normalizeTechStack(techStack),
+                          [group.key]: nextGroupItems,
+                        };
+                        setDraftFieldValue(domainKey, field.key, nextTechStack);
+                      }}
+                    />
+                    {visibleItems.length > 1 && (
+                      <Button
+                        size="small"
+                        disabled={!canWrite}
+                        onClick={() => {
+                          const nextGroupItems = visibleItems.filter((_, itemIndex) => itemIndex !== index);
+                          const nextTechStack = {
+                            ...normalizeTechStack(techStack),
+                            [group.key]: nextGroupItems,
+                          };
+                          setDraftFieldValue(domainKey, field.key, nextTechStack);
+                        }}
+                      >
+                        删除
+                      </Button>
+                    )}
+                  </Space>
+                ))}
+                <Button
+                  size="small"
+                  disabled={!canWrite}
+                  onClick={() => {
+                    const nextTechStack = {
+                      ...normalizeTechStack(techStack),
+                      [group.key]: [...visibleItems, ''],
+                    };
+                    setDraftFieldValue(domainKey, field.key, nextTechStack);
                   }}
                 >
-                  <Input
-                    size="small"
-                    value={moduleItem.module_name}
-                    placeholder="模块名称"
-                    disabled={!canWrite}
-                    onChange={(event) => {
-                      handleDraftValueChange(
-                        fieldPath,
-                        updateModuleNode(visibleModules, currentPath, (currentNode) => ({
-                          ...currentNode,
-                          module_name: event.target.value,
-                        }))
-                      );
-                    }}
-                  />
-                  <Input.TextArea
-                    autoSize={{ minRows: 1, maxRows: 2 }}
-                    value={moduleItem.description}
-                    placeholder="模块说明（可选）"
-                    disabled={!canWrite}
-                    onChange={(event) => {
-                      handleDraftValueChange(
-                        fieldPath,
-                        updateModuleNode(visibleModules, currentPath, (currentNode) => ({
-                          ...currentNode,
-                          description: event.target.value,
-                        }))
-                      );
-                    }}
-                  />
-                </div>
-                {(Array.isArray(moduleItem.children) && moduleItem.children.length > 0)
-                  ? renderEditors(moduleItem.children, currentPath, depth + 1)
-                  : null}
+                  新增一项
+                </Button>
               </Space>
-            </div>
+            </Card>
           );
         })}
       </Space>
     );
-
-    return (
-      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
-        {showPreview && (
-          <Card size="small">
-            <ModuleStructurePreview value={value} />
-          </Card>
-        )}
-        {renderEditors(visibleModules)}
-      </Space>
-    );
   };
 
-  const renderIntegrationPointsEditor = (fieldPath, value, { showPreview = true } = {}) => {
-    const points = normalizeIntegrationPointsDraft(value);
-    const visiblePoints = points.length > 0 ? points : [{ peer_system: '', protocol: '', direction: '', description: '' }];
+  const renderPerformanceEditor = (domainKey, field, value) => {
+    const performance = normalizePerformanceBaseline(value);
+
     return (
-      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
-        {showPreview && <StructuredFieldPreview kind="integration_points" value={value} />}
-        {visiblePoints.map((point, index) => (
-          <Card key={`${fieldPath}-point-${index}`} size="small" styles={{ body: { padding: 10 } }}>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              <Space style={{ width: '100%' }} align="start">
-                <Input
-                  value={point.peer_system}
-                  placeholder="对端系统（可选）"
-                  disabled={!canWrite}
-                  onChange={(event) => {
-                    const next = deepClone(visiblePoints);
-                    next[index].peer_system = event.target.value;
-                    handleDraftValueChange(fieldPath, next);
-                  }}
-                />
-                <Input
-                  value={point.protocol}
-                  placeholder="协议（可选）"
-                  disabled={!canWrite}
-                  onChange={(event) => {
-                    const next = deepClone(visiblePoints);
-                    next[index].protocol = event.target.value;
-                    handleDraftValueChange(fieldPath, next);
-                  }}
-                />
-                <Input
-                  value={point.direction}
-                  placeholder="方向（in/out/bidirectional）"
-                  disabled={!canWrite}
-                  onChange={(event) => {
-                    const next = deepClone(visiblePoints);
-                    next[index].direction = event.target.value;
-                    handleDraftValueChange(fieldPath, next);
-                  }}
-                />
-              </Space>
-              <Space style={{ width: '100%' }}>
-                <Input
-                  value={point.description}
-                  placeholder="集成说明"
-                  disabled={!canWrite}
-                  onChange={(event) => {
-                    const next = deepClone(visiblePoints);
-                    next[index].description = event.target.value;
-                    handleDraftValueChange(fieldPath, next);
-                  }}
-                />
-              </Space>
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Card size="small" title="处理模式">
+          <Input
+            value={performance.processing_model}
+            placeholder="请输入处理模式"
+            disabled={!canWrite}
+            onChange={(event) => {
+              setDraftFieldValue(domainKey, field.key, {
+                ...performance,
+                processing_model: event.target.value,
+              });
+            }}
+          />
+        </Card>
+
+        {PERFORMANCE_SECTIONS.map((section) => (
+          <Card key={section.key} size="small" title={section.label}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {section.fields.map((sectionField) => (
+                <Space key={`${section.key}-${sectionField.key}`} style={{ width: '100%' }} align="start">
+                  <Text style={{ width: 120, flexShrink: 0 }}>{sectionField.label}</Text>
+                  <Input
+                    value={performance[section.key][sectionField.key]}
+                    placeholder={`请输入${sectionField.label}`}
+                    disabled={!canWrite}
+                    onChange={(event) => {
+                      const nextSection = {
+                        ...performance[section.key],
+                        [sectionField.key]: event.target.value,
+                      };
+                      setDraftFieldValue(domainKey, field.key, {
+                        ...performance,
+                        [section.key]: nextSection,
+                      });
+                    }}
+                  />
+                </Space>
+              ))}
             </Space>
           </Card>
         ))}
@@ -800,135 +1362,34 @@ const SystemProfileBoardPage = () => {
     );
   };
 
-  const renderKeyConstraintsEditor = (fieldPath, value, { showPreview = true } = {}) => {
-    const constraints = normalizeKeyConstraintsDraft(value);
-    const visibleConstraints = constraints.length > 0 ? constraints : [{ category: '', description: '' }];
-    return (
-      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
-        {showPreview && <StructuredFieldPreview kind="key_constraints" value={value} />}
-        {visibleConstraints.map((constraint, index) => (
-          <Space key={`${fieldPath}-constraint-${index}`} style={{ width: '100%' }}>
-            <Input
-              value={constraint.category}
-              placeholder="约束类别"
-              disabled={!canWrite}
-              onChange={(event) => {
-                const next = deepClone(visibleConstraints);
-                next[index].category = event.target.value;
-                handleDraftValueChange(fieldPath, next);
-              }}
-            />
-            <Input
-              value={constraint.description}
-              placeholder="约束说明"
-              disabled={!canWrite}
-              onChange={(event) => {
-                const next = deepClone(visibleConstraints);
-                next[index].description = event.target.value;
-                handleDraftValueChange(fieldPath, next);
-              }}
-            />
-          </Space>
-        ))}
-      </Space>
-    );
-  };
-
-  const renderPerformanceProfileEditor = (fieldPath, value, { showPreview = true } = {}) => {
-    const metrics = normalizePerformanceRowsDraft(value);
-    const visibleMetrics = metrics.length > 0 ? metrics : [{ key: '', value: '' }];
-    return (
-      <Space direction="vertical" size={8} style={{ width: '100%', ...(showPreview ? { marginTop: 6 } : {}) }}>
-        {showPreview && <StructuredFieldPreview kind="performance_profile" value={value} />}
-        {visibleMetrics.map((metric, index) => (
-          <Space key={`${fieldPath}-metric-${index}`} style={{ width: '100%' }}>
-            <Input
-              value={metric.key}
-              placeholder="指标名称"
-              disabled={!canWrite}
-              onChange={(event) => {
-                const next = deepClone(visibleMetrics);
-                next[index].key = event.target.value;
-                handleDraftValueChange(fieldPath, next);
-              }}
-            />
-            <Input
-              value={metric.value}
-              placeholder="指标值"
-              disabled={!canWrite}
-              onChange={(event) => {
-                const next = deepClone(visibleMetrics);
-                next[index].value = event.target.value;
-                handleDraftValueChange(fieldPath, next);
-              }}
-            />
-          </Space>
-        ))}
-      </Space>
-    );
-  };
-
-  const renderFieldEditor = (field, fieldPath) => {
-    const value = draftValues[fieldPath];
-    const editorKind = FIELD_EDITOR_KIND[fieldPath] || field.type;
-    const preview = renderFieldPreview(field, fieldPath, value);
-    const editing = canWrite && Boolean(editingFields[fieldPath]);
-
-    if (!editing && preview) {
-      return <div style={{ marginTop: 6 }}>{preview}</div>;
-    }
-
-    if (editorKind === 'text') {
+  const renderFieldEditor = (domainKey, field, value) => {
+    if (field.type === 'text') {
       return (
         <Input.TextArea
-          style={{ marginTop: 6 }}
           rows={4}
           disabled={!canWrite}
           value={String(value ?? '')}
           placeholder={`请输入${field.label}`}
-          onChange={(event) => handleDraftValueChange(fieldPath, event.target.value)}
+          onChange={(event) => setDraftFieldValue(domainKey, field.key, event.target.value)}
         />
       );
     }
-
-    if (editorKind === 'list') {
-      return renderListEditor(fieldPath, value, field.label);
+    if (field.type === 'list') {
+      return renderStringListEditor(domainKey, field, value);
     }
-
-    if (editorKind === 'module_structure') {
-      return renderModuleStructureEditor(fieldPath, value, { showPreview: false });
+    if (field.type === 'service_list') {
+      return renderServiceListEditor(domainKey, field, value);
     }
-    if (editorKind === 'integration_points') {
-      return renderIntegrationPointsEditor(fieldPath, value, { showPreview: false });
+    if (field.type === 'integration_list') {
+      return renderIntegrationListEditor(domainKey, field, value);
     }
-    if (editorKind === 'key_constraints') {
-      return renderKeyConstraintsEditor(fieldPath, value, { showPreview: false });
+    if (field.type === 'tech_stack') {
+      return renderTechStackEditor(domainKey, field, value);
     }
-    if (editorKind === 'performance_profile') {
-      return renderPerformanceProfileEditor(fieldPath, value, { showPreview: false });
+    if (field.type === 'performance') {
+      return renderPerformanceEditor(domainKey, field, value);
     }
-
-    return (
-      <Input.TextArea
-        style={{ marginTop: 6 }}
-        rows={4}
-        disabled={!canWrite}
-        value={String(value ?? '')}
-        placeholder={`请输入${field.label}`}
-        onChange={(event) => handleDraftValueChange(fieldPath, event.target.value)}
-      />
-    );
-  };
-
-  const renderDiffPreview = (fieldPath, fieldType, currentValue, suggestionValue) => {
-    const editorKind = FIELD_EDITOR_KIND[fieldPath] || fieldType;
-    return (
-      <StructuredFieldDiffPreview
-        kind={fieldPath === KNOWN_RISKS_FIELD_PATH ? 'known_risks' : editorKind}
-        currentValue={currentValue}
-        suggestionValue={suggestionValue}
-      />
-    );
+    return null;
   };
 
   const handleSaveDraft = async () => {
@@ -941,23 +1402,16 @@ const SystemProfileBoardPage = () => {
       return;
     }
 
-    let profileData;
-    try {
-      profileData = parseDraftToProfileData(draftValues);
-    } catch (error) {
-      message.error(error.message || '字段格式错误');
-      return;
-    }
-
     try {
       setSavingProfile(true);
+      const payload = normalizeProfileData(draftProfileData);
       await axios.put(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}`, {
         system_id: effectiveSystemId,
-        profile_data: profileData,
+        profile_data: payload,
         evidence_refs: [],
       });
       message.success('系统画像草稿已保存');
-      await loadProfileDetail(selectedSystemName);
+      await loadProfileDetail(selectedSystemName, effectiveSystemId);
     } catch (error) {
       message.error(parseErrorMessage(error, '保存系统画像失败'));
     } finally {
@@ -975,24 +1429,17 @@ const SystemProfileBoardPage = () => {
       return;
     }
 
-    let profileData;
     try {
-      profileData = parseDraftToProfileData(draftValues);
-    } catch (error) {
-      message.error(error.message || '字段格式错误');
-      return;
-    }
-
-    setPublishingProfile(true);
-    try {
+      setPublishingProfile(true);
+      const payload = normalizeProfileData(draftProfileData);
       await axios.put(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}`, {
         system_id: effectiveSystemId,
-        profile_data: profileData,
+        profile_data: payload,
         evidence_refs: [],
       });
       await axios.post(`/api/v1/system-profiles/${encodeURIComponent(selectedSystemName)}/publish`);
       message.success('系统画像已发布');
-      await loadProfileDetail(selectedSystemName);
+      await loadProfileDetail(selectedSystemName, effectiveSystemId);
     } catch (error) {
       message.error(parseErrorMessage(error, '发布系统画像失败'));
     } finally {
@@ -1001,20 +1448,18 @@ const SystemProfileBoardPage = () => {
   };
 
   const handleAcceptSuggestion = async (domainKey, fieldKey) => {
-    const systemId = effectiveSystemId;
-    if (!systemId) {
+    if (!effectiveSystemId) {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
 
     try {
       const response = await axios.post(
-        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/accept`,
+        `/api/v1/system-profiles/${encodeURIComponent(effectiveSystemId)}/profile/suggestions/accept`,
         { domain: domainKey, sub_field: fieldKey }
       );
-      const payload = response.data?.data;
-      if (payload) {
-        applyProfilePayload(payload, systemId);
+      if (response.data?.data) {
+        applyProfilePayload(response.data.data, effectiveSystemId);
       }
       message.success('已采纳AI建议');
     } catch (error) {
@@ -1022,53 +1467,24 @@ const SystemProfileBoardPage = () => {
     }
   };
 
-  const handleRollbackSuggestion = async (domainKey, fieldKey) => {
-    const systemId = effectiveSystemId;
-    if (!systemId) {
-      message.error('系统ID缺失，无法执行操作');
-      return;
-    }
-
-    try {
-      const response = await axios.post(
-        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/rollback`,
-        { domain: domainKey, sub_field: fieldKey }
-      );
-      const payload = response.data?.data;
-      if (payload) {
-        applyProfilePayload(payload, systemId);
-      }
-      message.success('已恢复上一版建议');
-    } catch (error) {
-      const code = error?.response?.data?.error_code;
-      if (code === 'ROLLBACK_NO_PREVIOUS') {
-        message.warning('无历史版本');
-        return;
-      }
-      message.error(parseErrorMessage(error, '恢复上一版建议失败'));
-    }
-  };
-
   const handleIgnoreSuggestion = async (domainKey, fieldKey) => {
-    const systemId = effectiveSystemId;
-    if (!systemId) {
+    if (!effectiveSystemId) {
       message.error('系统ID缺失，无法执行操作');
       return;
     }
 
     try {
       const response = await axios.post(
-        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/suggestions/ignore`,
+        `/api/v1/system-profiles/${encodeURIComponent(effectiveSystemId)}/profile/suggestions/ignore`,
         { domain: domainKey, sub_field: fieldKey }
       );
-      const payload = response.data?.data;
-      if (payload) {
-        applyProfilePayload(payload, systemId);
+      if (response.data?.data) {
+        applyProfilePayload(response.data.data, effectiveSystemId);
       }
       message.success('已忽略AI建议');
     } catch (error) {
-      const code = error?.response?.data?.error_code;
-      if (code === 'SUGGESTION_NOT_FOUND') {
+      const errorCode = error?.response?.data?.error_code;
+      if (errorCode === 'SUGGESTION_NOT_FOUND') {
         message.warning('AI 建议不存在');
         return;
       }
@@ -1076,269 +1492,325 @@ const SystemProfileBoardPage = () => {
     }
   };
 
-  const hasPreviousSuggestion = useCallback((domainKey, fieldKey) => {
-    if (!aiSuggestionsPrevious || typeof aiSuggestionsPrevious !== 'object') {
-      return false;
-    }
-    const domainPayload = aiSuggestionsPrevious[domainKey];
-    return Boolean(domainPayload && typeof domainPayload === 'object' && Object.prototype.hasOwnProperty.call(domainPayload, fieldKey));
-  }, [aiSuggestionsPrevious]);
-
-  const hasVisibleDiff = useCallback((domainKey, fieldKey) => {
-    const suggestionDomain = aiSuggestions?.[domainKey];
-    if (!suggestionDomain || typeof suggestionDomain !== 'object') {
-      return false;
-    }
-    if (!Object.prototype.hasOwnProperty.call(suggestionDomain, fieldKey)) {
-      return false;
-    }
-    const currentValue = savedProfileData?.[domainKey]?.[fieldKey];
-    const suggestionValue = suggestionDomain[fieldKey];
-    const ignoredKey = `${domainKey}.${fieldKey}`;
-    if (Object.prototype.hasOwnProperty.call(ignoredSuggestions, ignoredKey)
-      && isSameValue(domainKey, fieldKey, ignoredSuggestions[ignoredKey], suggestionValue)) {
-      return false;
-    }
-    return !isSameValue(domainKey, fieldKey, currentValue, suggestionValue);
-  }, [aiSuggestions, ignoredSuggestions, savedProfileData]);
-
-  const domainHasDiff = useCallback((domainKey) => {
-    const domain = PROFILE_DOMAIN_BY_KEY[domainKey];
-    if (!domain) {
-      return false;
-    }
-    return domain.fields.some((field) => hasVisibleDiff(domainKey, field.key));
-  }, [hasVisibleDiff]);
-
-  const handleLoadMoreTimeline = async () => {
-    const systemId = effectiveSystemId;
-    if (!systemId) {
+  const handleRollbackSuggestion = async (domainKey, fieldKey) => {
+    if (!effectiveSystemId) {
+      message.error('系统ID缺失，无法执行操作');
       return;
     }
+
+    try {
+      const response = await axios.post(
+        `/api/v1/system-profiles/${encodeURIComponent(effectiveSystemId)}/profile/suggestions/rollback`,
+        { domain: domainKey, sub_field: fieldKey }
+      );
+      if (response.data?.data) {
+        applyProfilePayload(response.data.data, effectiveSystemId);
+      }
+      message.success('已恢复上一版建议');
+    } catch (error) {
+      const errorCode = error?.response?.data?.error_code;
+      if (errorCode === 'ROLLBACK_NO_PREVIOUS') {
+        message.warning('无历史版本');
+        return;
+      }
+      message.error(parseErrorMessage(error, '恢复上一版建议失败'));
+    }
+  };
+
+  const handleSystemTabChange = (systemName) => {
+    const nextName = normalizeString(systemName);
+    if (!nextName) {
+      return;
+    }
+
+    const nextSystem = effectiveSystems.find((item) => item.name === nextName);
+    const nextParams = new URLSearchParams(location.search);
+    nextParams.set('system_name', nextName);
+    const nextId = normalizeString(nextSystem?.id);
+    if (nextId) {
+      nextParams.set('system_id', nextId);
+    } else {
+      nextParams.delete('system_id');
+    }
+
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${nextParams.toString()}`,
+      },
+      { replace: true }
+    );
+    setSelectedSystemName(nextName);
+  };
+
+  const handleLoadMoreTimeline = async () => {
+    if (!effectiveSystemId) {
+      return;
+    }
+
     setTimelineLoadingMore(true);
-    const timeline = await loadTimelinePage(systemId, timelineItems.length);
-    setTimelineItems((prev) => [...prev, ...timeline.items]);
+    const timeline = await loadTimelinePage(effectiveSystemId, timelineItems.length);
+    setTimelineItems((previous) => [...previous, ...timeline.items]);
     setTimelineTotal(timeline.total);
     setTimelineLoadingMore(false);
   };
 
+  const profileStatusTag = (
+    <Tag color={profileMeta.status === 'published' ? 'green' : 'gold'}>
+      {profileMeta.status === 'published' ? '已发布' : '草稿'}
+    </Tag>
+  );
+
+  const totalScore = completenessInfo?.completeness_score ?? 0;
+  const breakdown = completenessInfo?.breakdown || {};
+
+  if (!effectiveSystems.length) {
+    return (
+      <Card>
+        <Text type="secondary">暂无可查看系统。请联系管理员维护系统负责关系。</Text>
+      </Card>
+    );
+  }
+
   return (
-    <div>
-      {responsibleSystems.length === 0 ? (
-        <Card>
-          <Text type="secondary">暂无可操作系统（仅展示主责/B角系统）。请联系管理员维护系统负责关系。</Text>
-        </Card>
-      ) : (
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Space direction="vertical" style={{ width: '100%' }} size={6}>
-            <Tabs
-              size="small"
-              activeKey={selectedSystemName || undefined}
-              onChange={handleSystemTabChange}
-              items={responsibleSystems.map((item) => ({ key: item.name, label: item.name }))}
-            />
+    <Space direction="vertical" style={{ width: '100%' }} size={12}>
+      <Space direction="vertical" style={{ width: '100%' }} size={6}>
+        <Tabs
+          size="small"
+          activeKey={selectedSystemName || undefined}
+          onChange={handleSystemTabChange}
+          items={effectiveSystems.map((item) => ({ key: item.name, label: item.name }))}
+        />
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {profileStatusTag}
-              {profileMeta.is_stale && <Tag color="orange">画像过时</Tag>}
-              <Tag>{selectedSystem?.status || '-'}</Tag>
-              {completenessUnknown ? (
-                <Tag color="default">完整度未知</Tag>
-              ) : (
-                <>
-                  <Tag color="blue">完整度 {totalScore}/100</Tag>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    代码{breakdown.code_scan ?? 0}/30 · 文档{breakdown.documents ?? 0}/40 · ESB{breakdown.esb ?? 0}/30
-                  </Text>
-                </>
-              )}
-              <Button
-                size="small"
-                type="text"
-                icon={timelineExpanded ? <RightOutlined /> : <LeftOutlined />}
-                onClick={() => setTimelineExpanded((prev) => !prev)}
-              >
-                {timelineExpanded ? '收起时间线' : '展开时间线'}
-              </Button>
-              <Button size="small" icon={<ReloadOutlined />} onClick={() => loadProfileDetail(selectedSystemName)}>
-                重新加载
-              </Button>
-              <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
-                更新：{formatDateTime(profileMeta.updated_at)}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {profileStatusTag}
+          {profileMeta.is_stale && <Tag color="orange">画像过时</Tag>}
+          <Tag>{selectedSystem?.status || '-'}</Tag>
+          {completenessUnknown ? (
+            <Tag>完整度未知</Tag>
+          ) : (
+            <>
+              <Tag color="blue">完整度 {totalScore}/100</Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                代码{breakdown.code_scan ?? 0}/30 · 文档{breakdown.documents ?? 0}/40 · ESB{breakdown.esb ?? 0}/30
               </Text>
-            </div>
-
-          </Space>
-
-          <div
-            style={{
-              display: 'grid',
-              gap: 12,
-              gridTemplateColumns: timelineExpanded ? '220px minmax(0, 1fr) 320px' : '220px minmax(0, 1fr)',
-              alignItems: 'start',
-            }}
+            </>
+          )}
+          {!canWrite && isManager && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              当前系统只读，仅主责或B角可编辑。
+            </Text>
+          )}
+          <Button
+            size="small"
+            type="text"
+            icon={timelineExpanded ? <RightOutlined /> : <LeftOutlined />}
+            onClick={() => setTimelineExpanded((previous) => !previous)}
           >
-            <Card size="small">
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                {PROFILE_DOMAIN_CONFIG.map((domain) => (
-                  <Button
-                    key={domain.key}
-                    type={activeDomain === domain.key ? 'primary' : 'default'}
-                    onClick={() => setActiveDomain(domain.key)}
-                    style={{ justifyContent: 'flex-start', textAlign: 'left' }}
-                    block
-                  >
-                    <Space size={6}>
-                      <span>{domain.label}</span>
-                      {domainHasDiff(domain.key) && <Tag color="blue">有建议</Tag>}
-                    </Space>
-                  </Button>
-                ))}
-              </Space>
-            </Card>
+            {timelineExpanded ? '收起时间线' : '展开时间线'}
+          </Button>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={() => loadProfileDetail(selectedSystemName, effectiveSystemId)}
+          >
+            重新加载
+          </Button>
+          <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
+            更新：{formatDateTime(profileMeta.updated_at)}
+          </Text>
+        </div>
+      </Space>
 
-            <Card loading={loadingProfile}>
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                {activeDomainConfig.fields.map((field) => {
-                  const fieldPath = getFieldPath(activeDomainConfig.key, field.key);
-                  const suggestionDomain = aiSuggestions?.[activeDomainConfig.key];
-                  const hasSuggestion = Boolean(
-                    suggestionDomain && typeof suggestionDomain === 'object'
-                    && Object.prototype.hasOwnProperty.call(suggestionDomain, field.key)
-                  );
-                  const currentValue = savedProfileData?.[activeDomainConfig.key]?.[field.key];
-                  const suggestionValue = hasSuggestion ? suggestionDomain[field.key] : undefined;
-                    const shouldShowDiff = hasVisibleDiff(activeDomainConfig.key, field.key);
-                    const rollbackEnabled = hasPreviousSuggestion(activeDomainConfig.key, field.key);
-                    const editing = canWrite && Boolean(editingFields[fieldPath]);
+      <div
+        style={{
+          display: 'grid',
+          gap: 12,
+          gridTemplateColumns: timelineExpanded ? '220px minmax(0, 1fr) 320px' : '220px minmax(0, 1fr)',
+          alignItems: 'start',
+        }}
+      >
+        <Card size="small">
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            {DOMAIN_CONFIG.map((domain) => (
+              <Button
+                key={domain.key}
+                type={activeDomain === domain.key ? 'primary' : 'default'}
+                block
+                onClick={() => setActiveDomain(domain.key)}
+                style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+              >
+                <Space size={6}>
+                  <span>{domain.label}</span>
+                  {domainHasDiff(domain.key) && <Tag color="blue">有建议</Tag>}
+                </Space>
+              </Button>
+            ))}
+          </Space>
+        </Card>
 
-                  return (
-                    <div key={fieldPath}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                        <Text strong>{field.label}</Text>
-                        {canWrite && (
+        <Card>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {loadingProfile && <Text type="secondary">加载中...</Text>}
+            {activeDomainConfig.fields.map((field) => {
+              const fieldPath = getFieldPath(activeDomainConfig.key, field.key);
+              const value = draftProfileData?.[activeDomainConfig.key]?.canonical?.[field.key];
+              const currentValue = savedProfileData?.[activeDomainConfig.key]?.canonical?.[field.key];
+              const suggestionValue = readSuggestionValue(aiSuggestions, activeDomainConfig.key, field.key);
+              const ignoredValue = readSuggestionValue(ignoredSuggestions, activeDomainConfig.key, field.key);
+              const hasVisibleSuggestion = suggestionValue !== undefined
+                && hasMeaningfulValue(suggestionValue)
+                && !(ignoredValue !== undefined && isSameFieldValue(field, ignoredValue, suggestionValue))
+                && !isSameFieldValue(field, currentValue, suggestionValue);
+              const previousSuggestionValue = readSuggestionValue(aiSuggestionsPrevious, activeDomainConfig.key, field.key);
+              const hasPreviousSuggestion = previousSuggestionValue !== undefined
+                && hasMeaningfulValue(previousSuggestionValue);
+              const editing = canWrite && Boolean(editingFields[fieldPath]);
+
+              return (
+                <div key={fieldPath}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <Text strong>{field.label}</Text>
+                    {canWrite && (
+                      <Button
+                        size="small"
+                        type="link"
+                        aria-label={`${editing ? '收起编辑' : '编辑'}${field.label}`}
+                        style={{ paddingInline: 0 }}
+                        onClick={() => toggleFieldEditMode(fieldPath)}
+                      >
+                        {editing ? '收起编辑' : '编辑'}
+                      </Button>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 6 }}>
+                    {editing
+                      ? renderFieldEditor(activeDomainConfig.key, field, value)
+                      : renderFieldPreview(field, value)}
+                  </div>
+
+                  {hasVisibleSuggestion && (
+                    <Card size="small" style={{ marginTop: 8, background: '#fafcff' }}>
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Text strong>检测到 AI 建议变更</Text>
+                        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+                          <div>
+                            <Text type="secondary">当前值</Text>
+                            <div style={{ marginTop: 6 }}>
+                              {renderFieldPreview(field, currentValue)}
+                            </div>
+                          </div>
+                          <div>
+                            <Text type="secondary">AI 建议</Text>
+                            <div style={{ marginTop: 6 }}>
+                              {renderFieldPreview(field, suggestionValue)}
+                            </div>
+                          </div>
+                        </div>
+                        <Space wrap>
                           <Button
                             size="small"
-                            type="link"
-                            aria-label={`${editing ? '收起编辑' : '编辑'}${field.label}`}
-                            style={{ paddingInline: 0 }}
-                            onClick={() => toggleFieldEditMode(fieldPath)}
+                            type="primary"
+                            aria-label="采纳新建议"
+                            disabled={!canWrite}
+                            onClick={() => handleAcceptSuggestion(activeDomainConfig.key, field.key)}
                           >
-                            {editing ? '收起编辑' : '编辑'}
+                            采纳新建议
                           </Button>
-                        )}
-                      </div>
-                      {renderFieldEditor(field, fieldPath)}
+                          <Button
+                            size="small"
+                            aria-label="忽略"
+                            disabled={!canWrite}
+                            onClick={() => handleIgnoreSuggestion(activeDomainConfig.key, field.key)}
+                          >
+                            忽略
+                          </Button>
+                          <Button
+                            size="small"
+                            aria-label="恢复上一版建议"
+                            disabled={!canWrite || !hasPreviousSuggestion}
+                            onClick={() => handleRollbackSuggestion(activeDomainConfig.key, field.key)}
+                          >
+                            恢复上一版建议
+                          </Button>
+                        </Space>
+                      </Space>
+                    </Card>
+                  )}
+                </div>
+              );
+            })}
 
-                      {shouldShowDiff && (
-                        <Card size="small" style={{ marginTop: 8, background: '#fafcff' }}>
-                          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                            <Text strong>检测到 AI 建议变更</Text>
-                            {renderDiffPreview(fieldPath, field.type, currentValue, suggestionValue)}
-                            <Space wrap>
-                              <Button
-                                size="small"
-                                type="primary"
-                                disabled={!canWrite}
-                                onClick={() => handleAcceptSuggestion(activeDomainConfig.key, field.key)}
-                              >
-                                采纳新建议
-                              </Button>
-                              <Button
-                                size="small"
-                                disabled={!canWrite}
-                                onClick={() => handleIgnoreSuggestion(activeDomainConfig.key, field.key)}
-                              >
-                                忽略
-                              </Button>
-                              <Button
-                                size="small"
-                                disabled={!canWrite || !rollbackEnabled}
-                                title={rollbackEnabled ? '' : '无历史版本'}
-                                onClick={() => handleRollbackSuggestion(activeDomainConfig.key, field.key)}
-                              >
-                                恢复上一版建议
-                              </Button>
-                            </Space>
+            <Space>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                aria-label="保存草稿"
+                loading={savingProfile}
+                disabled={!canWrite}
+                onClick={handleSaveDraft}
+              >
+                保存草稿
+              </Button>
+              <Button
+                icon={<SendOutlined />}
+                aria-label="发布画像"
+                loading={publishingProfile}
+                disabled={!canWrite}
+                onClick={handlePublish}
+              >
+                发布画像
+              </Button>
+            </Space>
+
+            <Space wrap>
+              <Text type="secondary">待补证据字段：</Text>
+              {(profileMeta.pending_fields || []).length > 0
+                ? profileMeta.pending_fields.map((item) => <Tag key={item}>{item}</Tag>)
+                : <Text type="secondary">无</Text>}
+            </Space>
+          </Space>
+        </Card>
+
+        {timelineExpanded && (
+          <Card size="small" title="变更时间线">
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {timelineLoading && timelineItems.length === 0 ? (
+                <Text type="secondary">加载中...</Text>
+              ) : timelineItems.length === 0 ? (
+                <Text type="secondary">暂无变更记录</Text>
+              ) : (
+                <List
+                  size="small"
+                  dataSource={timelineItems}
+                  renderItem={(item) => {
+                    const eventType = EVENT_TYPE_LABELS[normalizeString(item?.event_type)] || normalizeString(item?.event_type || '变更');
+                    return (
+                      <List.Item>
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Space size={6} wrap>
+                            <Tag color="blue">{eventType || '变更'}</Tag>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{formatDateTime(item?.timestamp)}</Text>
                           </Space>
-                        </Card>
-                      )}
-                    </div>
-                  );
-                })}
+                          <Text>{normalizeString(item?.summary) || '-'}</Text>
+                        </Space>
+                      </List.Item>
+                    );
+                  }}
+                />
+              )}
 
-                <Space>
-                  <Button
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    loading={savingProfile}
-                    disabled={!canWrite}
-                    onClick={handleSaveDraft}
-                  >
-                    保存草稿
-                  </Button>
-                  <Button
-                    icon={<SendOutlined />}
-                    loading={publishingProfile}
-                    disabled={!canWrite}
-                    onClick={handlePublish}
-                  >
-                    发布画像
-                  </Button>
-                </Space>
-
-                <Space wrap>
-                  <Text type="secondary">待补证据字段：</Text>
-                  {(profileMeta.pending_fields || []).length > 0
-                    ? profileMeta.pending_fields.map((item) => <Tag key={item}>{item}</Tag>)
-                    : <Text type="secondary">无</Text>}
-                </Space>
-              </Space>
-            </Card>
-
-            {timelineExpanded && (
-              <Card size="small" title="变更时间线">
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  {timelineLoading && timelineItems.length === 0 ? (
-                    <Text type="secondary">加载中...</Text>
-                  ) : timelineItems.length === 0 ? (
-                    <Text type="secondary">暂无变更记录</Text>
-                  ) : (
-                    <List
-                      size="small"
-                      dataSource={timelineItems}
-                      renderItem={(item) => {
-                        const type = EVENT_TYPE_LABELS[String(item?.event_type || '').trim()] || String(item?.event_type || '变更');
-                        return (
-                          <List.Item>
-                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                              <Space size={6} wrap>
-                                <Tag color="blue">{type}</Tag>
-                                <Text type="secondary" style={{ fontSize: 12 }}>{formatDateTime(item?.timestamp)}</Text>
-                              </Space>
-                              <Text>{String(item?.summary || '-')}</Text>
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                来源：{String(item?.source || '-')}
-                              </Text>
-                            </Space>
-                          </List.Item>
-                        );
-                      }}
-                    />
-                  )}
-
-                  {timelineItems.length < timelineTotal && (
-                    <Button loading={timelineLoadingMore} onClick={handleLoadMoreTimeline}>
-                      加载更多
-                    </Button>
-                  )}
-                </Space>
-              </Card>
-            )}
-          </div>
-        </Space>
-      )}
-    </div>
+              {timelineItems.length < timelineTotal && (
+                <Button loading={timelineLoadingMore} onClick={handleLoadMoreTimeline}>
+                  加载更多
+                </Button>
+              )}
+            </Space>
+          </Card>
+        )}
+      </div>
+    </Space>
   );
 };
 

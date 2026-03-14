@@ -182,6 +182,7 @@ def _to_job_payload(job: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": job.get("created_at") or "",
         "progress": progress,
         "repo_source": str(job.get("repo_source") or ""),
+        "execution_id": str(job.get("execution_id") or ""),
     }
 
     result_path = str(job.get("result_path") or "").strip()

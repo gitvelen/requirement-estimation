@@ -75,6 +75,7 @@ const MainLayout = () => {
         icon: <SettingOutlined />,
         children: [
           { key: '/config/system-list', label: '系统清单' },
+          { key: '/admin/service-governance', label: '服务治理' },
           { key: '/config/cosmic', label: '规则管理' },
           { key: '/users', label: '用户管理' },
         ],
@@ -191,15 +192,18 @@ const MainLayout = () => {
           <div className="app-logo-mark">REQ</div>
           {!collapsed && <div className="app-logo-text">需求评估系统</div>}
         </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          items={menuItems}
-          selectedKeys={[selectedKey]}
-          onClick={handleMenuClick}
-        />
+        <div className="app-sider-menu">
+          <Menu
+            theme="dark"
+            mode="inline"
+            items={menuItems}
+            defaultOpenKeys={menuItems.map((item) => item.key)}
+            selectedKeys={[selectedKey]}
+            onClick={handleMenuClick}
+          />
+        </div>
       </Sider>
-      <Layout>
+      <Layout className="app-shell">
         <Header className="app-header">
           <div className="app-header-left">
             <Text className="app-header-title">业务需求工作量评估</Text>

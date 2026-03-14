@@ -21,7 +21,10 @@ from backend.api import system_routes
 from backend.api.auth import decode_access_token, require_roles
 from backend.api.error_utils import build_error_response
 from backend.config.config import settings
+from backend.service.document_skill_adapter import get_document_skill_adapter
 from backend.service.knowledge_service import get_knowledge_service
+from backend.service.memory_service import get_memory_service
+from backend.service.runtime_execution_service import get_runtime_execution_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.service import user_service
 
@@ -31,11 +34,7 @@ router = APIRouter(prefix="/api/v1/system-profiles", tags=["系统画像"])
 compat_router = APIRouter(prefix="/api/system-profile", tags=["系统画像"])
 ws_router = APIRouter(tags=["系统画像"])
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TEMPLATE_FILE_MAPPING = {
-    "history_report": os.path.join(PROJECT_ROOT, "data", "工作量评估模板.xlsx"),
-    "esb_document": os.path.join(PROJECT_ROOT, "data", "接口申请模板.xlsx"),
-}
+TEMPLATE_FILE_MAPPING: Dict[str, str] = {}
 TASK_STATUS_MAPPING = {
     "pending": "extraction_started",
     "processing": "extraction_started",
@@ -50,17 +49,11 @@ _ws_registry_lock = threading.RLock()
 _ws_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 SUPPORTED_IMPORT_DOC_TYPES = {
-    "requirement_doc",
-    "design_doc",
-    "tech_doc",
-    "esb_template",
-    "knowledge_doc",
     "requirements",
     "design",
     "tech_solution",
-    "history_report",
-    "esb",
 }
+V27_SUPPORTED_IMPORT_DOC_TYPES = {"requirements", "design", "tech_solution"}
 
 SUPPORTED_IMPORT_EXTENSIONS = {".docx", ".doc", ".pdf", ".pptx", ".txt", ".xlsx", ".xls", ".csv"}
 
@@ -717,7 +710,7 @@ async def import_profile_document(
     normalized_doc_type = str(doc_type or "").strip().lower()
     file_name = str(file.filename or "").strip()
 
-    def _record_failed_import(reason: str) -> Dict[str, Any]:
+    def _record_failed_import(reason: str, execution_id: Optional[str] = None) -> Dict[str, Any]:
         return profile_service.record_import_history(
             normalized_system_id,
             doc_type=normalized_doc_type or "unknown",
@@ -725,7 +718,93 @@ async def import_profile_document(
             status="failed",
             operator_id=operator_id,
             failure_reason=reason,
+            execution_id=execution_id,
         )
+
+    if getattr(settings, "ENABLE_V27_RUNTIME", False):
+        if normalized_doc_type not in V27_SUPPORTED_IMPORT_DOC_TYPES:
+            _record_failed_import("doc_type不支持")
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="PROFILE_IMPORT_FAILED",
+                message="文档导入失败",
+                details={"reason": f"doc_type 仅支持 {', '.join(sorted(V27_SUPPORTED_IMPORT_DOC_TYPES))}"},
+            )
+
+        if not file_name:
+            _record_failed_import("文件名不能为空")
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="PROFILE_IMPORT_FAILED",
+                message="文档导入失败",
+                details={"reason": "文件名不能为空"},
+            )
+
+        try:
+            file_content = await file.read()
+            if not file_content:
+                raise ValueError("文件内容为空")
+
+            max_bytes = int(getattr(settings, "SYSTEM_PROFILE_IMPORT_MAX_BYTES", 200 * 1024 * 1024))
+            max_mb = max(int(max_bytes // (1024 * 1024)), 1)
+            if len(file_content) > max_bytes:
+                raise ValueError(f"文件大小超过{max_mb}MB限制")
+
+            adapter = get_document_skill_adapter()
+            result = adapter.ingest_document(
+                system_id=normalized_system_id,
+                system_name=resolved_system_name,
+                doc_type=normalized_doc_type,
+                file_name=file_name,
+                file_content=file_content,
+                actor=current_user,
+            )
+            execution = result["execution"]
+            history = profile_service.record_import_history(
+                normalized_system_id,
+                doc_type=normalized_doc_type,
+                file_name=file_name,
+                status="success",
+                operator_id=operator_id,
+                failure_reason=None,
+                execution_id=execution["execution_id"],
+            )
+            return {
+                "result_status": "queued",
+                "execution_id": execution["execution_id"],
+                "scene_id": "pm_document_ingest",
+                "import_result": {
+                    "status": "success",
+                    "file_name": file_name,
+                    "imported_at": history.get("imported_at"),
+                    "failure_reason": None,
+                },
+                "execution_status": {
+                    "status": execution.get("status") or "queued",
+                    "error": execution.get("error"),
+                },
+            }
+        except ValueError as exc:
+            history = _record_failed_import(str(exc))
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="PROFILE_IMPORT_FAILED",
+                message="文档导入失败",
+                details={"reason": history.get("failure_reason")},
+            )
+        except Exception as exc:
+            logger.error("v2.7 系统画像文档导入失败: %s", exc)
+            history = _record_failed_import(str(exc))
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="PROFILE_IMPORT_FAILED",
+                message="文档导入失败",
+                details={"reason": history.get("failure_reason")},
+            )
 
     if normalized_doc_type not in SUPPORTED_IMPORT_DOC_TYPES:
         _record_failed_import("doc_type不支持")
@@ -907,19 +986,39 @@ async def get_profile_import_history(
     return service.get_import_history(normalized_system_id, limit=limit, offset=offset)
 
 
-@router.get("/{system_id}/profile/extraction-status")
-async def get_profile_extraction_status(
-    system_id: str,
-    request: Request,
-    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
-):
-    normalized_system_id = str(system_id or "").strip()
-    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
-    if not owner_info.get("system_found"):
-        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+def _default_v27_execution_status() -> Dict[str, Any]:
+    return {
+        "execution_id": None,
+        "scene_id": None,
+        "status": "completed",
+        "created_at": None,
+        "completed_at": None,
+        "skill_chain": [],
+        "policy_results": [],
+        "error": None,
+        "notifications": [],
+    }
+
+
+def _get_execution_status_payload(system_id: str) -> Dict[str, Any]:
+    if getattr(settings, "ENABLE_V27_RUNTIME", False):
+        latest = get_runtime_execution_service().get_latest_execution(system_id)
+        if not latest:
+            return _default_v27_execution_status()
+        return {
+            "execution_id": latest.get("execution_id"),
+            "scene_id": latest.get("scene_id"),
+            "status": latest.get("status") or "queued",
+            "created_at": latest.get("created_at"),
+            "completed_at": latest.get("completed_at"),
+            "skill_chain": latest.get("skill_chain") if isinstance(latest.get("skill_chain"), list) else [],
+            "policy_results": latest.get("policy_results") if isinstance(latest.get("policy_results"), list) else [],
+            "error": latest.get("error"),
+            "notifications": latest.get("notifications") if isinstance(latest.get("notifications"), list) else [],
+        }
 
     service = get_system_profile_service()
-    task = service.get_extraction_task(normalized_system_id)
+    task = service.get_extraction_task(system_id)
     if not task:
         return {
             "task_id": None,
@@ -940,6 +1039,79 @@ async def get_profile_extraction_status(
         "error": task.get("error"),
         "notifications": task.get("notifications") if isinstance(task.get("notifications"), list) else [],
     }
+
+
+@router.get("/{system_id}/profile/execution-status")
+async def get_profile_execution_status(
+    system_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    return _get_execution_status_payload(normalized_system_id)
+
+
+@router.get("/{system_id}/profile/extraction-status")
+async def get_profile_extraction_status(
+    system_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+    return _get_execution_status_payload(normalized_system_id)
+
+
+@router.get("/{system_id}/memory")
+async def get_profile_memory(
+    system_id: str,
+    request: Request,
+    memory_type: Optional[str] = Query(None),
+    scene_id: Optional[str] = Query(None),
+    start_at: Optional[str] = Query(None),
+    end_at: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    try:
+        return get_memory_service().query_records(
+            normalized_system_id,
+            memory_type=memory_type,
+            scene_id=scene_id,
+            start_at=start_at,
+            end_at=end_at,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_002",
+            message="查询系统 Memory 失败",
+            details={"reason": str(exc), "system_id": normalized_system_id},
+        )
+    except Exception as exc:
+        logger.error("查询系统 Memory 失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_002",
+            message="查询系统 Memory 失败",
+            details={"reason": str(exc), "system_id": normalized_system_id},
+        )
 
 
 @router.get("/{system_id}/profile/events")

@@ -16,7 +16,9 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from backend.api import system_routes
 from backend.api.auth import require_roles
 from backend.api.error_utils import build_error_response
+from backend.config.config import settings
 from backend.service.esb_service import get_esb_service
+from backend.service.service_governance_profile_updater import get_service_governance_profile_updater
 from backend.service.system_profile_service import get_system_profile_service
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,13 @@ MAPPING_FORM_FIELD_KEYS = (
     "center",
     "total_interface_count",
     "no_call_interface_count",
+)
+
+
+V27_GOVERNANCE_REQUIRED_FLAGS = (
+    "ENABLE_V27_PROFILE_SCHEMA",
+    "ENABLE_V27_RUNTIME",
+    "ENABLE_SERVICE_GOVERNANCE_IMPORT",
 )
 
 
@@ -87,6 +96,14 @@ def _parse_mapping_form_fields(raw_mapping_fields: Dict[str, Optional[str]]) -> 
             continue
         normalized[key] = candidates if len(candidates) > 1 else candidates[0]
     return normalized
+
+
+def _get_missing_v27_governance_flags() -> list[str]:
+    missing_flags = []
+    for flag_name in V27_GOVERNANCE_REQUIRED_FLAGS:
+        if not getattr(settings, flag_name, False):
+            missing_flags.append(flag_name)
+    return missing_flags
 
 
 def _ensure_owner_permission(
@@ -162,7 +179,7 @@ def _ensure_admin_or_owner_scope(
 async def import_esb(
     request: Request,
     file: UploadFile = File(...),
-    system_id: str = Form(...),
+    system_id: Optional[str] = Form(None),
     mapping_json: Optional[str] = Form(None),
     mapping_service_code: Optional[str] = Form(None),
     mapping_scenario_code: Optional[str] = Form(None),
@@ -182,6 +199,70 @@ async def import_esb(
     current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
 ):
     normalized_system_id = str(system_id or "").strip()
+    roles = current_user.get("roles") or []
+
+    if "admin" in roles and not normalized_system_id:
+        missing_flags = _get_missing_v27_governance_flags()
+        if missing_flags:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="ESB_002",
+                message="服务治理全局导入未启用",
+                details={
+                    "reason": "当前运行环境未启用 v2.7 服务治理全局导入所需开关",
+                    "missing_flags": missing_flags,
+                },
+            )
+
+    if getattr(settings, "ENABLE_SERVICE_GOVERNANCE_IMPORT", False) and not normalized_system_id:
+        if "admin" not in roles:
+            return build_error_response(
+                request=request,
+                status_code=403,
+                error_code="AUTH_001",
+                message="权限不足",
+                details={"reason": "仅 admin 可执行全局服务治理导入"},
+            )
+
+        if not file.filename:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="ESB_001",
+                message="文件格式不支持，请上传Excel或CSV文件",
+            )
+
+        ext = os.path.splitext(file.filename.lower())[1]
+        if ext not in {".xlsx", ".xls", ".csv"}:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="ESB_001",
+                message="文件格式不支持，请上传Excel或CSV文件",
+                details={"filename": file.filename},
+            )
+
+        try:
+            file_content = await file.read()
+            if not file_content:
+                raise ValueError("ESB文件解析失败或为空")
+
+            updater = get_service_governance_profile_updater()
+            return updater.import_governance(
+                file_content=file_content,
+                filename=file.filename,
+                actor=current_user,
+            )
+        except Exception as exc:
+            return build_error_response(
+                request=request,
+                status_code=400,
+                error_code="ESB_002",
+                message="ESB文件缺少必填字段",
+                details={"reason": str(exc)},
+            )
+
     if not normalized_system_id:
         return build_error_response(
             request=request,

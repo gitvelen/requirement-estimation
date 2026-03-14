@@ -17,6 +17,8 @@ from backend.app import app
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import code_scan_service
+from backend.service import memory_service
+from backend.service import runtime_execution_service
 from backend.service import system_profile_service
 from backend.service import user_service
 
@@ -44,6 +46,8 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
     monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
 
     monkeypatch.setattr(user_service, "USER_STORE_PATH", str(data_dir / "users.json"))
     monkeypatch.setattr(user_service, "USER_STORE_LOCK_PATH", str(data_dir / "users.json.lock"))
@@ -57,6 +61,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("CODE_SCAN_ARCHIVE_MAX_FILES", "20000")
 
     code_scan_service._code_scan_service = None
+    memory_service._memory_service = None
+    runtime_execution_service._runtime_execution_service = None
     system_profile_service._system_profile_service = None
 
     return TestClient(app)
@@ -296,12 +302,23 @@ def test_code_scan_ingest_idempotent_and_profile_completeness(client):
     )
     assert create_resp.status_code == 200
     job_id = create_resp.json()["job_id"]
+    assert create_resp.json().get("execution_id")
 
     service = code_scan_service.get_code_scan_service()
     service.embedding_service = DummyEmbeddingService()
 
     final_job = _wait_job_completed(client, token, job_id)
     assert final_job["status"] == "completed"
+    execution_id = final_job.get("execution_id")
+    assert execution_id
+
+    execution = runtime_execution_service.get_runtime_execution_service().get_execution(execution_id)
+    assert execution
+    assert execution["status"] == "completed"
+
+    records = memory_service.get_memory_service().query_records("sys_hop", memory_type="profile_update")
+    assert records["total"] == 1
+    assert records["items"][0]["memory_subtype"] == "code_scan_suggestion"
 
     first_ingest = client.post(
         f"/api/v1/code-scan/jobs/{job_id}/ingest",
@@ -326,6 +343,8 @@ def test_code_scan_ingest_idempotent_and_profile_completeness(client):
     assert profile
     assert profile.get("completeness", {}).get("code_scan") is True
     assert int(profile.get("completeness_score") or 0) >= 30
+    assert "technical_architecture.canonical.tech_stack" in (profile.get("ai_suggestions") or {})
+    assert profile["profile_data"]["technical_architecture"]["canonical"]["tech_stack"]["languages"] == []
 
 
 def test_code_scan_ingest_embedding_unavailable_returns_emb001(client):

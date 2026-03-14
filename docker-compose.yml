@@ -19,6 +19,8 @@ services:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
+    env_file:
+      - .env.backend
     environment:
       - PYTHONUNBUFFERED=1
       - KNOWLEDGE_ENABLED=${KNOWLEDGE_ENABLED:-true}
