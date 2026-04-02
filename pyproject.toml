@@ -50,6 +50,7 @@ dependencies = [
     "langchain-openai>=0.0.2",
     "langgraph>=0.0.26",
     "dashscope>=1.14.0",
+    "PyMySQL>=1.0.0",
     "xlrd",
 ]
 

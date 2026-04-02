@@ -5,11 +5,37 @@
 import logging
 import csv
 import json
+import re
+import zipfile
 from io import StringIO, BytesIO
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_xlsx_for_openpyxl(content: bytes) -> bytes:
+    """
+    兼容当前 openpyxl 对部分 dataValidation.id 工作簿的解析问题。
+    """
+    in_mem = BytesIO(content)
+    out_mem = BytesIO()
+    try:
+        with zipfile.ZipFile(in_mem, "r") as zin, zipfile.ZipFile(out_mem, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                    try:
+                        text = data.decode("utf-8")
+                        text = re.sub(r"<dataValidations[^>]*/>", "", text, flags=re.DOTALL)
+                        text = re.sub(r"<dataValidations[^>]*>[\s\S]*?</dataValidations>", "", text, flags=re.DOTALL)
+                        data = text.encode("utf-8")
+                    except UnicodeDecodeError:
+                        pass
+                zout.writestr(item, data)
+        return out_mem.getvalue()
+    except zipfile.BadZipFile:
+        return content
 
 
 class DocumentParser:
@@ -188,11 +214,15 @@ class DocumentParser:
 
         支持多个Sheet（解析为表格数据结构，结构化抽取以 system_profile 为主）
         """
+        wb = None
         try:
             from openpyxl import load_workbook
 
-            # 从字节加载工作簿，data_only=True 读取公式计算后的值
-            wb = load_workbook(BytesIO(file_content), data_only=True)
+            sanitized_content = _sanitize_xlsx_for_openpyxl(file_content)
+
+            # 以只读流式模式加载，兼容部分带 dataValidation.id 的工作簿，
+            # 同时避免因稀疏大Sheet扫描整页空白区域导致解析过慢。
+            wb = load_workbook(BytesIO(sanitized_content), data_only=True, read_only=True)
 
             data = {}
 
@@ -229,6 +259,12 @@ class DocumentParser:
         except Exception as e:
             logger.error(f"XLSX解析失败: {str(e)}")
             raise
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
 
     def _parse_pdf(self, file_content: bytes) -> List[Dict[str, Any]]:
         """

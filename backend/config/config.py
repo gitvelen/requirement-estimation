@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     RUNTIME_EXECUTION_RETENTION_DAYS: int = int(os.getenv("RUNTIME_EXECUTION_RETENTION_DAYS", "180"))
     MEMORY_RETENTION_DAYS: int = int(os.getenv("MEMORY_RETENTION_DAYS", "3650"))
 
+    # 元数据治理持久化配置
+    METADATA_GOVERNANCE_RETENTION_DAYS: int = int(os.getenv("METADATA_GOVERNANCE_RETENTION_DAYS", "180"))
+    METADATA_GOVERNANCE_MAX_JOBS: int = int(os.getenv("METADATA_GOVERNANCE_MAX_JOBS", "50"))
+
     # 简单鉴权（生产环境建议启用）
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
 

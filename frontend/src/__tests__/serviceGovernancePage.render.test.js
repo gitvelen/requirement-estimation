@@ -4,6 +4,17 @@ import '@testing-library/jest-dom';
 import { message } from 'antd';
 import ServiceGovernancePage from '../pages/ServiceGovernancePage';
 
+jest.mock('../hooks/useAuth', () => jest.fn(() => ({
+  user: { username: 'admin', roles: ['admin'] },
+})));
+
+jest.mock('../hooks/usePermission', () => jest.fn(() => ({
+  isAdmin: true,
+  activeRole: 'admin',
+  roles: ['admin'],
+  setActiveRole: jest.fn(),
+})));
+
 jest.setTimeout(120000);
 
 jest.mock('axios', () => ({
@@ -11,6 +22,35 @@ jest.mock('axios', () => ({
   get: jest.fn(),
 }));
 const axios = require('axios');
+const useAuth = require('../hooks/useAuth');
+const usePermission = require('../hooks/usePermission');
+
+const renderAsAdmin = (username = 'admin', displayName = username) => {
+  useAuth.mockImplementation(() => ({
+    user: { username, displayName, roles: ['admin'] },
+  }));
+  usePermission.mockImplementation(() => ({
+    isAdmin: true,
+    activeRole: 'admin',
+    roles: ['admin'],
+    setActiveRole: jest.fn(),
+  }));
+  return render(<ServiceGovernancePage />);
+};
+
+const renderAsManager = () => {
+  useAuth.mockImplementation(() => ({
+    user: { username: 'manager_user', roles: ['manager'] },
+  }));
+  usePermission.mockImplementation(() => ({
+    isAdmin: false,
+    isManager: true,
+    activeRole: 'manager',
+    roles: ['manager'],
+    setActiveRole: jest.fn(),
+  }));
+  return render(<ServiceGovernancePage />);
+};
 
 describe('ServiceGovernancePage', () => {
   beforeAll(() => {
@@ -27,6 +67,16 @@ describe('ServiceGovernancePage', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    useAuth.mockImplementation(() => ({
+      user: { username: 'admin', roles: ['admin'] },
+    }));
+    usePermission.mockImplementation(() => ({
+      isAdmin: true,
+      isManager: false,
+      activeRole: 'admin',
+      roles: ['admin'],
+      setActiveRole: jest.fn(),
+    }));
     axios.post.mockResolvedValue({
       data: {
         status: 'completed',
@@ -51,6 +101,51 @@ describe('ServiceGovernancePage', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('shows metadata governance toolbar for admin whose display name is esb', () => {
+    renderAsAdmin('admin', 'esb');
+
+    expect(screen.getByRole('button', { name: '元数据治理' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('0.80')).toBeInTheDocument();
+    expect(screen.getByText('现在')).toBeInTheDocument();
+    expect(screen.getByText('新增')).toBeInTheDocument();
+  });
+
+  it('loads persisted metadata governance config for admin whose display name is esb', async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        similarity_threshold: 0.91,
+        execution_time: 'daily_23',
+        match_scope: 'all',
+      },
+    });
+    // Second call: /jobs/latest (returns no active job)
+    axios.get.mockResolvedValueOnce({
+      data: { job_id: null, status: null },
+    });
+
+    renderAsAdmin('admin', 'esb');
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith('/api/v1/esb/metadata-governance/config');
+    });
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith('/api/v1/esb/metadata-governance/jobs/latest');
+    });
+  });
+
+  it('hides metadata governance toolbar for non-esb admin', () => {
+    renderAsAdmin('other-admin');
+
+    expect(screen.queryByRole('button', { name: '元数据治理' })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('0.80')).not.toBeInTheDocument();
+  });
+
+  it('hides metadata governance toolbar for non-admin users', () => {
+    renderAsManager();
+
+    expect(screen.queryByRole('button', { name: '元数据治理' })).not.toBeInTheDocument();
   });
 
   it('uses compact layout and shows matched, unmatched and updated systems', async () => {

@@ -70,3 +70,17 @@ docs/.claude/
 # aicoding local artifacts
 .aicoding/.history/
 .aicoding/docs/plans/
+
+# Metadata governance local assets
+metachange_inform/*
+!metachange_inform/config.yaml
+!metachange_inform/metachange_inform.py
+metachange_inform/__pycache__/
+metachange_inform/cache/
+metachange_inform/logs/
+metachange_inform/reports/
+
+# Metadata governance generated reports
+ESB元数据冗余报告_*.xlsx
+存量冗余报告_*.xlsx
+metachange_inform.zip

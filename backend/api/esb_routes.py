@@ -12,6 +12,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from backend.api import system_routes
 from backend.api.auth import require_roles
@@ -20,6 +22,7 @@ from backend.config.config import settings
 from backend.service.esb_service import get_esb_service
 from backend.service.service_governance_profile_updater import get_service_governance_profile_updater
 from backend.service.system_profile_service import get_system_profile_service
+from backend.service.metadata_governance_service import get_metadata_governance_service
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +46,18 @@ MAPPING_FORM_FIELD_KEYS = (
     "no_call_interface_count",
 )
 
-
 V27_GOVERNANCE_REQUIRED_FLAGS = (
     "ENABLE_V27_PROFILE_SCHEMA",
     "ENABLE_V27_RUNTIME",
     "ENABLE_SERVICE_GOVERNANCE_IMPORT",
 )
+
+
+
+class MetadataGovernanceRunRequest(BaseModel):
+    similarity_threshold: float = Field(..., ge=0.0, le=1.0)
+    execution_time: str = Field(..., pattern="^(now|daily_23)$")
+    match_scope: str = Field(..., pattern="^(new|stock|all)$")
 
 
 def _parse_mapping_json(raw_mapping_json: Optional[str]) -> Dict[str, Any]:
@@ -149,6 +158,21 @@ def _ensure_owner_permission(
     )
 
 
+def _ensure_esb_metadata_governance_admin(current_user: Dict[str, Any], *, request: Request):
+    roles = current_user.get("roles") or []
+    username = str(current_user.get("username") or "").strip()
+    display_name = str(current_user.get("display_name") or current_user.get("displayName") or "").strip()
+    if "admin" in roles and (username == "esb" or display_name == "esb"):
+        return None
+    return build_error_response(
+        request=request,
+        status_code=403,
+        error_code="AUTH_001",
+        message="权限不足",
+        details={"reason": "仅用户名或显示名为 esb 的管理员可使用元数据治理"},
+    )
+
+
 def _ensure_admin_or_owner_scope(
     current_user: Dict[str, Any],
     *,
@@ -172,6 +196,133 @@ def _ensure_admin_or_owner_scope(
         status_code=400,
         error_code="ESB_002",
         message="非管理员查询需传入 system_id",
+    )
+
+
+@router.get("/metadata-governance/config")
+async def get_metadata_governance_config(
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    permission_error = _ensure_esb_metadata_governance_admin(current_user, request=request)
+    if permission_error:
+        return permission_error
+
+    service = get_metadata_governance_service()
+    return service.get_current_config()
+
+
+@router.post("/metadata-governance/run")
+async def run_metadata_governance(
+    payload: MetadataGovernanceRunRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    permission_error = _ensure_esb_metadata_governance_admin(current_user, request=request)
+    if permission_error:
+        return permission_error
+
+    service = get_metadata_governance_service()
+    result = service.run_or_schedule(
+        similarity_threshold=payload.similarity_threshold,
+        execution_time=payload.execution_time,
+        match_scope=payload.match_scope,
+    )
+    if result.scheduled:
+        return {
+            "scheduled": True,
+            "execution_time": result.execution_time,
+        }
+    return {
+        "job_id": result.job_id,
+        "status": "pending",
+        "execution_time": result.execution_time,
+    }
+
+
+@router.get("/metadata-governance/jobs/latest")
+async def get_metadata_governance_latest_job(
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    permission_error = _ensure_esb_metadata_governance_admin(current_user, request=request)
+    if permission_error:
+        return permission_error
+
+    service = get_metadata_governance_service()
+    job = service.get_latest_job()
+    if not job:
+        return {"job_id": None, "status": None}
+    return job
+
+
+@router.get("/metadata-governance/jobs/{job_id}")
+async def get_metadata_governance_job_status(
+    job_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    permission_error = _ensure_esb_metadata_governance_admin(current_user, request=request)
+    if permission_error:
+        return permission_error
+
+    service = get_metadata_governance_service()
+    job = service.get_job(job_id)
+    if not job:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="MGOV_001",
+            message="任务不存在",
+            details={"job_id": job_id},
+        )
+    return job
+
+
+@router.get("/metadata-governance/jobs/{job_id}/download")
+async def download_metadata_governance_result(
+    job_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    permission_error = _ensure_esb_metadata_governance_admin(current_user, request=request)
+    if permission_error:
+        return permission_error
+
+    service = get_metadata_governance_service()
+    job_info = service.get_job(job_id)
+    if not job_info:
+        return build_error_response(
+            request=request,
+            status_code=404,
+            error_code="MGOV_001",
+            message="任务不存在",
+            details={"job_id": job_id},
+        )
+    if job_info["status"] != "completed":
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="MGOV_002",
+            message="任务尚未完成",
+            details={"job_id": job_id, "status": job_info["status"]},
+        )
+
+    result_path = service.get_result_path(job_id)
+    if not result_path:
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="MGOV_003",
+            message="结果文件不可用",
+            details={"job_id": job_id},
+        )
+
+    filename = os.path.basename(result_path).split("_", 1)[-1] if "_" in os.path.basename(result_path) else os.path.basename(result_path)
+    return FileResponse(
+        path=result_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
     )
 
 

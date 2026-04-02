@@ -37,6 +37,7 @@ from backend.api.code_scan_routes import router as code_scan_router
 from backend.api.esb_routes import router as esb_router
 from backend.api.error_utils import ApiError, build_error_payload
 from backend.utils.pdf_report import get_font_info
+from backend.service.metadata_governance_service import get_metadata_governance_service
 
 # 配置日志
 handlers = [logging.StreamHandler()]
@@ -75,6 +76,10 @@ async def app_lifespan(_: FastAPI):
     else:
         logger.info("PDF字体: reportlab 未安装，使用最小PDF模式")
     logger.info("=" * 60)
+    try:
+        get_metadata_governance_service().bootstrap_scheduler_from_config()
+    except Exception:
+        logger.warning("元数据治理定时任务恢复失败", exc_info=True)
     yield
     logger.info(f"{settings.APP_NAME} 正在关闭...")
 
