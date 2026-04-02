@@ -1,10 +1,10 @@
 import signal
 from contextlib import contextmanager
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from backend.service.document_parser import DocumentParser
 
@@ -25,10 +25,20 @@ def _timeout_guard(seconds: int):
 
 def test_parse_xlsx_accepts_workbook_with_datavalidation_id():
     parser = DocumentParser()
-    file_path = Path(__file__).resolve().parents[1] / "data" / "syslist-template.xlsx"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["系统名称"])
+    ws.append(["统一支付平台"])
+    validation = DataValidation(type="list", formula1='"A,B"')
+    ws.add_data_validation(validation)
+    validation.add("A2")
+    buf = BytesIO()
+    wb.save(buf)
 
     parsed = parser.parse(
-        file_content=file_path.read_bytes(),
+        file_content=buf.getvalue(),
         filename="syslist-template.xlsx",
         file_type="xlsx",
     )
