@@ -2,8 +2,8 @@
 _baseline: v2.6
 _current: HEAD
 _workflow_mode: semi-auto
-_run_status: completed
-_change_status: done
+_run_status: wait_confirm
+_change_status: in_progress
 _change_level: major
 _review_round: 0
 _phase: Deployment
@@ -14,18 +14,19 @@ _phase: Deployment
 | 版本号 | v2.7 |
 | 变更目录 | `docs/v2.7/` |
 | 当前阶段 | Deployment |
-| 变更状态 | Done |
+| 变更状态 | In Progress |
 | 变更分级 | major |
 | 基线版本（对比口径） | `v2.6` |
 | 当前代码版本 | HEAD |
-| 本次复查口径 | full |
+| 本次复查口径 | diff-only |
 | 当前执行 AI | Codex |
 | 人类决策人 | User |
-| 最后更新 | 2026-03-15 |
+| 最后更新 | 2026-04-08 |
 | 完成日期 | 2026-03-15 |
 | 发布日期 | 2026-03-15 |
 
 ## 变更摘要
+- 2026-04-08 新增补丁 `CR-20260408-001`：修复 v2.7 文档导入画像闭环，包括过滤需求/技术方案中的目录与封面噪声、补强技术方案多域建议提取与运行态重试链路、修复平铺 canonical AI 建议在信息展示页“采纳新建议 / 忽略”不生效的问题，并修复启动迁移对平铺建议的污染；当前已完成 STAGING/TEST 人工复验，进入 wait_confirm，待主分支收口
 - v2.7 已完成 Implementation、Testing 与 Deployment 收口；`REQ-003/REQ-004` 的人工 E2E 已在 STAGING/TEST 完成并通过
 - Proposal 范围已从旧版“5 个 Skill + 脚本式提取”升级为“6 个内置 Skill + Skill Runtime + Per-System Memory 资产层”，并形成统一 execution / Memory 记录链路
 - PM 导入页已收敛为 `需求文档 / 设计文档 / 技术方案` 三类；信息展示页保持既有“系统 TAB + 5 个域 TAB”交互，只展示 D1-D5 canonical 与 AI 建议
@@ -58,7 +59,7 @@ _phase: Deployment
 ## Active CR 列表（🔴 MUST，CR场景）
 | CR-ID | 状态 | 标题 | 影响面（文档/模块/ID） | 链接 |
 |---|---|---|---|---|
-| - | - | 无 Active CR | - | - |
+| CR-20260408-001 | In Progress | 修复 v2.7 文档导入画像闭环与平铺 AI 建议采纳/忽略失效 | `deployment.md` / `backend/api/system_profile_routes.py` / `backend/service/document_skill_adapter.py` / `backend/service/system_profile_service.py` / `frontend/src/pages/SystemProfileBoardPage.js` / `tests/*` | `cr/CR-20260408-001.md` |
 
 ## Idea池（可选，非Active）
 | CR-ID | 状态 | 标题 | 提出日期 | 优先级 | 链接 |
@@ -79,7 +80,8 @@ _phase: Deployment
 ## 备注
 - 本文件用于显式标记阶段/完成状态，避免仅靠“文件存在性”推断导致误判。
 - 第 2 轮 Requirements 复审结论已被用户新增范围正式作废；Requirements 以 2026-03-13 的第 6 轮复审结果为准，并已在同日获人工确认进入 Design。
-- `CR-20260314-001` 已以回溯记录方式收口为 Implemented；当前无 Active CR。
+- `CR-20260314-001` 已以回溯记录方式收口为 Implemented；在本次补丁启动前，v2.7 曾处于“无 Active CR”状态。
+- 2026-04-08 补丁 `CR-20260408-001` 已完成业务复验并确认通过：验收范围包括文档导入文本清洗、多域画像建议提取、信息展示页采纳/忽略闭环，以及支持运行态快照的“重新生成 AI 建议”链路；当前保持 `_phase=Deployment`、`_change_status=in_progress`、`_run_status=wait_confirm`，语义为“业务已验收通过，待主分支收口 / tag / 基线同步后再切 completed”。
 - v2.7 的自动化回归、人工验收、Deployment 留痕与主文档同步已形成闭环，可作为 `v2.7` 发布基线。
 
 ---

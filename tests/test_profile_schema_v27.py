@@ -274,6 +274,92 @@ def test_system_profile_service_v27_accept_ai_suggestion_updates_canonical_field
     assert accepted["profile_data"]["system_positioning"]["canonical"]["target_users"] == ["柜面", "运营"]
 
 
+def test_system_profile_service_v27_accepts_flat_canonical_ai_suggestion_without_blanking_field(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    system_profile_service._system_profile_service = None
+
+    service = system_profile_service.get_system_profile_service()
+    profile_data = build_empty_profile_data()
+    profile_data["technical_architecture"]["canonical"]["architecture_style"] = "旧架构"
+    service.upsert_profile(
+        "统一支付平台",
+        {
+            "system_id": "SYS-001",
+            "profile_data": profile_data,
+            "evidence_refs": [],
+        },
+        actor={"username": "pm"},
+    )
+    service.update_ai_suggestions_map(
+        "统一支付平台",
+        suggestions={
+            "technical_architecture.canonical.architecture_style": {
+                "value": "分层微服务架构",
+                "scene_id": "pm_document_ingest",
+            },
+        },
+        actor={"username": "pm"},
+    )
+
+    accepted = service.accept_ai_suggestion(
+        "统一支付平台",
+        domain="technical_architecture",
+        sub_field="architecture_style",
+        actor={"username": "pm"},
+    )
+
+    assert accepted["profile_data"]["technical_architecture"]["canonical"]["architecture_style"] == "分层微服务架构"
+
+
+def test_system_profile_service_v27_startup_migration_keeps_flat_canonical_ai_suggestions(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    system_profile_service._system_profile_service = None
+
+    store_path = data_dir / "system_profiles.json"
+    store_path.write_text(
+        json.dumps(
+            [
+                {
+                    "system_id": "SYS-001",
+                    "system_name": "统一支付平台",
+                    "status": "draft",
+                    "created_at": "2026-04-08T12:00:00",
+                    "updated_at": "2026-04-08T12:00:00",
+                    "profile_data": build_empty_profile_data(),
+                    "field_sources": {},
+                    "ai_suggestions": {
+                        "technical_architecture.canonical.architecture_style": {
+                            "value": "分层微服务架构",
+                            "scene_id": "pm_document_ingest",
+                        }
+                    },
+                    "evidence_refs": [],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service = system_profile_service.get_system_profile_service()
+    fetched = service.get_profile("统一支付平台")
+
+    assert fetched["ai_suggestions"]["technical_architecture.canonical.architecture_style"]["value"] == "分层微服务架构"
+
+    rows = json.loads(store_path.read_text(encoding="utf-8"))
+    assert "technical_architecture.canonical.architecture_style" in rows[0]["ai_suggestions"]
+    assert "technical_architecture" not in rows[0]["ai_suggestions"]
+
+
 def test_system_profile_service_v27_ignore_ai_suggestion_returns_ignored_map(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -310,3 +396,91 @@ def test_system_profile_service_v27_ignore_ai_suggestion_returns_ignored_map(tmp
     )
 
     assert ignored["ai_suggestion_ignored"]["system_positioning.target_users"] == ["柜面", "运营"]
+
+
+def test_system_profile_service_v27_ignore_flat_canonical_ai_suggestion_persists_real_value(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    system_profile_service._system_profile_service = None
+
+    service = system_profile_service.get_system_profile_service()
+    service.upsert_profile(
+        "统一支付平台",
+        {
+            "system_id": "SYS-001",
+            "profile_data": build_empty_profile_data(),
+            "evidence_refs": [],
+        },
+        actor={"username": "pm"},
+    )
+    service.update_ai_suggestions_map(
+        "统一支付平台",
+        suggestions={
+            "constraints_risks.canonical.known_risks": {
+                "value": ["批量窗口紧张", "依赖核心系统日终处理"],
+                "scene_id": "pm_document_ingest",
+            },
+        },
+        actor={"username": "pm"},
+    )
+
+    ignored = service.ignore_ai_suggestion(
+        "统一支付平台",
+        domain="constraints_risks",
+        sub_field="known_risks",
+        actor={"username": "pm"},
+    )
+
+    assert ignored["ai_suggestion_ignored"]["constraints_risks.known_risks"] == [
+        "批量窗口紧张",
+        "依赖核心系统日终处理",
+    ]
+
+
+def test_system_profile_service_v27_mixed_shape_prefers_flat_canonical_suggestion(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    system_profile_service._system_profile_service = None
+
+    service = system_profile_service.get_system_profile_service()
+    profile_data = build_empty_profile_data()
+    profile_data["technical_architecture"]["canonical"]["architecture_style"] = "旧架构"
+    service.upsert_profile(
+        "统一支付平台",
+        {
+            "system_id": "SYS-001",
+            "profile_data": profile_data,
+            "evidence_refs": [],
+        },
+        actor={"username": "pm"},
+    )
+    service.update_ai_suggestions_map(
+        "统一支付平台",
+        suggestions={
+            "technical_architecture": {
+                "canonical": {
+                    "architecture_style": "",
+                }
+            },
+            "technical_architecture.canonical.architecture_style": {
+                "value": "分层微服务架构",
+                "scene_id": "pm_document_ingest",
+            },
+        },
+        actor={"username": "pm"},
+    )
+
+    accepted = service.accept_ai_suggestion(
+        "统一支付平台",
+        domain="technical_architecture",
+        sub_field="architecture_style",
+        actor={"username": "pm"},
+    )
+
+    assert accepted["profile_data"]["technical_architecture"]["canonical"]["architecture_style"] == "分层微服务架构"

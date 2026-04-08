@@ -272,6 +272,7 @@ class SystemProfileService:
 
         changed = False
         now = datetime.now().isoformat()
+        v27_enabled = getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False)
         fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
         fields = self._normalize_fields_for_output(fields)
 
@@ -282,15 +283,31 @@ class SystemProfileService:
                 profile["_migrated_at"] = now
             changed = True
 
-        if isinstance(profile.get("ai_suggestions"), dict) and (not self._is_v24_profile_shape(profile.get("ai_suggestions"))):
-            profile["ai_suggestions"] = self._migrate_suggestions_structure(profile.get("ai_suggestions"), fields)
+        suggestions = profile.get("ai_suggestions")
+        if isinstance(suggestions, dict):
+            if v27_enabled:
+                normalized_suggestions = self._normalize_v27_ai_suggestions(suggestions)
+                if suggestions != normalized_suggestions:
+                    profile["ai_suggestions"] = normalized_suggestions
+                    changed = True
+            elif not self._is_v24_profile_shape(suggestions):
+                profile["ai_suggestions"] = self._migrate_suggestions_structure(suggestions, fields)
+                changed = True
+        elif v27_enabled:
+            profile["ai_suggestions"] = {}
             changed = True
 
         if profile.get("ai_suggestions_previous") is not None:
             previous = profile.get("ai_suggestions_previous")
-            if isinstance(previous, dict) and (not self._is_v24_profile_shape(previous)):
-                profile["ai_suggestions_previous"] = self._migrate_suggestions_structure(previous, fields)
-                changed = True
+            if isinstance(previous, dict):
+                if v27_enabled:
+                    normalized_previous = self._normalize_v27_ai_suggestions(previous)
+                    if previous != normalized_previous:
+                        profile["ai_suggestions_previous"] = normalized_previous
+                        changed = True
+                elif not self._is_v24_profile_shape(previous):
+                    profile["ai_suggestions_previous"] = self._migrate_suggestions_structure(previous, fields)
+                    changed = True
 
         if not isinstance(profile.get("ai_suggestion_ignored"), dict):
             profile["ai_suggestion_ignored"] = {}
@@ -408,6 +425,11 @@ class SystemProfileService:
         value = profile.get(key)
         if not isinstance(value, dict):
             return {}
+        if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            normalized = self._normalize_v27_ai_suggestions(value)
+            if value != normalized:
+                profile[key] = normalized
+            return normalized
         if self._is_v24_profile_shape(value):
             return value
         migrated = self._migrate_suggestions_structure(value, fields)
@@ -452,6 +474,122 @@ class SystemProfileService:
             if candidate in domain_payload:
                 return candidate, copy.deepcopy(domain_payload.get(candidate))
         return None, None
+
+    def _unwrap_ai_suggestion_value(self, value: Any) -> Any:
+        if isinstance(value, dict) and ("value" in value):
+            return copy.deepcopy(value.get("value"))
+        return copy.deepcopy(value)
+
+    def _iter_v27_flat_suggestion_paths(self, domain: str, sub_field: str) -> List[str]:
+        paths: List[str] = []
+        for candidate in self._iter_v27_suggestion_field_candidates(domain, sub_field):
+            for field_path in (
+                f"{domain}.canonical.{candidate}",
+                f"{domain}.{candidate}",
+            ):
+                if field_path not in paths:
+                    paths.append(field_path)
+        return paths
+
+    def _read_v27_suggestion_entry(
+        self,
+        suggestions: Any,
+        *,
+        domain: str,
+        sub_field: str,
+    ) -> tuple[Optional[str], Any]:
+        if not isinstance(suggestions, dict):
+            return None, None
+
+        for candidate in self._iter_v27_suggestion_field_candidates(domain, sub_field):
+            flat_canonical_path = f"{domain}.canonical.{candidate}"
+            if flat_canonical_path in suggestions:
+                return candidate, copy.deepcopy(suggestions.get(flat_canonical_path))
+
+            flat_domain_path = f"{domain}.{candidate}"
+            if flat_domain_path in suggestions:
+                return candidate, copy.deepcopy(suggestions.get(flat_domain_path))
+
+        domain_payload = suggestions.get(domain)
+        return self._read_v27_suggestion_value(
+            domain_payload,
+            domain=domain,
+            sub_field=sub_field,
+        )
+
+    def _remove_v27_suggestion_entries(
+        self,
+        suggestions: Any,
+        *,
+        domain: str,
+        sub_field: str,
+    ) -> Dict[str, Any]:
+        if not isinstance(suggestions, dict):
+            return {}
+
+        next_suggestions = self._normalize_v27_ai_suggestions(suggestions)
+        candidates = self._iter_v27_suggestion_field_candidates(domain, sub_field)
+        for field_path in self._iter_v27_flat_suggestion_paths(domain, sub_field):
+            next_suggestions.pop(field_path, None)
+
+        domain_payload = next_suggestions.get(domain)
+        if isinstance(domain_payload, dict):
+            canonical_payload = domain_payload.get("canonical")
+            if isinstance(canonical_payload, dict):
+                for candidate in candidates:
+                    canonical_payload.pop(candidate, None)
+                if canonical_payload:
+                    domain_payload["canonical"] = canonical_payload
+                else:
+                    domain_payload.pop("canonical", None)
+
+            for candidate in candidates:
+                domain_payload.pop(candidate, None)
+
+            if domain_payload:
+                next_suggestions[domain] = domain_payload
+            else:
+                next_suggestions.pop(domain, None)
+
+        return next_suggestions
+
+    def _set_v27_flat_suggestion_entry(
+        self,
+        suggestions: Any,
+        *,
+        domain: str,
+        sub_field: str,
+        value: Any,
+    ) -> Dict[str, Any]:
+        next_suggestions = self._remove_v27_suggestion_entries(
+            suggestions,
+            domain=domain,
+            sub_field=sub_field,
+        )
+        canonical_sub_field = self._resolve_v27_canonical_sub_field(domain, sub_field)
+        next_suggestions[f"{domain}.canonical.{canonical_sub_field}"] = copy.deepcopy(value)
+        return next_suggestions
+
+    def _clear_v27_ignored_entries(
+        self,
+        ignored_map: Any,
+        *,
+        domain: str,
+        sub_field: str,
+    ) -> tuple[Dict[str, Any], bool]:
+        next_ignored = self._normalize_ai_suggestion_ignored_for_storage(ignored_map)
+        removed = False
+        keys_to_remove = set()
+        for candidate in self._iter_v27_suggestion_field_candidates(domain, sub_field):
+            keys_to_remove.add(f"{domain}.{candidate}")
+            keys_to_remove.add(f"{domain}.canonical.{candidate}")
+
+        for ignored_key in keys_to_remove:
+            if ignored_key in next_ignored:
+                next_ignored.pop(ignored_key, None)
+                removed = True
+
+        return next_ignored, removed
 
     def _set_v27_suggestion_value(
         self,
@@ -525,16 +663,26 @@ class SystemProfileService:
             fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
             profile_data = self._ensure_profile_data_shape(profile, fields)
-            ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
-
-            domain_payload = ai_suggestions.get(normalized_domain)
-            matched_sub_field, accepted_value = self._read_v27_suggestion_value(
-                domain_payload,
-                domain=normalized_domain,
-                sub_field=normalized_sub_field,
-            )
-            if matched_sub_field is None:
-                raise ValueError("SUGGESTION_NOT_FOUND")
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+                matched_sub_field, accepted_entry = self._read_v27_suggestion_entry(
+                    ai_suggestions,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("SUGGESTION_NOT_FOUND")
+                accepted_value = self._unwrap_ai_suggestion_value(accepted_entry)
+            else:
+                ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
+                domain_payload = ai_suggestions.get(normalized_domain)
+                matched_sub_field, accepted_value = self._read_v27_suggestion_value(
+                    domain_payload,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("SUGGESTION_NOT_FOUND")
 
             target_sub_field = self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)
             current_domain_payload = profile_data.get(normalized_domain)
@@ -556,6 +704,12 @@ class SystemProfileService:
                 )
 
             profile["profile_data"] = profile_data
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                profile["ai_suggestions"] = self._remove_v27_suggestion_entries(
+                    ai_suggestions,
+                    domain=normalized_domain,
+                    sub_field=matched_sub_field,
+                )
 
             legacy_field = (
                 PROFILE_V24_TO_LEGACY_FIELD.get((normalized_domain, matched_sub_field))
@@ -570,16 +724,23 @@ class SystemProfileService:
                 profile[LEGACY_FIELDS_KEY] = normalized_for_storage
 
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
-            ignored_keys = {
-                f"{normalized_domain}.{normalized_sub_field}",
-                f"{normalized_domain}.{matched_sub_field}",
-                f"{normalized_domain}.{target_sub_field}",
-            }
-            changed_ignored = False
-            for ignored_key in ignored_keys:
-                if ignored_key in ignored_map:
-                    ignored_map.pop(ignored_key, None)
-                    changed_ignored = True
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                ignored_map, changed_ignored = self._clear_v27_ignored_entries(
+                    ignored_map,
+                    domain=normalized_domain,
+                    sub_field=matched_sub_field,
+                )
+            else:
+                ignored_keys = {
+                    f"{normalized_domain}.{normalized_sub_field}",
+                    f"{normalized_domain}.{matched_sub_field}",
+                    f"{normalized_domain}.{target_sub_field}",
+                }
+                changed_ignored = False
+                for ignored_key in ignored_keys:
+                    if ignored_key in ignored_map:
+                        ignored_map.pop(ignored_key, None)
+                        changed_ignored = True
             if changed_ignored:
                 profile["ai_suggestion_ignored"] = ignored_map
 
@@ -623,42 +784,66 @@ class SystemProfileService:
 
             fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
-            ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
-            previous = self._ensure_suggestions_shape(profile, key="ai_suggestions_previous", fields=fields)
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+                previous = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions_previous"))
+                matched_sub_field, rolled_back_entry = self._read_v27_suggestion_entry(
+                    previous,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("ROLLBACK_NO_PREVIOUS")
 
-            prev_domain_payload = previous.get(normalized_domain) if isinstance(previous, dict) else None
-            matched_sub_field, rolled_back_value = self._read_v27_suggestion_value(
-                prev_domain_payload,
-                domain=normalized_domain,
-                sub_field=normalized_sub_field,
-            )
-            if matched_sub_field is None:
-                raise ValueError("ROLLBACK_NO_PREVIOUS")
+                rolled_back_value = self._unwrap_ai_suggestion_value(rolled_back_entry)
+                profile["ai_suggestions"] = self._set_v27_flat_suggestion_entry(
+                    ai_suggestions,
+                    domain=normalized_domain,
+                    sub_field=matched_sub_field,
+                    value=rolled_back_entry,
+                )
+                ignored_map, changed_ignored = self._clear_v27_ignored_entries(
+                    profile.get("ai_suggestion_ignored"),
+                    domain=normalized_domain,
+                    sub_field=matched_sub_field,
+                )
+            else:
+                ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
+                previous = self._ensure_suggestions_shape(profile, key="ai_suggestions_previous", fields=fields)
 
-            target_domain = ai_suggestions.get(normalized_domain)
-            if not isinstance(target_domain, dict):
-                target_domain = {}
+                prev_domain_payload = previous.get(normalized_domain) if isinstance(previous, dict) else None
+                matched_sub_field, rolled_back_value = self._read_v27_suggestion_value(
+                    prev_domain_payload,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("ROLLBACK_NO_PREVIOUS")
+
+                target_domain = ai_suggestions.get(normalized_domain)
+                if not isinstance(target_domain, dict):
+                    target_domain = {}
+                    ai_suggestions[normalized_domain] = target_domain
+
+                target_domain = self._set_v27_suggestion_value(
+                    target_domain,
+                    sub_field=matched_sub_field,
+                    value=rolled_back_value,
+                )
                 ai_suggestions[normalized_domain] = target_domain
+                profile["ai_suggestions"] = ai_suggestions
 
-            target_domain = self._set_v27_suggestion_value(
-                target_domain,
-                sub_field=matched_sub_field,
-                value=rolled_back_value,
-            )
-            ai_suggestions[normalized_domain] = target_domain
-            profile["ai_suggestions"] = ai_suggestions
-
-            ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
-            ignored_keys = {
-                f"{normalized_domain}.{normalized_sub_field}",
-                f"{normalized_domain}.{matched_sub_field}",
-                f"{normalized_domain}.{self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)}",
-            }
-            changed_ignored = False
-            for ignored_key in ignored_keys:
-                if ignored_key in ignored_map:
-                    ignored_map.pop(ignored_key, None)
-                    changed_ignored = True
+                ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+                ignored_keys = {
+                    f"{normalized_domain}.{normalized_sub_field}",
+                    f"{normalized_domain}.{matched_sub_field}",
+                    f"{normalized_domain}.{self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)}",
+                }
+                changed_ignored = False
+                for ignored_key in ignored_keys:
+                    if ignored_key in ignored_map:
+                        ignored_map.pop(ignored_key, None)
+                        changed_ignored = True
             if changed_ignored:
                 profile["ai_suggestion_ignored"] = ignored_map
 
@@ -705,16 +890,26 @@ class SystemProfileService:
 
             fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
-            ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
-
-            domain_payload = ai_suggestions.get(normalized_domain)
-            matched_sub_field, ignored_value = self._read_v27_suggestion_value(
-                domain_payload,
-                domain=normalized_domain,
-                sub_field=normalized_sub_field,
-            )
-            if matched_sub_field is None:
-                raise ValueError("SUGGESTION_NOT_FOUND")
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+                matched_sub_field, ignored_entry = self._read_v27_suggestion_entry(
+                    ai_suggestions,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("SUGGESTION_NOT_FOUND")
+                ignored_value = self._unwrap_ai_suggestion_value(ignored_entry)
+            else:
+                ai_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
+                domain_payload = ai_suggestions.get(normalized_domain)
+                matched_sub_field, ignored_value = self._read_v27_suggestion_value(
+                    domain_payload,
+                    domain=normalized_domain,
+                    sub_field=normalized_sub_field,
+                )
+                if matched_sub_field is None:
+                    raise ValueError("SUGGESTION_NOT_FOUND")
 
             ignored_key = f"{normalized_domain}.{matched_sub_field}"
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))

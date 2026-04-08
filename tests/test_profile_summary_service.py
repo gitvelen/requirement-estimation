@@ -945,6 +945,27 @@ def test_build_static_context_includes_latest_code_scan_result(profile_services,
     assert "entries_total=0" in context
 
 
+def test_stage_prompts_instruct_model_to_ignore_toc_and_cover_noise():
+    summary_service = profile_summary_service.ProfileSummaryService()
+
+    stage1_prompt = summary_service._build_stage1_prompt(
+        system_id="sys_hop",
+        system_name="HOP",
+        context_text="目录\n第一章 引言 5\n正文内容",
+    )
+    stage2_prompt = summary_service._build_stage2_prompt(
+        system_id="sys_hop",
+        system_name="HOP",
+        relevant_domains=["technical_architecture", "constraints_risks"],
+        context_text="目录\n第一章 引言 5\n正文内容",
+    )
+
+    assert "忽略目录" in stage1_prompt
+    assert "忽略封面" in stage1_prompt
+    assert "忽略目录" in stage2_prompt
+    assert "不得复制目录条目" in stage2_prompt
+
+
 def test_calculate_body_budget_and_execute_stage_calls(monkeypatch):
     summary_service = profile_summary_service.ProfileSummaryService()
     metrics = []

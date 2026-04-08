@@ -115,6 +115,7 @@ class RuntimeExecutionService:
         skill_chain: List[str],
         status: str = "queued",
         notifications: Optional[List[str]] = None,
+        input_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         now = datetime.now().isoformat()
         execution = {
@@ -129,6 +130,7 @@ class RuntimeExecutionService:
             "notifications": list(notifications or []),
             "error": None,
             "result_summary": {},
+            "input_snapshot": input_snapshot if isinstance(input_snapshot, dict) else None,
             "created_at": now,
             "completed_at": None,
         }
@@ -155,6 +157,7 @@ class RuntimeExecutionService:
         result_summary: Optional[Dict[str, Any]] = None,
         policy_results: Optional[List[Dict[str, Any]]] = None,
         notifications: Optional[List[str]] = None,
+        input_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -174,6 +177,8 @@ class RuntimeExecutionService:
                     item["policy_results"] = policy_results if isinstance(policy_results, list) else []
                 if notifications is not None:
                     item["notifications"] = notifications if isinstance(notifications, list) else []
+                if input_snapshot is not None:
+                    item["input_snapshot"] = input_snapshot if isinstance(input_snapshot, dict) else None
                 if item["status"] in {"completed", "failed", "partial_success"}:
                     item["completed_at"] = datetime.now().isoformat()
                 updated = dict(item)

@@ -287,6 +287,241 @@ def test_v27_profile_import_rejects_removed_doc_types(client, monkeypatch):
     assert response.json()["error_code"] == "PROFILE_IMPORT_FAILED"
 
 
+def test_v27_tech_solution_import_filters_toc_and_generates_multidomain_suggestions(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("import_v27_tech", "pwd123", ["manager"])
+    token = _login(client, "import_v27_tech", "pwd123")
+    _seed_system("PAY", "sys_pay_tech", owner_id=manager["id"])
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_pay_tech/profile/import",
+        data={"doc_type": "tech_solution"},
+        files={
+            "file": (
+                "tech_solution.docx",
+                _build_docx_bytes(
+                    "上海华瑞银行贷款核算项目 技术方案建议书",
+                    "目 录",
+                    "第一章 引言 5",
+                    "1.1 编写目的 5",
+                    "第二章 现状分析 9",
+                    "第三章 数据分析 11",
+                    "第四章 集成设计",
+                    "提供贷款核算查询接口，对接核心系统和数据仓库。",
+                    "第五章 技术架构",
+                    "系统采用分层微服务架构，生产环境双活部署。",
+                    "技术栈包括 Java、Spring Boot、Redis、MySQL。",
+                    "第六章 约束与风险",
+                    "批量窗口紧张，依赖核心系统日终处理时点。",
+                ),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+
+    profile = system_profile_service.get_system_profile_service().get_profile("PAY")
+    suggestions = (profile or {}).get("ai_suggestions") or {}
+
+    assert "integration_interfaces.canonical.other_integrations" in suggestions
+    assert "technical_architecture.canonical.architecture_style" in suggestions
+    assert "technical_architecture.canonical.tech_stack" in suggestions
+    assert "constraints_risks.canonical.known_risks" in suggestions
+
+    integration_items = suggestions["integration_interfaces.canonical.other_integrations"]["value"]
+    assert any("核心系统" in item for item in integration_items)
+
+    architecture_style = suggestions["technical_architecture.canonical.architecture_style"]["value"]
+    assert "分层微服务架构" in architecture_style
+
+    tech_stack = suggestions["technical_architecture.canonical.tech_stack"]["value"]
+    assert "Java" in tech_stack["languages"]
+    assert "Spring Boot" in tech_stack["frameworks"]
+    assert "MySQL" in tech_stack["databases"]
+    assert "Redis" in tech_stack["middleware"]
+
+    risks = suggestions["constraints_risks.canonical.known_risks"]["value"]
+    assert any("批量窗口紧张" in item for item in risks)
+    assert all("目 录" not in item for item in risks)
+    assert all("第一章 引言 5" not in item for item in risks)
+
+
+def test_v27_flat_document_suggestion_accept_updates_canonical_field(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("accept_v27_doc_owner", "pwd123", ["manager"])
+    token = _login(client, "accept_v27_doc_owner", "pwd123")
+    _seed_system("PAY", "sys_pay_accept_doc", owner_id=manager["id"])
+
+    import_response = client.post(
+        "/api/v1/system-profiles/sys_pay_accept_doc/profile/import",
+        data={"doc_type": "tech_solution"},
+        files={
+            "file": (
+                "tech_solution.docx",
+                _build_docx_bytes(
+                    "技术方案",
+                    "第五章 技术架构",
+                    "系统采用分层微服务架构，生产环境双活部署。",
+                    "第六章 约束与风险",
+                    "批量窗口紧张。",
+                ),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert import_response.status_code == 200
+
+    accept_response = client.post(
+        "/api/v1/system-profiles/sys_pay_accept_doc/profile/suggestions/accept",
+        json={"domain": "technical_architecture", "sub_field": "architecture_style"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert accept_response.status_code == 200
+    payload = accept_response.json()["data"]
+    assert payload["profile_data"]["technical_architecture"]["canonical"]["architecture_style"] == "系统采用分层微服务架构，生产环境双活部署。"
+
+
+def test_v27_flat_document_suggestion_ignore_persists_real_ignored_value(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("ignore_v27_doc_owner", "pwd123", ["manager"])
+    token = _login(client, "ignore_v27_doc_owner", "pwd123")
+    _seed_system("PAY", "sys_pay_ignore_doc", owner_id=manager["id"])
+
+    import_response = client.post(
+        "/api/v1/system-profiles/sys_pay_ignore_doc/profile/import",
+        data={"doc_type": "tech_solution"},
+        files={
+            "file": (
+                "tech_solution.docx",
+                _build_docx_bytes(
+                    "技术方案",
+                    "第六章 约束与风险",
+                    "批量窗口紧张，依赖核心系统日终处理时点。",
+                ),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert import_response.status_code == 200
+
+    ignore_response = client.post(
+        "/api/v1/system-profiles/sys_pay_ignore_doc/profile/suggestions/ignore",
+        json={"domain": "constraints_risks", "sub_field": "known_risks"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert ignore_response.status_code == 200
+    payload = ignore_response.json()["data"]
+    ignored_risks = payload["ai_suggestion_ignored"]["constraints_risks.known_risks"]
+    assert any("批量窗口紧张" in item for item in ignored_risks)
+    assert any("核心系统日终处理时点" in item for item in ignored_risks)
+
+
+def test_v27_retry_replays_runtime_snapshot_for_supported_imports(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("retry_v27_owner", "pwd123", ["manager"])
+    token = _login(client, "retry_v27_owner", "pwd123")
+    _seed_system("PAY", "sys_pay_retry", owner_id=manager["id"])
+
+    import_response = client.post(
+        "/api/v1/system-profiles/sys_pay_retry/profile/import",
+        data={"doc_type": "tech_solution"},
+        files={
+            "file": (
+                "tech_solution.docx",
+                _build_docx_bytes(
+                    "技术方案",
+                    "第四章 集成设计",
+                    "提供贷款核算查询接口，对接核心系统。",
+                    "第五章 技术架构",
+                    "系统采用分层架构。",
+                    "第六章 约束与风险",
+                    "批量窗口紧张。",
+                ),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert import_response.status_code == 200
+
+    retry_response = client.post(
+        "/api/v1/system-profiles/sys_pay_retry/ai-suggestions/retry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert retry_response.status_code == 200
+    retry_payload = retry_response.json()
+    assert retry_payload["status"] == "completed"
+    assert retry_payload["message"] == "已重新生成 AI 建议"
+    assert retry_payload["execution_id"].startswith("exec_")
+
+    latest_execution = runtime_execution_service.get_runtime_execution_service().get_latest_execution("sys_pay_retry")
+    assert latest_execution["execution_id"] == retry_payload["execution_id"]
+
+
+def test_v27_retry_rejects_historical_import_without_runtime_snapshot(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("retry_v27_legacy", "pwd123", ["manager"])
+    token = _login(client, "retry_v27_legacy", "pwd123")
+    _seed_system("PAY", "sys_pay_retry_legacy", owner_id=manager["id"])
+
+    profile_service = system_profile_service.get_system_profile_service()
+    profile_service.ensure_profile("PAY", system_id="sys_pay_retry_legacy", actor=manager)
+
+    execution_service = runtime_execution_service.get_runtime_execution_service()
+    execution = execution_service.create_execution(
+        scene_id="pm_document_ingest",
+        system_id="sys_pay_retry_legacy",
+        source_type="document",
+        source_file="legacy.docx",
+        skill_chain=["tech_solution_skill"],
+    )
+    execution_service.update_execution(
+        execution["execution_id"],
+        status="completed",
+        result_summary={"updated_system_ids": ["sys_pay_retry_legacy"], "skipped_items": []},
+        policy_results=[],
+    )
+    profile_service.record_import_history(
+        "sys_pay_retry_legacy",
+        doc_type="tech_solution",
+        file_name="legacy.docx",
+        status="success",
+        operator_id=manager["id"],
+        execution_id=execution["execution_id"],
+    )
+
+    retry_response = client.post(
+        "/api/v1/system-profiles/sys_pay_retry_legacy/ai-suggestions/retry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert retry_response.status_code == 400
+    assert retry_response.json()["error_code"] == "PROFILE_RETRY_NOT_SUPPORTED"
+    assert retry_response.json()["message"] == "当前历史导入记录不支持自动重跑，请重新上传文档"
+
+
 def test_v27_profile_memory_query_supports_filters(client, monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
     monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)

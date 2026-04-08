@@ -591,6 +591,11 @@ class ProfileSummaryService:
 材料（可能不完整）：
 {context_window}
 
+分析要求：
+1. 忽略目录，忽略封面，忽略页码行、章节列表等文档噪声。
+2. 只有标题、没有正文支撑的信息，不作为域识别依据。
+3. 仅根据正文中的明确事实判断相关域。
+
 请只返回JSON（不要解释），格式：
 {{
   "relevant_domains": ["system_positioning", "business_capabilities"],
@@ -615,6 +620,11 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
 相关域：{", ".join(relevant_domains)}
 材料（可能不完整）：
 {context_window}
+
+分析要求：
+1. 忽略目录，忽略封面，忽略页码行、章节列表等文档噪声。
+2. 只有标题、没有正文支撑的信息，不得作为建议依据。
+3. 输出必须是归纳后的系统画像建议，不得复制目录条目、章节列表或页码文本。
 
 请只返回JSON（不要解释），格式：
 {{

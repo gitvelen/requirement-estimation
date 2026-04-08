@@ -323,7 +323,7 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client, monkey
     assert "soffice未安装" in str(payload.get("message") or "")
 
 
-def test_knowledge_import_passes_full_document_text_to_summary_job(client, monkeypatch):
+def test_knowledge_import_passes_cleaned_document_text_to_summary_job(client, monkeypatch):
     manager = _seed_user("kmgr_full_text", "pwd123", ["manager"])
     token = _login(client, "kmgr_full_text", "pwd123")
     _seed_system("HOP", "sys_hop", owner_id=manager["id"])
@@ -332,9 +332,9 @@ def test_knowledge_import_passes_full_document_text_to_summary_job(client, monke
     monkeypatch.setattr(profile_summary_module, "get_profile_summary_service", lambda: summary_stub)
 
     service = ks.get_knowledge_service()
-    full_text = "背景说明\n核心流程\n接口约束"
-    monkeypatch.setattr(service.document_parser, "parse", lambda **_kwargs: {"text": full_text})
-    monkeypatch.setattr(service, "_chunk_text", lambda _text: ["背景说明", "核心流程"])
+    toc_text = "技术方案建议书\n目 录\n第一章 引言 5\n1.1 编写目的 5\n第四章 集成设计\n提供贷款核算查询接口，对接核心系统。"
+    monkeypatch.setattr(service.document_parser, "parse", lambda **_kwargs: {"text": toc_text})
+    monkeypatch.setattr(service, "_chunk_text", lambda _text: ["第四章 集成设计", "提供贷款核算查询接口，对接核心系统。"])
 
     response = client.post(
         "/api/v1/knowledge/imports",
@@ -349,4 +349,7 @@ def test_knowledge_import_passes_full_document_text_to_summary_job(client, monke
 
     assert response.status_code == 200
     assert len(summary_stub.calls) == 1
-    assert summary_stub.calls[0]["context_override"]["document_text"] == full_text
+    cleaned_text = summary_stub.calls[0]["context_override"]["document_text"]
+    assert "提供贷款核算查询接口" in cleaned_text
+    assert "目 录" not in cleaned_text
+    assert "第一章 引言 5" not in cleaned_text
