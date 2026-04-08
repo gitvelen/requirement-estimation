@@ -613,6 +613,7 @@ const SystemProfileBoardPage = () => {
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [publishingProfile, setPublishingProfile] = useState(false);
+  const [retryingSuggestions, setRetryingSuggestions] = useState(false);
 
   const [profileMeta, setProfileMeta] = useState({
     status: 'draft',
@@ -1517,6 +1518,34 @@ const SystemProfileBoardPage = () => {
     }
   };
 
+  const handleRetryAiSuggestions = async () => {
+    if (!selectedSystemName) {
+      message.warning('请先选择系统');
+      return;
+    }
+    if (!effectiveSystemId) {
+      message.error('系统ID缺失，无法执行操作');
+      return;
+    }
+    if (!canWrite) {
+      message.warning('当前系统为只读，无法重新生成 AI 建议');
+      return;
+    }
+
+    try {
+      setRetryingSuggestions(true);
+      const response = await axios.post(
+        `/api/v1/system-profiles/${encodeURIComponent(effectiveSystemId)}/ai-suggestions/retry`
+      );
+      message.success(response?.data?.message || '已重新生成 AI 建议');
+      await loadProfileDetail(selectedSystemName, effectiveSystemId);
+    } catch (error) {
+      message.error(parseErrorMessage(error, '重新生成 AI 建议失败'));
+    } finally {
+      setRetryingSuggestions(false);
+    }
+  };
+
   const handleSystemTabChange = (systemName) => {
     const nextName = normalizeString(systemName);
     if (!nextName) {
@@ -1615,6 +1644,16 @@ const SystemProfileBoardPage = () => {
             onClick={() => loadProfileDetail(selectedSystemName, effectiveSystemId)}
           >
             重新加载
+          </Button>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            aria-label="重新生成 AI 建议"
+            loading={retryingSuggestions}
+            disabled={!canWrite}
+            onClick={handleRetryAiSuggestions}
+          >
+            重新生成 AI 建议
           </Button>
           <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
             更新：{formatDateTime(profileMeta.updated_at)}

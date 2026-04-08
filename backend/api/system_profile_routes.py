@@ -22,6 +22,10 @@ from backend.api.auth import decode_access_token, require_roles
 from backend.api.error_utils import build_error_response
 from backend.config.config import settings
 from backend.service.document_skill_adapter import get_document_skill_adapter
+from backend.service.document_text_cleaner import (
+    clean_document_text as shared_clean_document_text,
+    parsed_to_text as shared_parsed_to_text,
+)
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.memory_service import get_memory_service
 from backend.service.runtime_execution_service import get_runtime_execution_service
@@ -852,7 +856,7 @@ async def import_profile_document(
             file_content=file_content,
             filename=file_name,
         )
-        text_content = _parsed_to_text(parsed_data)
+        text_content = shared_clean_document_text(shared_parsed_to_text(parsed_data))
         if not str(text_content or "").strip():
             text_content = file_content.decode("utf-8", errors="ignore")
 
@@ -1484,6 +1488,56 @@ async def retry_ai_suggestions(
         )
 
     try:
+        if getattr(settings, "ENABLE_V27_RUNTIME", False):
+            history = profile_service.get_import_history(normalized_system_id, limit=200, offset=0)
+            history_items = history.get("items") if isinstance(history, dict) else []
+            latest_success = next(
+                (
+                    item
+                    for item in history_items
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "").strip().lower() == "success"
+                    and str(item.get("execution_id") or "").strip()
+                ),
+                None,
+            )
+            if not latest_success:
+                return build_error_response(
+                    request=request,
+                    status_code=400,
+                    error_code="PROFILE_RETRY_NOT_SUPPORTED",
+                    message="暂无可重跑的文档导入记录，请先上传文档",
+                    details={"system_id": normalized_system_id, "system_name": system_name},
+                )
+
+            execution_id = str(latest_success.get("execution_id") or "").strip()
+            execution = get_runtime_execution_service().get_execution(execution_id) or {}
+            input_snapshot = execution.get("input_snapshot") if isinstance(execution.get("input_snapshot"), dict) else {}
+            if str(input_snapshot.get("snapshot_type") or "").strip() != "document_ingest_v1" or not str(input_snapshot.get("cleaned_text") or "").strip():
+                return build_error_response(
+                    request=request,
+                    status_code=400,
+                    error_code="PROFILE_RETRY_NOT_SUPPORTED",
+                    message="当前历史导入记录不支持自动重跑，请重新上传文档",
+                    details={"system_id": normalized_system_id, "system_name": system_name, "execution_id": execution_id},
+                )
+
+            adapter = get_document_skill_adapter()
+            result = adapter.retry_document(
+                system_id=normalized_system_id,
+                system_name=system_name,
+                doc_type=str(input_snapshot.get("doc_type") or latest_success.get("doc_type") or "").strip() or "requirements",
+                file_name=str(input_snapshot.get("file_name") or latest_success.get("file_name") or "document.docx").strip(),
+                cleaned_text=str(input_snapshot.get("cleaned_text") or ""),
+                actor=current_user,
+            )
+            updated_execution = result.get("execution") if isinstance(result.get("execution"), dict) else {}
+            return {
+                "execution_id": str(updated_execution.get("execution_id") or "").strip(),
+                "status": str(updated_execution.get("status") or "").strip().lower() or "completed",
+                "message": "已重新生成 AI 建议",
+            }
+
         from backend.service.profile_summary_service import get_profile_summary_service
 
         job = get_profile_summary_service().trigger_summary(

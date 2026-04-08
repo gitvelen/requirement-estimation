@@ -42,6 +42,76 @@ const createMatchMediaResult = (query) => ({
 
 const deepClone = (value) => JSON.parse(JSON.stringify(value));
 
+const LEGACY_SUGGESTION_FIELD_ALIASES = {
+  system_positioning: {
+    service_scope: ['system_description'],
+    system_boundary: ['boundaries'],
+  },
+  business_capabilities: {
+    business_processes: ['core_processes'],
+  },
+  integration_interfaces: {
+    other_integrations: ['integration_points'],
+  },
+  technical_architecture: {
+    architecture_style: ['architecture_positioning'],
+  },
+  constraints_risks: {
+    technical_constraints: ['key_constraints'],
+  },
+};
+
+const getSuggestionCandidates = (domainKey, fieldKey) => {
+  const aliases = LEGACY_SUGGESTION_FIELD_ALIASES[domainKey]?.[fieldKey] || [];
+  return [fieldKey, ...aliases].filter((item, index, array) => item && array.indexOf(item) === index);
+};
+
+const getMockSuggestionValue = (payload, domainKey, fieldKey) => {
+  const candidates = getSuggestionCandidates(domainKey, fieldKey);
+  for (const candidate of candidates) {
+    const flatFieldPath = `${domainKey}.canonical.${candidate}`;
+    if (Object.prototype.hasOwnProperty.call(payload, flatFieldPath)) {
+      return deepClone(payload[flatFieldPath]?.value ?? payload[flatFieldPath]);
+    }
+  }
+
+  const domainPayload = payload[domainKey];
+  if (!domainPayload || typeof domainPayload !== 'object') {
+    return undefined;
+  }
+  const canonicalPayload = domainPayload.canonical;
+  if (canonicalPayload && typeof canonicalPayload === 'object') {
+    for (const candidate of candidates) {
+      if (Object.prototype.hasOwnProperty.call(canonicalPayload, candidate)) {
+        return deepClone(canonicalPayload[candidate]?.value ?? canonicalPayload[candidate]);
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    if (Object.prototype.hasOwnProperty.call(domainPayload, candidate)) {
+      return deepClone(domainPayload[candidate]?.value ?? domainPayload[candidate]);
+    }
+  }
+  return undefined;
+};
+
+const removeMockSuggestionValue = (payload, domainKey, fieldKey) => {
+  const next = deepClone(payload);
+  const candidates = getSuggestionCandidates(domainKey, fieldKey);
+
+  candidates.forEach((candidate) => {
+    delete next[`${domainKey}.canonical.${candidate}`];
+    if (next[domainKey] && typeof next[domainKey] === 'object') {
+      if (next[domainKey].canonical && typeof next[domainKey].canonical === 'object') {
+        delete next[domainKey].canonical[candidate];
+      }
+      delete next[domainKey][candidate];
+    }
+  });
+
+  return next;
+};
+
 const baseProfilePayload = {
   system_id: 'SYS-PAY',
   status: 'draft',
@@ -246,22 +316,31 @@ describe('SystemProfileBoardPage v2.7', () => {
     });
     axios.post.mockImplementation(async (url, payload) => {
       if (String(url).endsWith('/profile/suggestions/accept')) {
-        if (payload.domain === 'system_positioning' && payload.sub_field === 'service_scope') {
-          currentProfilePayload.profile_data.system_positioning.canonical.service_scope =
-            currentProfilePayload.ai_suggestions.system_positioning.system_description;
-        }
-        if (payload.domain === 'technical_architecture' && payload.sub_field === 'tech_stack') {
-          currentProfilePayload.profile_data.technical_architecture.canonical.tech_stack =
-            deepClone(currentProfilePayload.ai_suggestions.technical_architecture.tech_stack);
+        const suggestionValue = getMockSuggestionValue(
+          currentProfilePayload.ai_suggestions,
+          payload.domain,
+          payload.sub_field
+        );
+        if (suggestionValue !== undefined) {
+          currentProfilePayload.profile_data[payload.domain].canonical[payload.sub_field] = suggestionValue;
+          currentProfilePayload.ai_suggestions = removeMockSuggestionValue(
+            currentProfilePayload.ai_suggestions,
+            payload.domain,
+            payload.sub_field
+          );
         }
         return { data: { code: 200, data: currentProfilePayload } };
       }
 
       if (String(url).endsWith('/profile/suggestions/ignore')) {
+        const ignoredValue = getMockSuggestionValue(
+          currentProfilePayload.ai_suggestions,
+          payload.domain,
+          payload.sub_field
+        );
         currentProfilePayload.ai_suggestion_ignored = {
           ...deepClone(currentProfilePayload.ai_suggestion_ignored),
-          [`${payload.domain}.${payload.sub_field}`]:
-            deepClone(currentProfilePayload.ai_suggestions[payload.domain][payload.sub_field]),
+          [`${payload.domain}.${payload.sub_field}`]: deepClone(ignoredValue),
         };
         return { data: { code: 200, data: currentProfilePayload } };
       }
@@ -428,5 +507,107 @@ describe('SystemProfileBoardPage v2.7', () => {
     expect(await screen.findByText('检测到 AI 建议变更')).toBeInTheDocument();
     expect(screen.getByText('缓存击穿导致交易超时')).toBeInTheDocument();
     expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+  });
+
+  it('accepts flat canonical document suggestions and removes the diff card', async () => {
+    currentProfilePayload.ai_suggestions = {
+      'technical_architecture.canonical.architecture_style': {
+        value: '分层微服务架构',
+        scene_id: 'pm_document_ingest',
+        skill_id: 'tech_solution_skill',
+        decision_policy: 'suggestion_only',
+        confidence: 0.82,
+        reason: '从技术方案正文提取',
+      },
+    };
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /D4 技术架构/ }));
+    expect(await screen.findByText('检测到 AI 建议变更')).toBeInTheDocument();
+    expect(screen.getByText('分层微服务架构')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '采纳新建议' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/system-profiles/SYS-PAY/profile/suggestions/accept',
+        { domain: 'technical_architecture', sub_field: 'architecture_style' }
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+    });
+  });
+
+  it('ignores flat canonical document suggestions and clears the domain badge', async () => {
+    currentProfilePayload.ai_suggestions = {
+      'integration_interfaces.canonical.other_integrations': {
+        value: ['提供贷款核算查询接口，对接核心系统和数据仓库'],
+        scene_id: 'pm_document_ingest',
+        skill_id: 'tech_solution_skill',
+        decision_policy: 'suggestion_only',
+        confidence: 0.82,
+        reason: '从技术方案正文提取',
+      },
+    };
+
+    renderPage();
+
+    const d3Button = await screen.findByRole('button', { name: /D3 集成与接口/ });
+    expect(within(d3Button).getByText('有建议')).toBeInTheDocument();
+
+    fireEvent.click(d3Button);
+    expect(await screen.findByText('检测到 AI 建议变更')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '忽略' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/system-profiles/SYS-PAY/profile/suggestions/ignore',
+        { domain: 'integration_interfaces', sub_field: 'other_integrations' }
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
+    });
+    expect(within(screen.getByRole('button', { name: /D3 集成与接口/ })).queryByText('有建议')).not.toBeInTheDocument();
+  });
+
+  it('triggers ai suggestion retry from the board and reloads profile data', async () => {
+    axios.post.mockImplementation(async (url, payload) => {
+      if (String(url).endsWith('/ai-suggestions/retry')) {
+        currentProfilePayload.ai_suggestions = {
+          'technical_architecture.canonical.architecture_style': {
+            value: '分层微服务架构',
+            scene_id: 'pm_document_ingest',
+            skill_id: 'tech_solution_skill',
+            decision_policy: 'suggestion_only',
+            confidence: 0.81,
+            reason: '从技术方案正文提取',
+          },
+        };
+        return {
+          data: {
+            execution_id: 'exec_retry_001',
+            status: 'completed',
+            message: '已重新生成 AI 建议',
+          },
+        };
+      }
+      return { data: { code: 200, data: currentProfilePayload } };
+    });
+
+    renderPage();
+
+    const retryButton = await screen.findByRole('button', { name: '重新生成 AI 建议' });
+    fireEvent.click(retryButton);
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/system-profiles/SYS-PAY/ai-suggestions/retry');
+    });
+    await waitFor(() => {
+      expect(message.success).toHaveBeenCalledWith('已重新生成 AI 建议');
+    });
   });
 });

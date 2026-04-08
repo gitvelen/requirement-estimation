@@ -11,6 +11,10 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, R
 from pydantic import BaseModel
 
 from backend.config.config import settings
+from backend.service.document_text_cleaner import (
+    clean_document_text as shared_clean_document_text,
+    parsed_to_text as shared_parsed_to_text,
+)
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.api.auth import require_roles
@@ -266,7 +270,7 @@ async def import_knowledge_v2(
             file_content=file_content,
             filename=file.filename,
         )
-        text_content = _parsed_to_text(parsed_data)
+        text_content = shared_clean_document_text(shared_parsed_to_text(parsed_data))
         if not str(text_content or "").strip():
             text_content = file_content.decode("utf-8", errors="ignore")
 
