@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from backend.config.config import settings
 from backend.service import code_scan_service
 from backend.service import esb_service
 from backend.service import knowledge_service as ks
+from backend.service import profile_artifact_service
 from backend.service import system_profile_service
 from backend.service import user_service
 
@@ -94,35 +96,6 @@ def test_internal_retrieve_system_profile_context(client):
         actor={"id": "internal_admin", "username": "internal_admin"},
     )
 
-    knowledge = ks.get_knowledge_service()
-    knowledge.vector_store.batch_insert_knowledge(
-        [
-            {
-                "system_name": "HOP",
-                "knowledge_type": "document",
-                "content": "转账接口说明",
-                "embedding": [1.0, 0.0, 0.0],
-                "metadata": {"level": "normal"},
-                "source_file": "doc.txt",
-            }
-        ]
-    )
-
-    code_scan = code_scan_service.get_code_scan_service()
-    code_scan.embedding_service = DummyEmbeddingService()
-    code_scan.vector_store.batch_insert_knowledge(
-        [
-            {
-                "system_name": "HOP",
-                "knowledge_type": "capability_item",
-                "content": "GET /transfer/query",
-                "embedding": [1.0, 0.0, 0.0],
-                "metadata": {"entry_id": "HTTP GET /transfer/query"},
-                "source_file": "scan.json",
-            }
-        ]
-    )
-
     esb = esb_service.get_esb_service()
     esb.embedding_service = DummyEmbeddingService()
     esb.import_esb(
@@ -144,9 +117,11 @@ def test_internal_retrieve_system_profile_context(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload.get("system_profile")
-    assert isinstance(payload.get("capabilities"), list)
-    assert isinstance(payload.get("documents"), list)
-    assert isinstance(payload.get("esb_integrations"), list)
+    context_bundle = payload.get("context_bundle") or {}
+    assert context_bundle.get("system_name") == "HOP"
+    assert "账户系统" in str(context_bundle.get("profile_text") or "")
+    assert isinstance(context_bundle.get("profile_cards"), list)
+    assert isinstance(context_bundle.get("integrations"), list)
     assert int(payload.get("completeness_score") or 0) >= 30
 
 
@@ -168,3 +143,43 @@ def test_internal_complexity_evaluate(client):
     assert payload.get("complexity_level") in {"low", "medium", "high"}
     assert 0 <= float(payload.get("complexity_score") or 0) <= 100
     assert "reasoning" in payload
+
+
+def test_build_estimation_context_uses_projection_candidates_when_ai_suggestions_are_empty(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+
+    profile_service = system_profile_service.get_system_profile_service()
+    artifact_service = profile_artifact_service.get_profile_artifact_service()
+    profile_service.ensure_profile("HOP-PROJ", system_id="sys_hop_proj", actor={"id": "internal_admin", "username": "internal_admin"})
+
+    workspace_path, _ = artifact_service.repository.ensure_workspace(system_id="sys_hop_proj", system_name="HOP-PROJ")
+    latest_dir = os.path.join(workspace_path, "candidate", "latest")
+    os.makedirs(latest_dir, exist_ok=True)
+
+    merged_candidates = {
+        "system_positioning.canonical.service_scope": {
+            "selected_value": "账户系统负责开户、销户与账户信息维护",
+            "candidate_items": [
+                {
+                    "source_mode": "document",
+                    "value": "账户系统负责开户、销户与账户信息维护",
+                }
+            ],
+        }
+    }
+    system_projection = {
+        "projection_type": "system_projection",
+        "system_id": "sys_hop_proj",
+        "system_name": "HOP-PROJ",
+        "merged_candidates": merged_candidates,
+    }
+
+    with open(os.path.join(latest_dir, "merged_candidates.json"), "w", encoding="utf-8") as f:
+        json.dump(merged_candidates, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(latest_dir, "system_projection.json"), "w", encoding="utf-8") as f:
+        json.dump(system_projection, f, ensure_ascii=False, indent=2)
+
+    context = profile_service.build_estimation_context("HOP-PROJ")
+    assert context["profile_context_used"] is True
+    assert context["context_source"] == "projection_candidate"
+    assert "开户" in context["text"]

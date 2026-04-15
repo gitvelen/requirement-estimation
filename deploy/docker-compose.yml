@@ -12,11 +12,14 @@ services:
     environment:
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       - DEBUG=false
+      - TZ=${TZ:-Asia/Shanghai}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./reports:/app/reports
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     restart: unless-stopped
     depends_on:
       - milvus

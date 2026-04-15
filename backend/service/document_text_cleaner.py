@@ -110,7 +110,7 @@ def looks_like_toc_entry(line: str) -> bool:
         return True
     if re.match(r"^第[一二三四五六七八九十百零\d]+[章节篇].*\d+$", text):
         return True
-    return bool(re.match(r"^\d+(?:\.\d+){0,3}\s+.+\s+\d+$", text))
+    return bool(re.match(r"^\d+(?:\.\d+){0,5}\.?\s+.+\s+\d+$", text))
 
 
 def extract_clean_lines(text: str) -> List[str]:

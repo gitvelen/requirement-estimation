@@ -38,6 +38,7 @@ from backend.api import system_routes
 from backend.service.ai_effect_service import create_snapshots
 from backend.api.notification_routes import create_notification
 from backend.api.error_utils import build_error_response
+from backend.utils.time_utils import current_time, parse_iso_datetime
 
 # 创建logger实例
 logger = logging.getLogger(__name__)
@@ -265,6 +266,8 @@ def _extract_estimation_detail(feature: Dict[str, Any]) -> Dict[str, Any]:
         "reasoning": reasoning,
         "original_estimate": round(float(original_estimate), 2),
         "degraded": degraded,
+        "profile_context_used": bool(feature.get("profile_context_used")),
+        "context_source": str(feature.get("context_source") or "none").strip() or "none",
     }
 
 
@@ -288,6 +291,10 @@ def _build_feature_response(feature: Dict[str, Any], my_value: Optional[float] =
         "originalEstimate": estimation["original_estimate"],
         "reasoning": estimation["reasoning"],
         "estimationDegraded": estimation["degraded"],
+        "profileContextUsed": estimation["profile_context_used"],
+        "profile_context_used": estimation["profile_context_used"],
+        "contextSource": estimation["context_source"],
+        "context_source": estimation["context_source"],
         "remark": feature.get("备注") or feature.get("remark"),
         "myEvaluation": my_value
     }
@@ -1227,6 +1234,7 @@ def process_task_sync(task_id: str, file_path: str):
             task["ai_status"] = "processing"
             task["progress"] = 10
             task["message"] = "正在解析文档..."
+            task.pop("error", None)
 
         # 定义进度更新函数
         def update_progress(progress: int, message: str):
@@ -1328,6 +1336,7 @@ def process_task_sync(task_id: str, file_path: str):
                 task["report_path"] = report_path
                 task["workflow_status"] = "draft"
                 task["systems"] = list(systems_data.keys())
+                task.pop("error", None)
 
         logger.info(f"任务 {task_id} 处理完成，系统数: {len(systems_data)}，功能点总数: {sum(len(v) for v in systems_data.values())}")
 
@@ -2888,11 +2897,14 @@ def _dashboard_is_profile_stale(profile: Dict[str, Any]) -> bool:
     if not updated_at:
         return True
 
-    updated_dt = _dashboard_parse_iso_datetime(updated_at)
-    if not updated_dt:
+    try:
+        updated_dt = parse_iso_datetime(updated_at)
+    except Exception:
+        return True
+    if updated_dt is None:
         return True
 
-    return updated_dt < (datetime.now() - timedelta(days=stale_days))
+    return updated_dt < (current_time() - timedelta(days=stale_days))
 
 
 def _dashboard_documents_score(document_count: int) -> int:
@@ -4824,10 +4836,16 @@ async def estimate_task_workload(
         degraded = False
 
         from backend.agent.work_estimation_agent import work_estimation_agent
+        profile_service = get_system_profile_service()
+        estimation_context_map = {
+            system_name: profile_service.build_estimation_context(system_name)
+            for system_name in systems_data.keys()
+        }
 
         for system_name, features in systems_data.items():
             if not isinstance(features, list):
                 continue
+            context_payload = estimation_context_map.get(system_name, {})
             for feature in features:
                 if not isinstance(feature, dict):
                     continue
@@ -4839,7 +4857,10 @@ async def estimate_task_workload(
                     fallback = 1.0
 
                 try:
-                    detail = work_estimation_agent.estimate_three_point_for_feature(feature)
+                    detail = work_estimation_agent.estimate_three_point_for_feature(
+                        feature,
+                        system_context=str(context_payload.get("text") or "").strip(),
+                    )
                 except Exception as exc:
                     logger.warning("任务估算降级 task=%s feature=%s error=%s", task_id, feature.get("id"), exc)
                     degraded = True
@@ -4851,6 +4872,8 @@ async def estimate_task_workload(
                         "reasoning": None,
                         "original_estimate": round(float(fallback), 2),
                     }
+                detail["profile_context_used"] = bool(context_payload.get("profile_context_used"))
+                detail["context_source"] = str(context_payload.get("context_source") or "none").strip() or "none"
 
                 # 兼容旧返回或测试桩：若未回传 original_estimate，则回退到 baseline。
                 resolved_original_estimate = _to_float_or_none(detail.get("original_estimate"))
@@ -4864,6 +4887,8 @@ async def estimate_task_workload(
                 feature["reasoning"] = detail.get("reasoning")
                 feature["original_estimate"] = resolved_original_estimate
                 feature["预估人天"] = detail.get("expected")
+                feature["profile_context_used"] = bool(detail.get("profile_context_used"))
+                feature["context_source"] = str(detail.get("context_source") or "none").strip() or "none"
 
                 features_payload.append(
                     {
@@ -4876,8 +4901,18 @@ async def estimate_task_workload(
                         "expected": detail.get("expected"),
                         "reasoning": detail.get("reasoning"),
                         "original_estimate": resolved_original_estimate,
+                        "profile_context_used": bool(detail.get("profile_context_used")),
+                        "context_source": str(detail.get("context_source") or "none").strip() or "none",
                     }
                 )
+            profile_service.record_estimation_context_artifact(
+                system_name=system_name,
+                task_id=task_id,
+                features=[feature for feature in features if isinstance(feature, dict)],
+                context_payload=context_payload,
+                actor=current_user,
+                trigger="task_estimate_api",
+            )
 
     result: Dict[str, Any] = {"degraded": degraded, "features": features_payload}
     if degraded:
@@ -5362,6 +5397,8 @@ async def get_task_evaluation_detail(
                     "original_estimate": estimation["original_estimate"],
                     "reasoning": estimation["reasoning"],
                     "estimation_degraded": estimation["degraded"],
+                    "profile_context_used": estimation["profile_context_used"],
+                    "context_source": estimation["context_source"],
                     "system_name": system_name,
                 }
             )
@@ -5424,78 +5461,35 @@ async def retrieve_system_profile_context(
     query = str(payload.query or "").strip()
     top_k = max(1, min(int(payload.top_k or 20), 50))
 
-    if not system_name or not query:
+    if not system_name:
         return build_error_response(
             request=request,
             status_code=403,
             error_code="AUTH_001",
             message="权限不足",
-            details={"reason": "system_name 与 query 必填"},
+            details={"reason": "system_name 必填"},
         )
-
-    from backend.service.system_profile_service import get_system_profile_service
-    from backend.service.esb_service import get_esb_service
-    from backend.service.code_scan_service import get_code_scan_service
 
     profile_service = get_system_profile_service()
     profile = profile_service.get_profile(system_name)
-
-    knowledge_service = get_knowledge_service()
-    code_service = get_code_scan_service()
-    esb_service = get_esb_service()
-
-    capabilities = []
-    documents = []
-    esb_integrations = []
-    degraded = False
-
-    try:
-        query_embedding = knowledge_service.embedding_service.generate_embedding(query)
-
-        try:
-            documents = knowledge_service.vector_store.search_knowledge(
-                query_embedding,
-                system_name=system_name,
-                knowledge_type="document",
-                top_k=top_k,
-                similarity_threshold=0.0,
-            )
-        except Exception:
-            degraded = True
-            documents = []
-
-        try:
-            capabilities = code_service.vector_store.search_knowledge(
-                query_embedding,
-                system_name=system_name,
-                knowledge_type="capability_item",
-                top_k=top_k,
-                similarity_threshold=0.0,
-            )
-        except Exception:
-            degraded = True
-            capabilities = []
-    except Exception:
-        degraded = True
-
-    try:
-        esb_integrations = esb_service.search_esb(
-            query=query,
-            system_name=system_name,
-            top_k=top_k,
-            similarity_threshold=0.0,
-        )
-    except Exception:
-        degraded = True
-        esb_integrations = []
+    context_bundle = profile_service.build_context_bundle(system_name, query=query, top_k=top_k)
 
     return {
         "system_profile": profile or {},
-        "capabilities": capabilities,
-        "documents": documents,
-        "esb_integrations": esb_integrations,
-        "completeness_score": int(profile.get("completeness_score") if isinstance(profile, dict) and profile.get("completeness_score") is not None else _calc_profile_completeness_score(profile)),
-        "degraded": degraded,
+        "context_bundle": context_bundle,
+        "capabilities": context_bundle.get("capabilities") if isinstance(context_bundle.get("capabilities"), list) else [],
+        "documents": context_bundle.get("documents") if isinstance(context_bundle.get("documents"), list) else [],
+        "esb_integrations": context_bundle.get("integrations") if isinstance(context_bundle.get("integrations"), list) else [],
+        "completeness_score": int(
+            context_bundle.get("completeness_score")
+            if context_bundle.get("completeness_score") is not None
+            else (
+                profile.get("completeness_score")
+                if isinstance(profile, dict) and profile.get("completeness_score") is not None
+                else _calc_profile_completeness_score(profile)
+            )
+        ),
+        "degraded": bool(context_bundle.get("degraded")),
     }
 
 

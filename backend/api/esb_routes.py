@@ -405,12 +405,21 @@ async def import_esb(
                 filename=file.filename,
                 actor=current_user,
             )
-        except Exception as exc:
+        except ValueError as exc:
             return build_error_response(
                 request=request,
                 status_code=400,
                 error_code="ESB_002",
                 message="ESB文件缺少必填字段",
+                details={"reason": str(exc)},
+            )
+        except Exception as exc:
+            logger.error("服务治理全局导入失败: %s", exc)
+            return build_error_response(
+                request=request,
+                status_code=500,
+                error_code="ESB_001",
+                message="服务治理导入失败",
                 details={"reason": str(exc)},
             )
 

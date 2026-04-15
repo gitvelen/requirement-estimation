@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.api import system_routes
 from backend.config.config import settings
+from backend.service.system_profile_repository import resolve_system_profile_root
 from backend.prompts.prompt_templates import SYSTEM_IDENTIFICATION_PROMPT
 from backend.service.memory_service import get_memory_service
 from backend.service.system_profile_service import get_system_profile_service
@@ -249,10 +250,7 @@ class SystemIdentificationAgent:
         self._last_result_status: str = "success"
         self.last_ai_system_analysis: Optional[Dict[str, Any]] = None
 
-        if self.knowledge_enabled and self.knowledge_service:
-            logger.info(f"{self.name}初始化完成（知识库功能：已启用）")
-        else:
-            logger.info(f"{self.name}初始化完成（知识库功能：未启用）")
+        logger.info(f"{self.name}初始化完成（画像上下文：已启用）")
 
     def _load_system_list(self) -> List[str]:
         """
@@ -334,26 +332,20 @@ class SystemIdentificationAgent:
         knowledge_context = ""
         system_profiles: List[Dict[str, Any]] = []
         candidate_systems: List[Dict[str, Any]] = []
-        if self.knowledge_enabled and self.knowledge_service:
-            try:
-                logger.info("[系统识别] 正在检索相关系统知识...")
-                system_profiles = self.knowledge_service.search_similar_knowledge(
-                    query_text=requirement_content,
-                    knowledge_type="system_profile",
-                    top_k=settings.KNOWLEDGE_TOP_K,
-                    similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
-                    task_id=task_id,
-                    stage="system_identification",
-                )
-
-                if system_profiles:
-                    logger.info(f"[系统识别] 检索到 {len(system_profiles)} 条相关系统知识")
-                    candidate_systems = self._build_candidate_systems(system_profiles, limit=8)
-                    knowledge_context = self._build_knowledge_context(system_profiles)
-                else:
-                    logger.info("[系统识别] 未检索到相关系统知识")
-            except Exception as e:
-                logger.warning(f"[系统识别] 知识库检索失败: {e}，继续使用传统方式")
+        try:
+            logger.info("[系统识别] 正在组装相关系统画像上下文...")
+            system_profiles = self.profile_service.search_relevant_profile_contexts(
+                requirement_content,
+                limit=max(int(getattr(settings, "KNOWLEDGE_TOP_K", 8) or 8), 3),
+            )
+            if system_profiles:
+                logger.info(f"[系统识别] 命中 {len(system_profiles)} 个相关系统画像")
+                candidate_systems = self._build_candidate_systems(system_profiles, limit=8)
+                knowledge_context = self._build_knowledge_context(system_profiles)
+            else:
+                logger.info("[系统识别] 未命中相关系统画像")
+        except Exception as e:
+            logger.warning(f"[系统识别] 画像上下文组装失败: {e}，继续使用传统方式")
 
         self._last_candidate_systems = candidate_systems
 
@@ -373,6 +365,8 @@ class SystemIdentificationAgent:
             system_prompt=self.prompt_template,
             user_prompt=user_prompt,
             temperature=0.3,
+            retry_times=max(int(getattr(settings, "PROFILE_IMPORT_LLM_RETRY_TIMES", 1) or 1), 1),
+            timeout=max(float(getattr(settings, "PROFILE_IMPORT_LLM_TIMEOUT", 5) or 5), 1.0),
         )
         result = llm_client.extract_json(response)
         if "systems" not in result:
@@ -544,12 +538,12 @@ class SystemIdentificationAgent:
                 continue
 
             try:
-                similarity = float(item.get("similarity") or 0.0)
+                similarity = float(item.get("score") or item.get("similarity") or 0.0)
             except (TypeError, ValueError):
                 similarity = 0.0
 
-            source_file = str(item.get("source_file") or "")
-            excerpt = str(item.get("content") or "")
+            source_file = str(item.get("source_file") or item.get("context_source") or "")
+            excerpt = str(item.get("profile_text") or item.get("content") or "")
             excerpt = " ".join(excerpt.split())[:120]
 
             slot = grouped.setdefault(name, {"name": name, "score": similarity, "kb_hits": []})
@@ -601,7 +595,7 @@ class SystemIdentificationAgent:
         missing_profiles = [item["name"] for item in selected_systems if not item.get("kb_hits")]
         analysis = {
             "generated_at": datetime.now().isoformat(),
-            "knowledge_enabled": bool(self.knowledge_enabled and self.knowledge_service),
+            "knowledge_enabled": True,
             "candidate_systems": self._last_candidate_systems or [],
             "selected_systems": selected_systems,
             "maybe_systems": self._last_maybe_systems or [],
@@ -815,34 +809,28 @@ class SystemIdentificationAgent:
 
         context_parts = []
         for idx, profile in enumerate(system_profiles, 1):
-            metadata = profile.get("metadata", {})
-            similarity = profile.get("similarity", 0.0)
+            profile_text = str(profile.get("profile_text") or profile.get("content") or "").strip()
+            excerpt = " ".join(profile_text.split())[:220]
+            cards = profile.get("profile_cards") if isinstance(profile.get("profile_cards"), list) else []
+            summaries = []
+            for card in cards[:3]:
+                if not isinstance(card, dict):
+                    continue
+                title = str(card.get("title") or "").strip()
+                summary = card.get("summary")
+                if title and summary:
+                    summaries.append(f"{title}:{json.dumps(summary, ensure_ascii=False)}")
+            similarity = float(profile.get("score") or profile.get("similarity") or 0.0)
+            completeness = int(profile.get("completeness_score") or 0)
+            title_name = str(profile.get("system_name") or "").strip()
+            context_source = str(profile.get("context_source") or profile.get("source_file") or "profile").strip()
 
-            content = str(profile.get("content") or "")
-            excerpt = " ".join(content.split())[:220]
-            module_structure = metadata.get("module_structure")
-            module_count = len(module_structure) if isinstance(module_structure, list) else 0
-            has_structured = bool(
-                str(metadata.get("system_scope") or "").strip()
-                or module_count > 0
-                or str(metadata.get("integration_points") or "").strip()
-                or str(metadata.get("key_constraints") or "").strip()
-            )
-
-            title_name = metadata.get("system_name") or profile.get("system_name") or ""
-            title_short = metadata.get("system_short_name") or ""
-            extra_excerpt = f"   - 内容摘要: {excerpt}\n" if (not has_structured and excerpt) else ""
-
-            part = f"""【知识{idx}】{title_name} ({title_short})
-   - 系统定位与边界: {metadata.get('system_scope', '')}
-   - 模块结构数量: {module_count}
-   - 主要集成点/上下游: {metadata.get('integration_points', '')}
-   - 关键约束: {metadata.get('key_constraints', '')}
-   - 技术栈: {metadata.get('tech_stack', '')}
-   - 架构特点: {metadata.get('architecture', '')}
-   - 性能指标: {metadata.get('performance', '')}
-{extra_excerpt}\
-   - 相似度: {similarity:.2f}
+            part = f"""【画像{idx}】{title_name}
+   - 来源: {context_source}
+   - 完整度: {completeness}
+   - 卡片摘要: {'；'.join(summaries[:3])}
+   - 画像文本: {excerpt}
+   - 相关度: {similarity:.2f}
 """
             context_parts.append(part)
 
@@ -864,7 +852,7 @@ def get_system_identification_agent(knowledge_service=None):
     """
     global system_identification_agent
     expected_memory_path = os.path.join(settings.REPORT_DIR, "memory_records.json")
-    expected_profile_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    expected_profile_path = resolve_system_profile_root()
     if (
         system_identification_agent is None
         or os.path.realpath(system_identification_agent.memory_service.store_path) != os.path.realpath(expected_memory_path)

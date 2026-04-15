@@ -211,22 +211,36 @@ def test_chat_raw_retries_and_chat_with_system_prompt(monkeypatch):
     monkeypatch.setattr(
         client,
         "chat",
-        lambda messages, temperature=None, max_tokens=None: captured.update(
+        lambda messages, temperature=None, max_tokens=None, retry_times=3, timeout=None: captured.update(
             {
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                "retry_times": retry_times,
+                "timeout": timeout,
             }
         )
         or "ok",
     )
-    assert client.chat_with_system_prompt("system", "user", temperature=0.3, max_tokens=222) == "ok"
+    assert (
+        client.chat_with_system_prompt(
+            "system",
+            "user",
+            temperature=0.3,
+            max_tokens=222,
+            retry_times=4,
+            timeout=9,
+        )
+        == "ok"
+    )
     assert captured["messages"] == [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "user"},
     ]
     assert captured["temperature"] == 0.3
     assert captured["max_tokens"] == 222
+    assert captured["retry_times"] == 4
+    assert captured["timeout"] == 9
 
 
 def test_chat_raw_requires_api_key_and_extract_json_supports_fallbacks():

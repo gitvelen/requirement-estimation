@@ -32,6 +32,7 @@ const DOC_TYPE_CONFIGS = [
   { value: 'requirements', label: '需求文档', description: '需求规格说明、用户故事等' },
   { value: 'design', label: '设计文档', description: '概要设计、详细设计等' },
   { value: 'tech_solution', label: '技术方案', description: '技术选型、架构设计等' },
+  { value: 'general', label: '综合文档', description: '自动判型后按多域编译处理' },
 ];
 const DOC_TYPE_LABELS = Object.fromEntries(DOC_TYPE_CONFIGS.map((item) => [item.value, item.label]));
 
@@ -75,37 +76,19 @@ const getExecutionStatusSummary = (executionStatus) => {
   };
 };
 
-const getLastImportSummary = (docLabel, lastResult) => {
-  const fileName = String(lastResult?.import_result?.file_name || lastResult?.file_name || '').trim();
-  const displayName = fileName || docLabel;
-  const normalizedStatus = normalizeStatus(
-    lastResult?.execution_status?.status || lastResult?.result_status || lastResult?.import_result?.status,
-    'queued',
-  );
-  const failureReason = String(
-    lastResult?.import_result?.failure_reason
-    || lastResult?.execution_status?.error
-    || lastResult?.error
-    || '',
-  ).trim();
-
-  if (normalizedStatus === 'failed') {
+const getBatchImportSummary = (batchResult) => {
+  const successCount = Number(batchResult?.success_count || 0);
+  const failureCount = Number(batchResult?.failure_count || 0);
+  const batchCount = Number(batchResult?.batch_count || 0);
+  if (failureCount > 0) {
     return {
-      textType: 'danger',
-      text: failureReason ? `${displayName} 导入失败：${failureReason}` : `${displayName} 导入失败，请检查文件后重试。`,
+      textType: 'warning',
+      text: `本次批量导入共 ${batchCount} 个文件，成功 ${successCount} 个，失败 ${failureCount} 个。`,
     };
   }
-
-  if (normalizedStatus === 'queued' || normalizedStatus === 'running') {
-    return {
-      textType: 'secondary',
-      text: `${displayName} 已提交，系统正在处理。`,
-    };
-  }
-
   return {
     textType: 'secondary',
-    text: `${displayName} 已导入，可前往信息展示查看建议。`,
+    text: `本次批量导入已提交 ${successCount || batchCount} 个文件，可前往信息展示查看建议。`,
   };
 };
 
@@ -139,7 +122,9 @@ const SystemProfileImportPage = () => {
 
   const [systems, setSystems] = useState([]);
   const [selectedSystemName, setSelectedSystemName] = useState('');
-  const [docStates, setDocStates] = useState({});
+  const [batchFiles, setBatchFiles] = useState([]);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
   const [importHistory, setImportHistory] = useState([]);
   const [executionStatus, setExecutionStatus] = useState(null);
 
@@ -274,7 +259,8 @@ const SystemProfileImportPage = () => {
   }, [effectiveSystems, requestedSystemName, selectedSystemName]);
 
   useEffect(() => {
-    setDocStates({});
+    setBatchFiles([]);
+    setBatchResult(null);
     setScanJob(null);
     setScanIngestResult(null);
 
@@ -305,56 +291,43 @@ const SystemProfileImportPage = () => {
     setSelectedSystemName(nextName);
   };
 
-  const handleDocImport = async (docType) => {
+  const handleBatchImport = async () => {
     if (!selectedSystemId || !selectedSystemName) {
       message.warning('请先选择系统');
       return;
     }
 
-    const state = docStates[docType] || {};
-    const files = state.files || [];
-    if (!files.length) {
+    if (!batchFiles.length) {
       message.warning('请上传文件');
       return;
     }
 
-    setDocStates((prev) => ({
-      ...prev,
-      [docType]: { ...prev[docType], submitting: true },
-    }));
+    setBatchSubmitting(true);
 
     try {
       const formData = new FormData();
-      formData.append('doc_type', docType);
-      formData.append('file', files[0]);
+      batchFiles.forEach((file) => {
+        formData.append('files', file);
+      });
 
       const response = await axios.post(
-        `/api/v1/system-profiles/${encodeURIComponent(selectedSystemId)}/profile/import`,
+        `/api/v1/system-profiles/${encodeURIComponent(selectedSystemId)}/profile/import-batch`,
         formData,
         {
           headers: { 'Content-Type': 'multipart/form-data' },
         }
       );
 
-      setDocStates((prev) => ({
-        ...prev,
-        [docType]: {
-          ...prev[docType],
-          submitting: false,
-          files: [],
-          lastResult: response.data || null,
-        },
-      }));
+      setBatchFiles([]);
+      setBatchResult(response.data || null);
 
       await loadImportHistory(selectedSystemId);
       await loadExecutionStatus(selectedSystemId);
-      message.success('文档导入已提交');
+      message.success('文档批量导入已提交');
     } catch (error) {
-      setDocStates((prev) => ({
-        ...prev,
-        [docType]: { ...prev[docType], submitting: false },
-      }));
       message.error(extractErrorMessage(error, '文档导入失败'));
+    } finally {
+      setBatchSubmitting(false);
     }
   };
 
@@ -455,71 +428,6 @@ const SystemProfileImportPage = () => {
       </div>
     );
   }, [executionStatus]);
-
-  const renderDocTypeCard = (config) => {
-    const state = docStates[config.value] || {};
-    const files = state.files || [];
-    const lastResult = state.lastResult || null;
-    const lastResultSummary = lastResult ? getLastImportSummary(config.label, lastResult) : null;
-
-    return (
-      <Card
-        key={config.value}
-        size="small"
-        title={(
-          <Space>
-            <FileTextOutlined />
-            <span>{config.label}</span>
-            <Text type="secondary">{config.description}</Text>
-          </Space>
-        )}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size={8}>
-          <Space wrap size={8}>
-            <Upload
-              multiple={false}
-              beforeUpload={(file) => {
-                setDocStates((prev) => ({
-                  ...prev,
-                  [config.value]: {
-                    ...prev[config.value],
-                    files: [file],
-                  },
-                }));
-                return false;
-              }}
-              fileList={files.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
-              onRemove={() => {
-                setDocStates((prev) => ({
-                  ...prev,
-                  [config.value]: {
-                    ...prev[config.value],
-                    files: [],
-                  },
-                }));
-              }}
-              disabled={!canWrite}
-            >
-              <Button icon={<CloudUploadOutlined />} disabled={!canWrite}>
-                选择文档文件
-              </Button>
-            </Upload>
-            <Button
-              type="primary"
-              aria-label={`导入${config.label}`}
-              loading={Boolean(state.submitting)}
-              disabled={!canWrite || files.length === 0}
-              onClick={() => handleDocImport(config.value)}
-            >
-              {`导入${config.label}`}
-            </Button>
-          </Space>
-
-          {lastResultSummary ? <Text type={lastResultSummary.textType}>{lastResultSummary.text}</Text> : null}
-        </Space>
-      </Card>
-    );
-  };
 
   if (effectiveSystems.length === 0) {
     return (
@@ -647,7 +555,41 @@ const SystemProfileImportPage = () => {
 
       <Card title="文档导入">
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          {DOC_TYPE_CONFIGS.map((config) => renderDocTypeCard(config))}
+          <Text type="secondary">
+            统一入口批量上传文档，后端会自动判型；判型不确定时按综合文档做多域编译，不直接报错。
+          </Text>
+          <Space wrap size={8}>
+            <Upload
+              multiple
+              beforeUpload={(_, fileList) => {
+                setBatchFiles(fileList);
+                return false;
+              }}
+              fileList={batchFiles.map((file) => ({ uid: file.uid || file.name, name: file.name }))}
+              onRemove={(file) => {
+                setBatchFiles((prev) => prev.filter((item) => (item.uid || item.name) !== (file.uid || file.name)));
+              }}
+              disabled={!canWrite}
+            >
+              <Button aria-label="选择文档文件" icon={<CloudUploadOutlined />} disabled={!canWrite}>
+                选择文档文件
+              </Button>
+            </Upload>
+            <Button
+              aria-label="批量导入文档"
+              type="primary"
+              icon={<FileTextOutlined />}
+              loading={batchSubmitting}
+              disabled={!canWrite || batchFiles.length === 0}
+              onClick={handleBatchImport}
+            >
+              批量导入文档
+            </Button>
+          </Space>
+
+          {batchResult ? (
+            <Text type={getBatchImportSummary(batchResult).textType}>{getBatchImportSummary(batchResult).text}</Text>
+          ) : null}
         </Space>
       </Card>
 

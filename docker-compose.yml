@@ -11,6 +11,8 @@ services:
         # 如果使用私服镜像，修改下面的 URL
         # 示例：http://your-private-pypi-server/simple
         - UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+        - UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT:-120}
+        - UV_HTTP_RETRIES=${UV_HTTP_RETRIES:-8}
     container_name: requirement-backend
     ports:
       - "443:443"
@@ -19,6 +21,8 @@ services:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     env_file:
       - .env.backend
     environment:
@@ -29,6 +33,7 @@ services:
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-change_me}
       - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-120}
+      - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
     networks:
       - app-network

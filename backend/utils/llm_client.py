@@ -37,6 +37,73 @@ def _dedupe_stable(items: List[Any]) -> List[Any]:
 
 
 def _merge_list_field(field_name: Optional[str], base: List[Any], update: List[Any]) -> List[Any]:
+    if field_name in {
+        "functional_modules",
+        "business_scenarios",
+        "business_flows",
+        "business_constraints",
+        "prerequisites",
+        "sensitive_points",
+    }:
+        result = [copy.deepcopy(item) for item in base]
+        index_by_name = {
+            str(item.get("name") or "").strip(): idx
+            for idx, item in enumerate(result)
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for item in update:
+            item_name = str(item.get("name") or "").strip() if isinstance(item, dict) else ""
+            if item_name and item_name in index_by_name:
+                idx = index_by_name[item_name]
+                result[idx] = deep_merge(result[idx], item)
+            else:
+                result.append(copy.deepcopy(item))
+                if item_name:
+                    index_by_name[item_name] = len(result) - 1
+        return result
+
+    if field_name == "data_reports":
+        result = [copy.deepcopy(item) for item in base]
+        index_by_name_type = {
+            (
+                str(item.get("name") or "").strip(),
+                str(item.get("type") or "").strip(),
+            ): idx
+            for idx, item in enumerate(result)
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for item in update:
+            item_key = (
+                str(item.get("name") or "").strip(),
+                str(item.get("type") or "").strip(),
+            ) if isinstance(item, dict) else (_canonical_dedupe_key(item), "")
+            if item_key[0] and item_key in index_by_name_type:
+                idx = index_by_name_type[item_key]
+                result[idx] = deep_merge(result[idx], item)
+            else:
+                result.append(copy.deepcopy(item))
+                if item_key[0]:
+                    index_by_name_type[item_key] = len(result) - 1
+        return result
+
+    if field_name == "risk_items":
+        result = [copy.deepcopy(item) for item in base]
+        index_by_name = {
+            str(item.get("name") or "").strip(): idx
+            for idx, item in enumerate(result)
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for item in update:
+            item_name = str(item.get("name") or "").strip() if isinstance(item, dict) else ""
+            if item_name and item_name in index_by_name:
+                idx = index_by_name[item_name]
+                result[idx] = deep_merge(result[idx], item)
+            else:
+                result.append(copy.deepcopy(item))
+                if item_name:
+                    index_by_name[item_name] = len(result) - 1
+        return result
+
     if field_name == "module_structure":
         result = [copy.deepcopy(item) for item in base]
         index_by_name = {
@@ -208,9 +275,11 @@ class LLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         retry_times: int = 3,
+        timeout: Optional[float] = None,
     ) -> Any:
         temperature = temperature or self.temperature
         max_tokens = max_tokens or self.max_tokens
+        request_timeout = self.timeout if timeout is None else timeout
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY未配置")
 
@@ -223,7 +292,7 @@ class LLMClient:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    timeout=self.timeout
+                    timeout=request_timeout
                 )
 
                 usage = extract_usage_from_response(response)
@@ -250,7 +319,8 @@ class LLMClient:
         messages: List[Dict[str, str]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        retry_times: int = 3
+        retry_times: int = 3,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         发起对话请求
@@ -267,7 +337,7 @@ class LLMClient:
         Raises:
             Exception: 调用失败且重试后仍失败
         """
-        response = self._chat_raw(messages, temperature, max_tokens, retry_times)
+        response = self._chat_raw(messages, temperature, max_tokens, retry_times, timeout)
         return response.choices[0].message.content
 
     def chat_with_system_prompt(
@@ -275,7 +345,9 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        retry_times: int = 3,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         使用系统提示词对话
@@ -294,7 +366,13 @@ class LLMClient:
             {"role": "user", "content": user_prompt}
         ]
 
-        return self.chat(messages, temperature, max_tokens)
+        return self.chat(
+            messages,
+            temperature,
+            max_tokens,
+            retry_times=retry_times,
+            timeout=timeout,
+        )
 
     def extract_json(self, text: str) -> Dict[str, Any]:
         """

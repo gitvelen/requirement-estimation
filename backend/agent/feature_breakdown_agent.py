@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.api import system_routes
 from backend.config.config import settings
+from backend.service.system_profile_repository import resolve_system_profile_root
 from backend.prompts.prompt_templates import FEATURE_BREAKDOWN_PROMPT
 from backend.service.memory_service import get_memory_service
 from backend.service.system_profile_service import get_system_profile_service
@@ -225,11 +226,9 @@ class FeatureBreakdownAgent:
         self.knowledge_service = knowledge_service
         self.knowledge_enabled = settings.KNOWLEDGE_ENABLED
         self.memory_adapter = FeatureAdjustmentMemoryAdapter()
+        self.profile_service = self.memory_adapter.profile_service
 
-        if self.knowledge_enabled and self.knowledge_service:
-            logger.info(f"{self.name}初始化完成（知识库功能：已启用）")
-        else:
-            logger.info(f"{self.name}初始化完成（知识库功能：未启用）")
+        logger.info(f"{self.name}初始化完成（画像上下文：已启用）")
 
     def breakdown(
         self,
@@ -263,26 +262,29 @@ class FeatureBreakdownAgent:
 
             knowledge_context = ""
             system_profiles: List[Dict[str, Any]] = []
-            if self.knowledge_enabled and self.knowledge_service:
-                try:
-                    logger.info(f"[功能拆分] 正在检索【{system_name}】的系统知识...")
-                    system_profiles = self.knowledge_service.search_similar_knowledge(
-                        query_text=requirement_content,
-                        system_name=system_name,
-                        knowledge_type="system_profile",
-                        top_k=settings.KNOWLEDGE_TOP_K,
-                        similarity_threshold=settings.KNOWLEDGE_SIMILARITY_THRESHOLD,
-                        task_id=task_id,
-                        stage="feature_breakdown",
-                    )
-
-                    if system_profiles:
-                        logger.info(f"[功能拆分] 检索到 {len(system_profiles)} 条相关系统知识")
-                        knowledge_context = self.knowledge_service.build_knowledge_context(system_profiles, max_length=1500)
-                    else:
-                        logger.info(f"[功能拆分] 未检索到【{system_name}】的系统知识")
-                except Exception as e:
-                    logger.warning(f"[功能拆分] 知识库检索失败: {e}，继续使用传统方式")
+            try:
+                logger.info(f"[功能拆分] 正在组装【{system_name}】的系统画像上下文...")
+                context_bundle = self.profile_service.build_context_bundle(
+                    system_name,
+                    query=requirement_content,
+                    top_k=max(int(getattr(settings, "KNOWLEDGE_TOP_K", 8) or 8), 3),
+                )
+                if str(context_bundle.get("profile_text") or "").strip() or context_bundle.get("profile_cards"):
+                    system_profiles = [
+                        {
+                            "system_name": system_name,
+                            "score": 1.0,
+                            "profile_text": str(context_bundle.get("profile_text") or "").strip(),
+                            "profile_cards": copy.deepcopy(context_bundle.get("profile_cards")) if isinstance(context_bundle.get("profile_cards"), list) else [],
+                            "context_source": str(context_bundle.get("context_source") or "profile").strip() or "profile",
+                            "completeness_score": int(context_bundle.get("completeness_score") or 0),
+                        }
+                    ]
+                    knowledge_context = self._build_profile_context_text(context_bundle)
+                else:
+                    logger.info(f"[功能拆分] 【{system_name}】暂无可用画像上下文")
+            except Exception as e:
+                logger.warning(f"[功能拆分] 画像上下文组装失败: {e}，继续使用传统方式")
 
             user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
             user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
@@ -293,8 +295,8 @@ class FeatureBreakdownAgent:
                 user_prompt += "请优先复用已确认的命名、模块归属和系统边界，避免与历史稳定模式冲突。\n\n"
 
             if knowledge_context:
-                user_prompt += f"""【系统知识参考】\n{knowledge_context}\n\n"""
-                user_prompt += "请参考上述系统知识（系统边界、核心功能、技术栈等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
+                user_prompt += f"""【系统画像参考】\n{knowledge_context}\n\n"""
+                user_prompt += "请参考上述系统画像（边界、核心能力、交互关系、技术约束等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
 
             user_prompt += """拆分要求：
 1. 只拆分属于该系统的功能点
@@ -396,9 +398,6 @@ class FeatureBreakdownAgent:
                 parts.append(kb_ref_line)
             feature["备注"] = "\n".join(parts).strip()
 
-        if not (self.knowledge_enabled and self.knowledge_service):
-            return
-
         checks = 0
         max_checks = 12
         for feature in features:
@@ -412,53 +411,86 @@ class FeatureBreakdownAgent:
             if not query_text.strip():
                 continue
 
-            threshold = max(float(getattr(settings, "KNOWLEDGE_SIMILARITY_THRESHOLD", 0.6) or 0.6), 0.75)
-            results = self.knowledge_service.search_similar_knowledge(
-                query_text=query_text,
-                knowledge_type="system_profile",
-                top_k=3,
-                similarity_threshold=threshold,
-                task_id=task_id,
-                module=str(feature.get("功能模块") or "").strip() or None,
-                feature_name=str(feature.get("功能点") or "").strip() or None,
-                stage="feature_attribution_check",
-            )
+            results = self.profile_service.search_relevant_profile_contexts(query_text, limit=3)
             if not results:
                 continue
 
             top = results[0]
             top_system = str(top.get("system_name") or "").strip()
-            top_sim = float(top.get("similarity") or 0.0)
+            top_sim = float(top.get("score") or top.get("similarity") or 0.0)
             if not top_system or top_system == system_name:
                 continue
 
             best_current = 0.0
             for item in results:
                 if str(item.get("system_name") or "").strip() == system_name:
-                    best_current = max(best_current, float(item.get("similarity") or 0.0))
+                    best_current = max(best_current, float(item.get("score") or item.get("similarity") or 0.0))
 
-            if top_sim - best_current < 0.08:
+            if top_sim - best_current < 1.0:
                 continue
 
             remark = str(feature.get("备注") or "").strip()
-            note = f"[归属复核] 疑似更偏向系统：{top_system} (sim={top_sim:.2f})，建议复核。"
+            note = f"[归属复核] 疑似更偏向系统：{top_system} (score={top_sim:.2f})，建议复核。"
             feature["备注"] = f"{remark}\n{note}".strip() if remark else note
 
     def _build_kb_reference_line(self, system_profiles: List[Dict[str, Any]]) -> str:
         if not system_profiles:
-            return "[知识引用] 无（该系统未导入system_profile系统画像）"
+            return "[画像引用] 无（该系统尚无可用画像上下文）"
 
         hits = []
-        for item in sorted(system_profiles, key=lambda x: x.get("similarity", 0.0), reverse=True)[:2]:
-            source_file = str(item.get("source_file") or "").strip()
-            sim = float(item.get("similarity") or 0.0)
+        for item in sorted(system_profiles, key=lambda x: x.get("score", x.get("similarity", 0.0)), reverse=True)[:2]:
+            source_file = str(item.get("source_file") or item.get("context_source") or "").strip()
+            sim = float(item.get("score") or item.get("similarity") or 0.0)
             if source_file:
-                hits.append(f"{source_file}(sim={sim:.2f})")
+                hits.append(f"{source_file}(score={sim:.2f})")
             else:
-                hits.append(f"system_profile(sim={sim:.2f})")
+                hits.append(f"profile_context(score={sim:.2f})")
         if not hits:
-            return "[知识引用] system_profile"
-        return "[知识引用] " + "；".join(hits)
+            return "[画像引用] profile_context"
+        return "[画像引用] " + "；".join(hits)
+
+    def _build_profile_context_text(self, context_bundle: Dict[str, Any]) -> str:
+        if not isinstance(context_bundle, dict):
+            return ""
+
+        parts: List[str] = []
+        profile_text = _normalize_text(context_bundle.get("profile_text"))
+        if profile_text:
+            parts.append(f"画像摘要: {profile_text}")
+
+        cards = context_bundle.get("profile_cards") if isinstance(context_bundle.get("profile_cards"), list) else []
+        card_lines: List[str] = []
+        for card in cards[:5]:
+            if not isinstance(card, dict) or not card.get("has_content"):
+                continue
+            title = _normalize_text(card.get("title"))
+            summary = card.get("summary")
+            if title and summary:
+                card_lines.append(f"{title}: {json.dumps(summary, ensure_ascii=False)}")
+        if card_lines:
+            parts.append("关键卡片: " + "；".join(card_lines))
+
+        integrations = context_bundle.get("integrations") if isinstance(context_bundle.get("integrations"), list) else []
+        if integrations:
+            integration_names = [
+                _normalize_text(item.get("service_name"))
+                for item in integrations
+                if isinstance(item, dict) and _normalize_text(item.get("service_name"))
+            ]
+            if integration_names:
+                parts.append("相关对外交互: " + "、".join(integration_names[:6]))
+
+        capabilities = context_bundle.get("capabilities") if isinstance(context_bundle.get("capabilities"), list) else []
+        if capabilities:
+            capability_names = [
+                _normalize_text(item.get("summary") or item.get("entry_id"))
+                for item in capabilities
+                if isinstance(item, dict) and _normalize_text(item.get("summary") or item.get("entry_id"))
+            ]
+            if capability_names:
+                parts.append("代码能力线索: " + "、".join(capability_names[:6]))
+
+        return "\n".join(parts).strip()
 
     def _is_high_risk_feature(self, feature: Dict[str, Any]) -> bool:
         try:
@@ -537,7 +569,7 @@ def get_feature_breakdown_agent(knowledge_service=None):
     """
     global feature_breakdown_agent
     expected_memory_path = os.path.join(settings.REPORT_DIR, "memory_records.json")
-    expected_profile_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    expected_profile_path = resolve_system_profile_root()
     current_memory_path = (
         feature_breakdown_agent.memory_adapter.memory_service.store_path
         if feature_breakdown_agent is not None

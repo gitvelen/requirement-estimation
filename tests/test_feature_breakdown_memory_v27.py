@@ -147,3 +147,48 @@ def test_breakdown_with_context_marks_context_degraded_when_memory_read_fails(mo
     assert result["context_degraded"] is True
     assert result["features"][0]["功能点"] == "开户申请"
     assert result["applied_adjustments"] == []
+
+
+def test_breakdown_with_context_uses_profile_context_without_system_profile_search(monkeypatch):
+    _seed_profile()
+
+    prompts = {}
+
+    class DummyKnowledgeService:
+        def search_similar_knowledge(self, **kwargs):
+            raise AssertionError("feature breakdown should not search system_profile vectors")
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_system_prompt",
+        lambda **kwargs: prompts.setdefault("user_prompt", kwargs.get("user_prompt") or "") or "{}",
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "extract_json",
+        lambda response: {
+            "features": [
+                {
+                    "序号": "1.1",
+                    "功能模块": "账户服务",
+                    "功能点": "开户注册",
+                    "业务描述": "开户并落账",
+                    "预估人天": 2.0,
+                    "复杂度": "中",
+                    "备注": "",
+                }
+            ]
+        },
+    )
+
+    agent = FeatureBreakdownAgent(knowledge_service=DummyKnowledgeService())
+    result = agent.breakdown_with_context(
+        requirement_content="新增开户并完成账务落账",
+        system_name="核心账务",
+        system_type="主系统",
+        task_id="task_ctx",
+    )
+
+    assert result["features"][0]["功能点"] == "开户注册"
+    assert "系统画像参考" in prompts["user_prompt"]
+    assert "账户开户、销户与账务处理" in prompts["user_prompt"]

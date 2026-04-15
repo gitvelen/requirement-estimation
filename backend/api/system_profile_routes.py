@@ -28,9 +28,12 @@ from backend.service.document_text_cleaner import (
 )
 from backend.service.knowledge_service import get_knowledge_service
 from backend.service.memory_service import get_memory_service
+from backend.service.profile_artifact_service import get_profile_artifact_service
+from backend.service.profile_health_service import get_profile_health_service
 from backend.service.runtime_execution_service import get_runtime_execution_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.service import user_service
+from backend.utils.time_utils import current_time, current_time_iso, parse_iso_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -192,11 +195,13 @@ def _is_profile_stale(profile: Dict[str, Any]) -> bool:
         return True
 
     try:
-        updated_dt = datetime.fromisoformat(updated_at)
+        updated_dt = parse_iso_datetime(updated_at)
     except Exception:
         return True
+    if updated_dt is None:
+        return True
 
-    return updated_dt < (datetime.now() - timedelta(days=stale_days))
+    return updated_dt < (current_time() - timedelta(days=stale_days))
 
 
 def _forbidden_write_response(
@@ -250,7 +255,7 @@ def _build_task_status_payload(*, system_id: str, task: Dict[str, Any]) -> Dict[
     task_id = str(task.get("task_id") or "").strip()
     status_name = _map_task_status(task.get("status"))
     system_name = _resolve_task_system_name(normalized_system_id)
-    updated_at = str(task.get("completed_at") or task.get("created_at") or datetime.now().isoformat())
+    updated_at = str(task.get("completed_at") or task.get("created_at") or current_time_iso())
 
     payload = {
         "task_id": task_id,
@@ -516,6 +521,18 @@ class SuggestionActionPayload(BaseModel):
     sub_field: str
 
 
+class CardActionPayload(BaseModel):
+    card_key: str
+
+
+class RawArtifactArchivePayload(BaseModel):
+    reason: str = Field(default="manual_archive", min_length=1, max_length=200)
+
+
+class ProfileResetPayload(BaseModel):
+    reason: str = Field(default="manual_reset", min_length=1, max_length=200)
+
+
 @router.get("")
 async def list_profiles(
     status: Optional[str] = Query(None),
@@ -656,7 +673,7 @@ async def system_profile_task_websocket(websocket: WebSocket, system_name: str):
                     {
                         "event": WS_HEARTBEAT_RESPONSE,
                         "system_name": normalized_system_name,
-                        "timestamp": datetime.now().isoformat(),
+                        "timestamp": current_time_iso(),
                     }
                 )
     except WebSocketDisconnect:
@@ -714,7 +731,11 @@ async def import_profile_document(
     normalized_doc_type = str(doc_type or "").strip().lower()
     file_name = str(file.filename or "").strip()
 
-    def _record_failed_import(reason: str, execution_id: Optional[str] = None) -> Dict[str, Any]:
+    def _record_failed_import(
+        reason: str,
+        execution_id: Optional[str] = None,
+        artifact_refs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         return profile_service.record_import_history(
             normalized_system_id,
             doc_type=normalized_doc_type or "unknown",
@@ -723,6 +744,7 @@ async def import_profile_document(
             operator_id=operator_id,
             failure_reason=reason,
             execution_id=execution_id,
+            artifact_refs=artifact_refs,
         )
 
     if getattr(settings, "ENABLE_V27_RUNTIME", False):
@@ -766,19 +788,22 @@ async def import_profile_document(
                 actor=current_user,
             )
             execution = result["execution"]
+            resolved_doc_type = str(result.get("resolved_doc_type") or normalized_doc_type or "unknown").strip() or "unknown"
             history = profile_service.record_import_history(
                 normalized_system_id,
-                doc_type=normalized_doc_type,
+                doc_type=resolved_doc_type,
                 file_name=file_name,
                 status="success",
                 operator_id=operator_id,
                 failure_reason=None,
                 execution_id=execution["execution_id"],
+                artifact_refs=result.get("artifact_refs"),
             )
             return {
                 "result_status": "queued",
                 "execution_id": execution["execution_id"],
                 "scene_id": "pm_document_ingest",
+                "doc_type": resolved_doc_type,
                 "import_result": {
                     "status": "success",
                     "file_name": file_name,
@@ -973,6 +998,130 @@ async def import_profile_document(
         )
 
 
+@router.post("/{system_id}/profile/import-batch")
+async def import_profile_documents_batch(
+    system_id: str,
+    request: Request,
+    files: List[UploadFile] = File(...),
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    forbidden = _ensure_owner_or_backup_for_draft_write(
+        current_user,
+        request=request,
+        system_name=resolved_system_name,
+        system_id=normalized_system_id,
+    )
+    if forbidden:
+        return forbidden
+
+    if not getattr(settings, "ENABLE_V27_RUNTIME", False):
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_IMPORT_FAILED",
+            message="文档导入失败",
+            details={"reason": "批量导入仅支持 v2.7 runtime 模式"},
+        )
+
+    upload_files = [item for item in (files or []) if item is not None]
+    if not upload_files:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_IMPORT_FAILED",
+            message="文档导入失败",
+            details={"reason": "至少上传一个文件"},
+        )
+
+    adapter = get_document_skill_adapter()
+    profile_service = get_system_profile_service()
+    operator_id = str(current_user.get("id") or current_user.get("username") or "unknown")
+    max_bytes = int(getattr(settings, "SYSTEM_PROFILE_IMPORT_MAX_BYTES", 200 * 1024 * 1024))
+    max_mb = max(int(max_bytes // (1024 * 1024)), 1)
+
+    results: List[Dict[str, Any]] = []
+    success_count = 0
+    failure_count = 0
+
+    for upload in upload_files:
+        file_name = str(upload.filename or "").strip()
+        history_doc_type = "unknown"
+        try:
+            if not file_name:
+                raise ValueError("文件名不能为空")
+
+            file_content = await upload.read()
+            if not file_content:
+                raise ValueError("文件内容为空")
+            if len(file_content) > max_bytes:
+                raise ValueError(f"文件大小超过{max_mb}MB限制")
+
+            result = adapter.ingest_document(
+                system_id=normalized_system_id,
+                system_name=resolved_system_name,
+                doc_type="auto",
+                file_name=file_name,
+                file_content=file_content,
+                actor=current_user,
+            )
+            execution = result["execution"]
+            history_doc_type = str(result.get("resolved_doc_type") or "general").strip() or "general"
+            history = profile_service.record_import_history(
+                normalized_system_id,
+                doc_type=history_doc_type,
+                file_name=file_name,
+                status="success",
+                operator_id=operator_id,
+                failure_reason=None,
+                execution_id=execution["execution_id"],
+                artifact_refs=result.get("artifact_refs"),
+            )
+            results.append(
+                {
+                    "status": "success",
+                    "file_name": file_name,
+                    "doc_type": history_doc_type,
+                    "execution_id": execution["execution_id"],
+                    "imported_at": history.get("imported_at"),
+                    "artifact_refs": result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {},
+                }
+            )
+            success_count += 1
+        except Exception as exc:
+            history = profile_service.record_import_history(
+                normalized_system_id,
+                doc_type=history_doc_type,
+                file_name=file_name or "unknown",
+                status="failed",
+                operator_id=operator_id,
+                failure_reason=str(exc),
+            )
+            results.append(
+                {
+                    "status": "failed",
+                    "file_name": file_name or "unknown",
+                    "doc_type": history_doc_type,
+                    "failure_reason": history.get("failure_reason"),
+                    "imported_at": history.get("imported_at"),
+                    "artifact_refs": {},
+                }
+            )
+            failure_count += 1
+
+    return {
+        "batch_count": len(upload_files),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "results": results,
+    }
+
+
 @router.get("/{system_id}/profile/import-history")
 async def get_profile_import_history(
     system_id: str,
@@ -988,6 +1137,123 @@ async def get_profile_import_history(
 
     service = get_system_profile_service()
     return service.get_import_history(normalized_system_id, limit=limit, offset=offset)
+
+
+@router.get("/{system_id}/profile/raw-artifacts")
+async def list_profile_raw_artifacts(
+    system_id: str,
+    request: Request,
+    include_archived: bool = Query(False),
+    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    items = get_profile_artifact_service().list_layer_records(
+        layer="raw",
+        system_id=normalized_system_id,
+        include_archived=include_archived,
+    )
+    return {
+        "total": len(items),
+        "items": items,
+    }
+
+
+@router.post("/{system_id}/profile/raw-artifacts/{artifact_id}/archive")
+async def archive_profile_raw_artifact(
+    system_id: str,
+    artifact_id: str,
+    payload: RawArtifactArchivePayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    normalized_artifact_id = str(artifact_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    try:
+        archived = get_profile_artifact_service().archive_raw_artifact(
+            system_id=normalized_system_id,
+            artifact_id=normalized_artifact_id,
+            operator_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+            reason=payload.reason,
+        )
+        return {"code": 200, "data": archived}
+    except ValueError as exc:
+        message = str(exc)
+        if message == "artifact_not_found":
+            return build_error_response(
+                request=request,
+                status_code=404,
+                error_code="RAW_ARTIFACT_NOT_FOUND",
+                message="原始文档资产不存在",
+                details={"system_id": normalized_system_id, "artifact_id": normalized_artifact_id},
+            )
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="RAW_ARTIFACT_ARCHIVE_FAILED",
+            message=message,
+        )
+    except Exception as exc:
+        logger.error("归档原始文档资产失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="RAW_ARTIFACT_ARCHIVE_FAILED",
+            message="归档原始文档资产失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.get("/{system_id}/profile/health-report")
+async def get_profile_health_report(
+    system_id: str,
+    request: Request,
+    _auth: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    return get_profile_health_service().get_latest_report(
+        system_id=normalized_system_id,
+        system_name=str(owner_info.get("system_name") or "").strip(),
+    )
+
+
+@router.post("/{system_id}/profile/health-report/trigger")
+async def trigger_profile_health_report(
+    system_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin", "expert"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    try:
+        return get_profile_health_service().generate_and_archive_report(
+            system_id=normalized_system_id,
+            system_name=str(owner_info.get("system_name") or "").strip(),
+            operator_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+        )
+    except Exception as exc:
+        logger.error("生成画像健康报告失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_HEALTH_REPORT_FAILED",
+            message="生成画像健康报告失败",
+            details={"reason": str(exc)},
+        )
 
 
 def _default_v27_execution_status() -> Dict[str, Any]:
@@ -1324,6 +1590,230 @@ async def rollback_profile_suggestion(
             status_code=500,
             error_code="PROFILE_ROLLBACK_FAILED",
             message="回滚 AI 建议失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/{system_id}/profile/cards/accept")
+async def accept_profile_card_candidate(
+    system_id: str,
+    payload: CardActionPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    forbidden = _ensure_owner_or_backup_for_draft_write(
+        current_user,
+        request=request,
+        system_name=resolved_system_name,
+        system_id=normalized_system_id,
+    )
+    if forbidden:
+        return forbidden
+
+    service = get_system_profile_service()
+    try:
+        profile = service.accept_card_candidate(
+            resolved_system_name,
+            card_key=payload.card_key,
+            actor=current_user,
+        )
+        return {"code": 200, "data": profile}
+    except ValueError as exc:
+        error_code = "PROFILE_CARD_ACCEPT_FAILED"
+        if str(exc) == "card_candidate_not_found":
+            error_code = "CARD_CANDIDATE_NOT_FOUND"
+        return build_error_response(
+            request=request,
+            status_code=400 if error_code == "PROFILE_CARD_ACCEPT_FAILED" else 404,
+            error_code=error_code,
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("采纳卡片候选失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_CARD_ACCEPT_FAILED",
+            message="采纳卡片候选失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/{system_id}/profile/cards/ignore")
+async def ignore_profile_card_candidate(
+    system_id: str,
+    payload: CardActionPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    forbidden = _ensure_owner_or_backup_for_draft_write(
+        current_user,
+        request=request,
+        system_name=resolved_system_name,
+        system_id=normalized_system_id,
+    )
+    if forbidden:
+        return forbidden
+
+    service = get_system_profile_service()
+    try:
+        profile = service.ignore_card_candidate(
+            resolved_system_name,
+            card_key=payload.card_key,
+            actor=current_user,
+        )
+        return {"code": 200, "data": profile}
+    except ValueError as exc:
+        error_code = "PROFILE_CARD_IGNORE_FAILED"
+        if str(exc) == "card_candidate_not_found":
+            error_code = "CARD_CANDIDATE_NOT_FOUND"
+        return build_error_response(
+            request=request,
+            status_code=400 if error_code == "PROFILE_CARD_IGNORE_FAILED" else 404,
+            error_code=error_code,
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("忽略卡片候选失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_CARD_IGNORE_FAILED",
+            message="忽略卡片候选失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/{system_id}/profile/cards/restore-baseline")
+async def restore_profile_card_baseline(
+    system_id: str,
+    payload: CardActionPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["manager", "admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    forbidden = _ensure_owner_or_backup_for_draft_write(
+        current_user,
+        request=request,
+        system_name=resolved_system_name,
+        system_id=normalized_system_id,
+    )
+    if forbidden:
+        return forbidden
+
+    service = get_system_profile_service()
+    try:
+        profile = service.restore_card_baseline(
+            resolved_system_name,
+            card_key=payload.card_key,
+            actor=current_user,
+        )
+        return {"code": 200, "data": profile}
+    except ValueError as exc:
+        error_code = "PROFILE_CARD_RESTORE_FAILED"
+        if str(exc) == "card_baseline_not_found":
+            error_code = "CARD_BASELINE_NOT_FOUND"
+        return build_error_response(
+            request=request,
+            status_code=400 if error_code == "PROFILE_CARD_RESTORE_FAILED" else 404,
+            error_code=error_code,
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("恢复卡片基线失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_CARD_RESTORE_FAILED",
+            message="恢复卡片基线失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/{system_id}/profile/reset")
+async def reset_profile_workspace(
+    system_id: str,
+    payload: ProfileResetPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    normalized_system_id = str(system_id or "").strip()
+    owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+    if not owner_info.get("system_found"):
+        return _system_not_found_response(request, system_name="", system_id=normalized_system_id)
+
+    resolved_system_name = str(owner_info.get("system_name") or "").strip()
+    service = get_system_profile_service()
+    try:
+        result = service.reset_profile_workspace(
+            resolved_system_name,
+            system_id=normalized_system_id,
+            actor=current_user,
+            reason=payload.reason,
+        )
+        return {"code": 200, "data": result}
+    except ValueError as exc:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_RESET_FAILED",
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("清空系统画像工作区失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_RESET_FAILED",
+            message="清空系统画像工作区失败",
+            details={"reason": str(exc)},
+        )
+
+
+@router.post("/profile/reset-all")
+async def reset_all_profile_workspaces(
+    payload: ProfileResetPayload,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_roles(["admin"])),
+):
+    service = get_system_profile_service()
+    try:
+        result = service.reset_all_profile_workspaces(
+            actor=current_user,
+            reason=payload.reason,
+        )
+        return {"code": 200, "data": result}
+    except ValueError as exc:
+        return build_error_response(
+            request=request,
+            status_code=400,
+            error_code="PROFILE_RESET_FAILED",
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error("批量清空系统画像工作区失败: %s", exc)
+        return build_error_response(
+            request=request,
+            status_code=500,
+            error_code="PROFILE_RESET_FAILED",
+            message="批量清空系统画像工作区失败",
             details={"reason": str(exc)},
         )
 

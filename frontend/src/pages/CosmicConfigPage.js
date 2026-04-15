@@ -29,6 +29,39 @@ import usePermission from '../hooks/usePermission';
 const { Title, Text, Paragraph } = Typography;
 const { TabPane } = Tabs;
 
+const mergeSection = (currentSection, nextSection) => ({
+  ...(currentSection || {}),
+  ...(nextSection || {}),
+});
+
+export const mergeCosmicConfigForSave = (currentConfig, formValues) => {
+  const currentDataMovementRules = currentConfig?.data_movement_rules || {};
+  const nextDataMovementRules = formValues?.data_movement_rules || {};
+  const mergedDataMovementRules = {
+    ...currentDataMovementRules,
+  };
+
+  Object.entries(nextDataMovementRules).forEach(([movementType, movementRule]) => {
+    mergedDataMovementRules[movementType] = mergeSection(
+      currentDataMovementRules[movementType],
+      movementRule,
+    );
+  });
+
+  return {
+    ...(currentConfig || {}),
+    ...(formValues || {}),
+    data_group_rules: mergeSection(currentConfig?.data_group_rules, formValues?.data_group_rules),
+    functional_process_rules: mergeSection(
+      currentConfig?.functional_process_rules,
+      formValues?.functional_process_rules,
+    ),
+    data_movement_rules: mergedDataMovementRules,
+    counting_rules: mergeSection(currentConfig?.counting_rules, formValues?.counting_rules),
+    validation_rules: mergeSection(currentConfig?.validation_rules, formValues?.validation_rules),
+  };
+};
+
 const CosmicConfigPage = () => {
   const { isAdmin } = usePermission();
   const readOnly = !isAdmin;
@@ -96,8 +129,9 @@ const CosmicConfigPage = () => {
 
     try {
       const values = await form.validateFields();
+      const payload = mergeCosmicConfigForSave(config, values);
       setSaving(true);
-      await axios.post('/api/v1/cosmic/config', values);
+      await axios.post('/api/v1/cosmic/config', payload);
       message.success('配置保存成功');
       fetchConfig();
     } catch (error) {

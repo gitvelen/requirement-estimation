@@ -239,6 +239,22 @@ class ServiceGovernanceProfileUpdater:
             field_sources = profile.get("field_sources") if isinstance(profile.get("field_sources"), dict) else {}
 
             desired_updates = self._build_field_updates(payload)
+            field_candidates = {
+                field_path: {
+                    "value": value,
+                    "confidence": 1.0,
+                    "reason": "service_governance_high_confidence",
+                }
+                for field_path, value in desired_updates.items()
+            }
+            self.profile_service.record_authoritative_candidate(
+                system_name,
+                system_id=system_id,
+                authority="governance",
+                field_candidates=field_candidates,
+                actor=actor,
+                metadata={"execution_id": execution["execution_id"]},
+            )
             applied_updates: Dict[str, Any] = {}
             policy_results: List[Dict[str, Any]] = []
 
@@ -298,6 +314,13 @@ class ServiceGovernanceProfileUpdater:
                 except Exception as exc:  # pragma: no cover
                     status_name = "partial_success"
                     errors.append(str(exc))
+
+            self.profile_service.refresh_candidate_projection(
+                system_name,
+                system_id=system_id,
+                actor=actor,
+                sync_ai_suggestions=False,
+            )
 
         result_summary = {
             "updated_system_ids": updated_system_ids,

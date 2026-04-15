@@ -159,13 +159,16 @@ resolve_backend_upstream() {
     BACKEND_UPSTREAM="$(normalize_upstream_value "$value")"
 
     if [ -z "$BACKEND_UPSTREAM" ]; then
-        echo_error "未解析到后端地址，请设置 FRONTEND_BACKEND_UPSTREAM（示例：10.62.22.121:443）"
+        echo_error "未解析到后端地址，请通过以下任一方式设置 FRONTEND_BACKEND_UPSTREAM："
+        echo_error "1) 临时环境变量：FRONTEND_BACKEND_UPSTREAM=10.62.22.121:443 bash deploy-frontend-internal.sh"
+        echo_error "2) 持久配置文件：$PROJECT_DIR/.env.frontend.internal"
         exit 1
     fi
 
     if [ "$BACKEND_UPSTREAM" = "requirement-backend:443" ] || [ "$BACKEND_UPSTREAM" = "requirement-backend" ]; then
         echo_error "当前后端地址为容器名 requirement-backend，前后端分离部署不可达"
-        echo_error "请设置 FRONTEND_BACKEND_UPSTREAM（示例：10.62.22.121:443）"
+        echo_error "请改为后端服务器可达地址，例如：10.62.22.121:443"
+        echo_error "也可写入 $PROJECT_DIR/.env.frontend.internal 后重试"
         exit 1
     fi
 

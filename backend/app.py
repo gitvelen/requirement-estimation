@@ -36,6 +36,7 @@ from backend.api.system_profile_routes import (
 from backend.api.code_scan_routes import router as code_scan_router
 from backend.api.esb_routes import router as esb_router
 from backend.api.error_utils import ApiError, build_error_payload
+from backend.service.profile_artifact_service import resolve_profile_artifact_root
 from backend.utils.pdf_report import get_font_info
 from backend.service.metadata_governance_service import get_metadata_governance_service
 
@@ -135,6 +136,7 @@ async def api_error_exception_handler(request: Request, exc: ApiError):
 # 创建必要的目录
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 os.makedirs(settings.REPORT_DIR, exist_ok=True)
+os.makedirs(resolve_profile_artifact_root(), exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
 # 静态文件服务（用于前端）

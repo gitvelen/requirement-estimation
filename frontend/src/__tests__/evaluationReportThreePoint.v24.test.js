@@ -47,6 +47,10 @@ const mockEvaluationResponse = {
             expected: 2.58,
             reasoning: '规则复杂度中等',
             estimationDegraded: false,
+            profileContextUsed: true,
+            profile_context_used: true,
+            contextSource: 'canonical+wiki_candidate',
+            context_source: 'canonical+wiki_candidate',
             myEvaluation: null,
           },
           {
@@ -66,6 +70,10 @@ const mockEvaluationResponse = {
             expected: 1.5,
             reasoning: '',
             estimationDegraded: true,
+            profileContextUsed: false,
+            profile_context_used: false,
+            contextSource: 'none',
+            context_source: 'none',
             myEvaluation: null,
           },
         ],
@@ -121,6 +129,8 @@ const mockReportEvaluationResponse = {
         expected: 2.58,
         reasoning: '规则复杂度中等',
         estimation_degraded: false,
+        profile_context_used: true,
+        context_source: 'canonical+wiki_candidate',
         system_name: 'HOP',
       },
       {
@@ -133,6 +143,8 @@ const mockReportEvaluationResponse = {
         expected: 1.5,
         reasoning: '',
         estimation_degraded: true,
+        profile_context_used: false,
+        context_source: 'none',
         system_name: 'HOP',
       },
     ],
@@ -193,6 +205,8 @@ describe('Evaluation/Report three-point estimate v2.4', () => {
     expect(screen.getByText(/最可能值/)).toBeInTheDocument();
     expect(screen.getByText(/悲观值/)).toBeInTheDocument();
     expect(screen.getByText(/规则复杂度中等/)).toBeInTheDocument();
+    expect(screen.getByText(/画像上下文：已使用/)).toBeInTheDocument();
+    expect(screen.getByText(/已发布画像 \+ wiki高置信候选补位/)).toBeInTheDocument();
   });
 
   it('shows degraded message in EvaluationPage expanded row when three-point values are missing', async () => {
@@ -257,5 +271,7 @@ describe('Evaluation/Report three-point estimate v2.4', () => {
     await waitFor(() => {
       expect(screen.getByText(/最可能值/)).toBeInTheDocument();
     });
+    expect(screen.getByText(/画像上下文：已使用/)).toBeInTheDocument();
+    expect(screen.getByText(/已发布画像 \+ wiki高置信候选补位/)).toBeInTheDocument();
   });
 });

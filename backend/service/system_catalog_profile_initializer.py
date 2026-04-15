@@ -63,26 +63,14 @@ class SystemCatalogProfileInitializer:
         extra = system_item.get("extra") if isinstance(system_item.get("extra"), dict) else {}
         abbreviation = _normalize_text(system_item.get("abbreviation"))
 
-        position_extensions: Dict[str, Any] = {}
         technical_extensions: Dict[str, Any] = {}
         constraint_extensions: Dict[str, Any] = {}
         interface_extensions: Dict[str, Any] = {}
 
         aliases = _merge_unique_lists(abbreviation, extra.get("英文简称"))
-        if aliases:
-            position_extensions["aliases"] = aliases
-
         business_lines = _normalize_list(extra.get("业务领域"))
-        if business_lines:
-            position_extensions["business_lines"] = business_lines
-
         status = _normalize_text(system_item.get("status") or extra.get("状态"))
-        if status:
-            position_extensions["status"] = status
-
         application_level = _normalize_text(extra.get("应用等级"))
-        if application_level:
-            position_extensions["application_level"] = application_level
 
         cloud_deployment = _normalize_text(extra.get("是否云部署"))
         if cloud_deployment:
@@ -154,13 +142,25 @@ class SystemCatalogProfileInitializer:
         if system_type:
             updates["system_positioning.canonical.system_type"] = system_type
 
+        if aliases:
+            updates["system_positioning.canonical.system_aliases"] = aliases
+
+        if status:
+            updates["system_positioning.canonical.lifecycle_status"] = status
+
         business_domain = _normalize_list(extra.get("应用主题域"))
         if business_domain:
-            updates["system_positioning.canonical.business_domain"] = business_domain
+            updates["system_positioning.canonical.business_domains"] = business_domain
+
+        if business_lines:
+            updates["system_positioning.canonical.business_lines"] = business_lines
 
         architecture_layer = _normalize_text(extra.get("应用分层"))
         if architecture_layer:
             updates["system_positioning.canonical.architecture_layer"] = architecture_layer
+
+        if application_level:
+            updates["system_positioning.canonical.application_level"] = application_level
 
         target_users = _normalize_list(extra.get("服务对象"))
         if target_users:
@@ -168,10 +168,7 @@ class SystemCatalogProfileInitializer:
 
         service_scope = _normalize_text(extra.get("功能描述"))
         if service_scope:
-            updates["system_positioning.canonical.service_scope"] = service_scope
-
-        if position_extensions:
-            updates["system_positioning.canonical.extensions"] = position_extensions
+            updates["system_positioning.canonical.core_responsibility"] = service_scope
 
         languages = _normalize_list(extra.get("开发语言"))
         databases = _normalize_list(extra.get("RDBMS"))
@@ -263,27 +260,49 @@ class SystemCatalogProfileInitializer:
                 )
                 continue
 
-            existing_profile = self.profile_service.get_profile(system_name)
-            if existing_profile and not self.blank_profile_evaluator.is_blank(existing_profile):
-                skipped_items.append(
-                    {
-                        "system_id": system_id,
-                        "system_name": system_name,
-                        "reason": "profile_not_blank",
-                    }
-                )
-                policy_results.append(
-                    {
-                        "system_id": system_id,
-                        "field_path": "",
-                        "decision": "reject",
-                        "reason": "profile_not_blank",
-                    }
-                )
-                continue
-
             try:
                 self.profile_service.ensure_profile(system_name, system_id=system_id, actor=actor)
+                field_candidates = {
+                    field_path: {
+                        "value": value,
+                        "confidence": 1.0,
+                        "reason": "system_catalog_high_confidence",
+                    }
+                    for field_path, value in field_updates.items()
+                }
+                self.profile_service.record_authoritative_candidate(
+                    system_name,
+                    system_id=system_id,
+                    authority="system_catalog",
+                    field_candidates=field_candidates,
+                    actor=actor,
+                    metadata={"execution_id": execution["execution_id"]},
+                )
+                existing_profile = self.profile_service.get_profile(system_name)
+                if existing_profile and not self.blank_profile_evaluator.is_blank(existing_profile):
+                    skipped_items.append(
+                        {
+                            "system_id": system_id,
+                            "system_name": system_name,
+                            "reason": "profile_not_blank",
+                        }
+                    )
+                    policy_results.append(
+                        {
+                            "system_id": system_id,
+                            "field_path": "",
+                            "decision": "reject",
+                            "reason": "profile_not_blank",
+                        }
+                    )
+                    self.profile_service.refresh_candidate_projection(
+                        system_name,
+                        system_id=system_id,
+                        actor=actor,
+                        sync_ai_suggestions=False,
+                    )
+                    continue
+
                 self.profile_service.apply_v27_field_updates(
                     system_name,
                     system_id=system_id,
@@ -327,6 +346,12 @@ class SystemCatalogProfileInitializer:
                     )
                 except Exception as exc:  # pragma: no cover
                     errors.append(str(exc))
+                self.profile_service.refresh_candidate_projection(
+                    system_name,
+                    system_id=system_id,
+                    actor=actor,
+                    sync_ai_suggestions=False,
+                )
             except Exception as exc:  # pragma: no cover
                 errors.append(f"{system_name or system_id}: {exc}")
 

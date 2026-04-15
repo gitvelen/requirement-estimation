@@ -94,19 +94,10 @@ def _seed_profiles(manager, admin):
     )
 
     # 把 PAY 画像改为过期，便于验证 stale 标记
-    store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
-    if os.path.exists(store_path):
-        import json
-
-        with open(store_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("system_name") or "") == "PAY":
-                item["updated_at"] = (datetime.now() - timedelta(days=40)).isoformat()
-        with open(store_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+    pay_profile = service.repository.load_profile(state="working", system_name="PAY")
+    if isinstance(pay_profile, dict):
+        pay_profile["updated_at"] = (datetime.now() - timedelta(days=40)).isoformat()
+        service.repository.save_working_profile(pay_profile)
 
 
 def _seed_task(

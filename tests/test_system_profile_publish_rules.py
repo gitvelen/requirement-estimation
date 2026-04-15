@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,20 @@ from backend.service import user_service
 
 class DummyEmbeddingService:
     def generate_embedding(self, text: str):
+        return [1.0, 0.0, 0.0]
+
+
+class FailingEmbeddingService:
+    def generate_embedding(self, text: str):
+        raise TimeoutError("embedding timeout")
+
+
+class SlowEmbeddingService:
+    def __init__(self, delay: float):
+        self.delay = delay
+
+    def generate_embedding(self, text: str):
+        time.sleep(self.delay)
         return [1.0, 0.0, 0.0]
 
 
@@ -77,6 +92,18 @@ def _seed_system(owner, system_id: str = "sys_hop", system_name: str = "HOP"):
     )
 
 
+def _load_working_profile(*, system_id: str = "", system_name: str = ""):
+    repository = system_profile_service.get_system_profile_service().repository
+    profile = repository.load_profile(state="working", system_id=system_id, system_name=system_name)
+    assert isinstance(profile, dict)
+    return profile
+
+
+def _save_working_profile(profile):
+    repository = system_profile_service.get_system_profile_service().repository
+    repository.save_working_profile(profile)
+
+
 def test_publish_allows_v21_four_fields(client, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
 
@@ -109,6 +136,104 @@ def test_publish_allows_v21_four_fields(client, monkeypatch):
     payload = published.json()
     assert payload.get("code") == 200
     assert payload.get("data", {}).get("status") == "published"
+
+
+def test_publish_succeeds_when_embedding_unavailable(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+
+    class DummyKnowledgeService:
+        def __init__(self):
+            self.embedding_service = FailingEmbeddingService()
+            self.vector_store = object()
+
+    monkeypatch.setattr(ks, "get_knowledge_service", lambda: DummyKnowledgeService())
+
+    owner = _seed_user("owner_publish_degraded", "owner123", ["manager"])
+    _seed_system(owner)
+
+    token = _login(client, "owner_publish_degraded", "owner123")
+
+    saved = client.put(
+        "/api/v1/system-profiles/HOP",
+        json={
+            "system_id": "sys_hop",
+            "fields": {
+                "system_scope": "账户管理系统",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户", "desc": "开户流程"}]}],
+                "integration_points": "核心账务",
+                "key_constraints": "合规",
+            },
+            "evidence_refs": [],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert saved.status_code == 200
+
+    published = client.post(
+        "/api/v1/system-profiles/HOP/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert published.status_code == 200
+    payload = published.json()
+    assert payload.get("code") == 200
+    assert payload.get("data", {}).get("status") == "published"
+
+    stored_profile = _load_working_profile(system_id="sys_hop")
+    assert stored_profile.get("status") == "published"
+    assert stored_profile.get("published_at")
+
+
+def test_publish_returns_before_slow_embedding_finishes(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "PUBLISH_KNOWLEDGE_WAIT_SECONDS", 0.01, raising=False)
+
+    class DummyVectorStore:
+        def insert_knowledge(self, **kwargs):
+            return {"id": "knowledge_001"}
+
+    class DummyKnowledgeService:
+        def __init__(self):
+            self.embedding_service = SlowEmbeddingService(delay=0.2)
+            self.vector_store = DummyVectorStore()
+
+    monkeypatch.setattr(ks, "get_knowledge_service", lambda: DummyKnowledgeService())
+
+    owner = _seed_user("owner_publish_async", "owner123", ["manager"])
+    _seed_system(owner)
+
+    token = _login(client, "owner_publish_async", "owner123")
+
+    saved = client.put(
+        "/api/v1/system-profiles/HOP",
+        json={
+            "system_id": "sys_hop",
+            "fields": {
+                "system_scope": "账户管理系统",
+                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户", "desc": "开户流程"}]}],
+                "integration_points": "核心账务",
+                "key_constraints": "合规",
+            },
+            "evidence_refs": [],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert saved.status_code == 200
+
+    started = time.monotonic()
+    published = client.post(
+        "/api/v1/system-profiles/HOP/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    elapsed = time.monotonic() - started
+
+    assert published.status_code == 200
+    assert elapsed < 0.15
+    payload = published.json()
+    assert payload.get("code") == 200
+    assert payload.get("data", {}).get("status") == "published"
+
+    stored_profile = _load_working_profile(system_id="sys_hop")
+    assert stored_profile.get("status") == "published"
 
 
 def test_save_rejects_invalid_module_structure(client, monkeypatch):
@@ -176,27 +301,26 @@ def test_profile_fields_only_keep_v21_contract(client, monkeypatch, tmp_path):
     assert isinstance(fields.get("module_structure"), list)
     assert fields.get("module_structure")[0].get("module_name") == "账户"
 
-    store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
-    with open(store_path, "r", encoding="utf-8") as f:
-        stored = json.load(f)
-    assert stored and isinstance(stored, list)
-    stored_fields = stored[0].get("fields") or {}
+    stored_profile = _load_working_profile(system_id="sys_hop")
+    stored_fields = stored_profile.get("fields") or {}
     assert set(stored_fields.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
+    assert not os.path.exists(os.path.join(settings.REPORT_DIR, "system_profiles.json"))
+    workspace_path = system_profile_service.get_system_profile_service().repository.get_workspace_path(system_id="sys_hop")
+    assert workspace_path
+    assert os.path.exists(os.path.join(workspace_path, "profile", "working.json"))
 
     published = client.post(
         "/api/v1/system-profiles/HOP/publish",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert published.status_code == 200
+    published_payload = published.json().get("data") or {}
+    assert published_payload.get("status") == "published"
+    assert published_payload.get("published_at")
 
-    knowledge_store = os.path.join(settings.REPORT_DIR, "knowledge_store.json")
-    with open(knowledge_store, "r", encoding="utf-8") as f:
-        entries = json.load(f)
-    assert isinstance(entries, list)
-    inserted = [item for item in entries if item.get("system_name") == "HOP" and item.get("knowledge_type") == "system_profile"]
-    assert inserted
-    metadata = inserted[-1].get("metadata", {})
-    assert set(metadata.keys()) == {"system_scope", "module_structure", "integration_points", "key_constraints"}
+    stored_profile = _load_working_profile(system_id="sys_hop")
+    assert stored_profile.get("status") == "published"
+    assert stored_profile.get("published_at")
 
 
 def test_profile_suggestion_accept_rollback_and_events(client, monkeypatch):
@@ -222,21 +346,17 @@ def test_profile_suggestion_accept_rollback_and_events(client, monkeypatch):
     )
     assert saved.status_code == 200
 
-    store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
-    with open(store_path, "r", encoding="utf-8") as f:
-        rows = json.load(f)
-    assert rows and isinstance(rows, list)
-    rows[0]["ai_suggestions"] = {
+    stored_profile = _load_working_profile(system_id="sys_actions")
+    stored_profile["ai_suggestions"] = {
         "system_scope": "新系统描述",
         "integration_points": "新集成点",
     }
-    rows[0]["ai_suggestions_previous"] = {
+    stored_profile["ai_suggestions_previous"] = {
         "system_scope": "上一版系统描述",
         "integration_points": "上一版集成点",
     }
-    rows[0]["profile_events"] = []
-    with open(store_path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2)
+    stored_profile["profile_events"] = []
+    _save_working_profile(stored_profile)
 
     accepted = client.post(
         "/api/v1/system-profiles/sys_actions/profile/suggestions/accept",
@@ -308,18 +428,14 @@ def test_profile_suggestion_ignore_persists_and_records_event(client, monkeypatc
     )
     assert saved.status_code == 200
 
-    store_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
-    with open(store_path, "r", encoding="utf-8") as f:
-        rows = json.load(f)
-    assert rows and isinstance(rows, list)
-    rows[0]["ai_suggestions"] = {
+    stored_profile = _load_working_profile(system_id="sys_ignore")
+    stored_profile["ai_suggestions"] = {
         "system_positioning": {
             "system_description": "AI建议-系统描述",
         }
     }
-    rows[0]["profile_events"] = []
-    with open(store_path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2)
+    stored_profile["profile_events"] = []
+    _save_working_profile(stored_profile)
 
     ignored = client.post(
         "/api/v1/system-profiles/sys_ignore/profile/suggestions/ignore",

@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +14,7 @@ from backend.app import app
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import memory_service
+from backend.service import profile_artifact_service
 from backend.service import runtime_execution_service
 from backend.service import system_profile_service
 from backend.service import user_service
@@ -130,12 +133,12 @@ def test_catalog_confirm_initializes_blank_profiles_and_writes_memory(client):
     canonical_d5 = profile["profile_data"]["constraints_risks"]["canonical"]
 
     assert canonical_d1["system_type"] == "渠道接入"
-    assert canonical_d1["business_domain"] == ["支付域"]
+    assert canonical_d1["business_domains"] == ["支付域"]
+    assert canonical_d1["business_lines"] == ["支付结算", "渠道服务"]
     assert canonical_d1["architecture_layer"] == "3产品服务层"
     assert canonical_d1["target_users"] == ["柜面", "客户"]
-    assert canonical_d1["service_scope"] == "支付统一受理"
-    assert canonical_d1["extensions"]["aliases"] == ["PAY"]
-    assert canonical_d1["extensions"]["business_lines"] == ["支付结算", "渠道服务"]
+    assert canonical_d1["core_responsibility"] == "支付统一受理"
+    assert canonical_d1["system_aliases"] == ["PAY"]
     assert canonical_d3["provided_services"] == []
     assert canonical_d3["consumed_services"] == []
     assert canonical_d3["other_integrations"] == []
@@ -148,7 +151,7 @@ def test_catalog_confirm_initializes_blank_profiles_and_writes_memory(client):
     assert canonical_d5["extensions"]["dr_rpo"] == "5"
     assert profile["profile_data"]["business_capabilities"]["canonical"]["functional_modules"] == []
 
-    field_source = profile["field_sources"]["system_positioning.canonical.service_scope"]
+    field_source = profile["field_sources"]["system_positioning.canonical.core_responsibility"]
     assert field_source["source"] == "system_catalog"
     assert field_source["scene_id"] == "admin_system_catalog_import"
 
@@ -162,6 +165,20 @@ def test_catalog_confirm_initializes_blank_profiles_and_writes_memory(client):
     assert execution["result_summary"]["updated_systems"] == [
         {"system_id": "SYS-001", "system_name": "统一支付平台"}
     ]
+
+    artifact_service = profile_artifact_service.get_profile_artifact_service()
+    workspace_path = artifact_service.repository.get_workspace_path(system_id="SYS-001")
+    assert workspace_path
+    workspace = Path(workspace_path)
+    authoritative_candidate_dirs = list((workspace / "candidate" / "authoritative").glob("auth_cand_*"))
+    assert len(authoritative_candidate_dirs) == 1
+    assert (authoritative_candidate_dirs[0] / "authoritative_candidate.json").exists()
+
+    with open(workspace / "candidate" / "latest" / "merged_candidates.json", "r", encoding="utf-8") as f:
+        merged_candidates = json.load(f)
+    core_responsibility_candidate = merged_candidates["system_positioning.canonical.core_responsibility"]
+    assert core_responsibility_candidate["selected_value"] == "支付统一受理"
+    assert core_responsibility_candidate["candidate_items"][0]["source_mode"] == "system_catalog"
 
 
 def test_catalog_confirm_skips_non_blank_profiles_without_overwriting_existing_content(client):
@@ -177,11 +194,10 @@ def test_catalog_confirm_skips_non_blank_profiles_without_overwriting_existing_c
                 "system_positioning": {
                     "canonical": {
                         "system_type": "",
-                        "business_domain": [],
+                        "business_domains": [],
                         "architecture_layer": "",
                         "target_users": [],
-                        "service_scope": "人工维护范围",
-                        "system_boundary": [],
+                        "core_responsibility": "人工维护范围",
                         "extensions": {},
                     }
                 }
@@ -192,7 +208,7 @@ def test_catalog_confirm_skips_non_blank_profiles_without_overwriting_existing_c
     profile_service.update_ai_suggestions_map(
         "统一支付平台",
         suggestions={
-            "system_positioning.canonical.service_scope": {
+            "system_positioning.canonical.core_responsibility": {
                 "value": "旧建议",
             }
         },
@@ -218,8 +234,8 @@ def test_catalog_confirm_skips_non_blank_profiles_without_overwriting_existing_c
     ]
 
     profile = profile_service.get_profile("统一支付平台")
-    assert profile["profile_data"]["system_positioning"]["canonical"]["service_scope"] == "人工维护范围"
-    assert profile["ai_suggestions"]["system_positioning.canonical.service_scope"]["value"] == "旧建议"
+    assert profile["profile_data"]["system_positioning"]["canonical"]["core_responsibility"] == "人工维护范围"
+    assert profile["ai_suggestions"]["system_positioning.canonical.core_responsibility"]["value"] == "旧建议"
 
     memory_items = memory_service.get_memory_service().query_records("SYS-001", memory_type="profile_update")
     assert memory_items["total"] == 0
@@ -247,7 +263,7 @@ def test_catalog_confirm_treats_field_sources_and_ai_suggestions_only_profile_as
     profile_service.update_ai_suggestions_map(
         "渠道平台",
         suggestions={
-            "system_positioning.canonical.service_scope": {
+            "system_positioning.canonical.core_responsibility": {
                 "value": "建议范围",
             }
         },
@@ -278,5 +294,5 @@ def test_catalog_confirm_treats_field_sources_and_ai_suggestions_only_profile_as
     assert payload["catalog_import_result"]["skipped_items"] == []
 
     profile = profile_service.get_profile("渠道平台")
-    assert profile["profile_data"]["system_positioning"]["canonical"]["service_scope"] == "渠道统一入口"
-    assert profile["ai_suggestions"]["system_positioning.canonical.service_scope"]["value"] == "建议范围"
+    assert profile["profile_data"]["system_positioning"]["canonical"]["core_responsibility"] == "渠道统一入口"
+    assert profile["ai_suggestions"]["system_positioning.canonical.core_responsibility"]["value"] == "建议范围"
