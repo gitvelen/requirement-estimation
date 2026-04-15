@@ -668,6 +668,30 @@ class SystemProfileService:
     def _normalize_domain_value_for_legacy_field(self, legacy_field: str, value: Any) -> Any:
         return normalize_domain_value_for_legacy_field(legacy_field, value)
 
+    def _normalize_architecture_style_accepted_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return copy.deepcopy(value)
+
+        text = re.sub(r"\s+", " ", value).strip()
+        if not text:
+            return ""
+
+        architecture_patterns = (
+            r"((?:分层|微服务|单体|SOA|分布式|服务化|云原生|事件驱动|模块化|领域驱动|集中式|B/S|C/S|前后端分离)[^，。；;：:]{0,16}架构)",
+            r"((?:主从|集群|双活|多活|两地三中心)[^，。；;：:]{0,16}架构)",
+        )
+        for pattern in architecture_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return text
+
+    def _normalize_v27_accepted_canonical_value(self, domain: str, sub_field: str, value: Any) -> Any:
+        canonical_field_path = resolve_canonical_field_path(f"{domain}.canonical.{sub_field}")
+        if canonical_field_path == "technical_architecture.canonical.architecture_style":
+            return self._normalize_architecture_style_accepted_value(value)
+        return copy.deepcopy(value)
+
     def _append_profile_event(
         self,
         profile: Dict[str, Any],
@@ -1006,6 +1030,7 @@ class SystemProfileService:
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
         now = current_time_iso()
         accepted_value = None
+        accepted_value_for_storage = None
         target_sub_field = normalized_sub_field
         normalized_profile: Dict[str, Any]
 
@@ -1040,6 +1065,11 @@ class SystemProfileService:
                     raise ValueError("SUGGESTION_NOT_FOUND")
 
             target_sub_field = self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)
+            accepted_value_for_storage = self._normalize_v27_accepted_canonical_value(
+                normalized_domain,
+                target_sub_field,
+                accepted_value,
+            )
             current_domain_payload = profile_data.get(normalized_domain)
             if not isinstance(current_domain_payload, dict):
                 current_domain_payload = {}
@@ -1050,7 +1080,7 @@ class SystemProfileService:
                 if not isinstance(current_canonical_payload, dict):
                     current_canonical_payload = {}
                     current_domain_payload["canonical"] = current_canonical_payload
-                current_canonical_payload[target_sub_field] = copy.deepcopy(accepted_value)
+                current_canonical_payload[target_sub_field] = copy.deepcopy(accepted_value_for_storage)
             else:
                 current_domain_payload[matched_sub_field] = self._normalize_profile_data_sub_field(
                     normalized_domain,
@@ -1074,7 +1104,7 @@ class SystemProfileService:
                 normalized_for_storage = self._normalize_fields_for_storage(profile.get(LEGACY_FIELDS_KEY) or {})
                 normalized_for_storage[legacy_field] = self._normalize_domain_value_for_legacy_field(
                     legacy_field,
-                    accepted_value,
+                    accepted_value_for_storage,
                 )
                 profile[LEGACY_FIELDS_KEY] = normalized_for_storage
 
@@ -1120,7 +1150,7 @@ class SystemProfileService:
             sub_field=matched_sub_field,
             target_field_path=f"{normalized_domain}.canonical.{target_sub_field}",
             extra_payload={
-                "accepted_value": copy.deepcopy(accepted_value),
+                "accepted_value": copy.deepcopy(accepted_value_for_storage),
                 "requested_sub_field": normalized_sub_field,
             },
         )
