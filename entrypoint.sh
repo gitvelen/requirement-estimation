@@ -32,6 +32,68 @@ echo_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+run_as_appuser() {
+    # root 启动时：先修复权限，再降权运行主进程（避免挂载目录权限导致 500，如登录写 users.json）
+    if [ "$(id -u)" = "0" ]; then
+        if command -v su >/dev/null 2>&1; then
+            local cmd
+            cmd=$(printf '%q ' "$@")
+            exec su -p -s /bin/bash appuser -c "$cmd"
+        fi
+    fi
+    exec "$@"
+}
+
+prepare_uvicorn_command() {
+    local args=("$@")
+    local has_workers=0
+    local has_reload=0
+    local has_log_level=0
+    local item
+
+    if [ "${#args[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "${args[0]}" != "uvicorn" ]; then
+        printf '%s\n' "${args[@]}"
+        return 0
+    fi
+
+    for item in "${args[@]}"; do
+        case "$item" in
+            --workers)
+                has_workers=1
+                ;;
+            --reload)
+                has_reload=1
+                ;;
+            --log-level)
+                has_log_level=1
+                ;;
+        esac
+    done
+
+    if [ "${DEBUG:-false}" = "true" ]; then
+        if [ "$has_reload" -eq 0 ]; then
+            args+=(--reload)
+        fi
+        if [ "$has_workers" -eq 0 ]; then
+            args+=(--workers 1)
+        fi
+    else
+        if [ "$has_workers" -eq 0 ]; then
+            args+=(--workers "${WORKERS:-4}")
+        fi
+    fi
+
+    if [ "$has_log_level" -eq 0 ]; then
+        args+=(--log-level info)
+    fi
+
+    printf '%s\n' "${args[@]}"
+}
+
 ###############################################################################
 # 环境变量验证
 ###############################################################################
@@ -224,23 +286,16 @@ main() {
     # 8. 启动主应用
     echo_info "启动应用..."
 
-    run_as_appuser() {
-        # root 启动时：先修复权限，再降权运行主进程（避免挂载目录权限导致 500，如登录写 users.json）
-        if [ "$(id -u)" = "0" ]; then
-            if command -v su >/dev/null 2>&1; then
-                local cmd
-                cmd=$(printf '%q ' "$@")
-                exec su -p -s /bin/bash appuser -c "$cmd"
-            fi
-        fi
-        exec "$@"
-    }
-
     # 如果有传入参数，执行参数命令
     # 否则使用默认启动命令
     if [ $# -gt 0 ]; then
-        echo_info "执行命令: $@"
-        run_as_appuser "$@"
+        local prepared_command=()
+        while IFS= read -r line; do
+            prepared_command+=("$line")
+        done < <(prepare_uvicorn_command "$@")
+
+        echo_info "执行命令: ${prepared_command[*]}"
+        run_as_appuser "${prepared_command[@]}"
     else
         # 默认启动命令 - 使用 uvicorn（PATH 中已包含虚拟环境）
         # 根据 DEBUG 模式决定 workers 和 reload
@@ -259,4 +314,6 @@ main() {
 ###############################################################################
 
 # 传递所有参数给 main 函数
-main "$@"
+if [ "${ENTRYPOINT_SOURCE_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi

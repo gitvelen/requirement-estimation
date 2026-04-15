@@ -32,6 +32,8 @@ def profile_services(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(system_routes, "CSV_PATH", str(tmp_path / "system_list.csv"))
 
     profile_store = data_dir / "system_profiles.json"
     service = SystemProfileService(store_path=str(profile_store))
@@ -46,15 +48,75 @@ def profile_services(tmp_path, monkeypatch):
 
 
 def _seed_profile(service: SystemProfileService, *, system_name: str, system_id: str):
+    system_routes._write_systems(
+        [
+            {
+                "id": system_id,
+                "name": system_name,
+                "abbreviation": system_name,
+                "status": "运行中",
+                "extra": {},
+            }
+        ]
+    )
     service.upsert_profile(
         system_name,
         {
             "system_id": system_id,
-            "fields": {
-                "system_scope": f"{system_name} old scope",
-                "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
-                "integration_points": "old integration",
-                "key_constraints": "old constraints",
+            "profile_data": {
+                "system_positioning": {
+                    "canonical": {
+                        "system_type": "核心系统",
+                        "core_responsibility": f"{system_name} old scope",
+                        "target_users": ["运营"],
+                        "extensions": {},
+                    }
+                },
+                "business_capabilities": {
+                    "canonical": {
+                        "functional_modules": [{"name": "账户", "description": "开户"}],
+                        "business_scenarios": [],
+                        "business_flows": [{"name": "开户", "description": "old process"}],
+                        "data_reports": [],
+                        "extensions": {},
+                    }
+                },
+                "integration_interfaces": {
+                    "canonical": {
+                        "provided_services": [],
+                        "consumed_services": [],
+                        "other_integrations": ["old integration"],
+                        "extensions": {},
+                    }
+                },
+                "technical_architecture": {
+                    "canonical": {
+                        "architecture_style": "",
+                        "tech_stack": {
+                            "languages": [],
+                            "frameworks": [],
+                            "databases": [],
+                            "middleware": [],
+                            "others": [],
+                        },
+                        "network_zone": "",
+                        "performance_baseline": {
+                            "online": {"peak_tps": "", "p95_latency_ms": "", "availability_target": ""},
+                            "batch": {"window": "", "data_volume": "", "peak_duration": ""},
+                            "processing_model": "",
+                        },
+                        "extensions": {},
+                    }
+                },
+                "constraints_risks": {
+                    "canonical": {
+                        "business_constraints": [],
+                        "prerequisites": [{"name": "合规", "description": "old constraints"}],
+                        "sensitive_points": [],
+                        "risk_items": [],
+                        "extensions": {},
+                    }
+                },
             },
             "evidence_refs": [],
         },
@@ -65,26 +127,25 @@ def _seed_profile(service: SystemProfileService, *, system_name: str, system_id:
 def _full_domain_suggestions():
     return {
         "system_positioning": {
-            "system_description": "old system description",
+            "core_responsibility": "old system description",
             "target_users": ["运营"],
-            "boundaries": [{"item": "old boundary"}],
         },
         "business_capabilities": {
-            "module_structure": [{"module_name": "账户", "functions": [{"name": "开户"}]}],
-            "core_processes": [{"name": "开户", "description": "old process"}],
+            "functional_modules": [{"name": "账户", "description": "开户"}],
+            "business_flows": [{"name": "开户", "description": "old process"}],
         },
         "integration_interfaces": {
-            "integration_points": [{"description": "old integration point"}],
+            "other_integrations": [{"description": "old integration point"}],
             "external_dependencies": [{"name": "old dependency"}],
         },
         "technical_architecture": {
-            "architecture_positioning": "old architecture",
+            "architecture_style": "old architecture",
             "tech_stack": ["FastAPI"],
             "performance_profile": {"qps": "100"},
         },
         "constraints_risks": {
-            "key_constraints": [{"category": "合规", "description": "old constraint"}],
-            "known_risks": [{"description": "old risk", "impact_level": "medium"}],
+            "prerequisites": [{"name": "合规", "description": "old constraint"}],
+            "risk_items": [{"name": "old risk", "impact": "medium"}],
         },
     }
 
@@ -125,17 +186,16 @@ def test_trigger_summary_same_system_inflight_creates_new_pending_task(profile_s
 
 def test_set_ai_suggestions_updates_only_relevant_domain_and_keeps_previous(profile_services):
     service = profile_services["service"]
-    profile_store = profile_services["profile_store"]
     _seed_profile(service, system_name="HOP", system_id="sys_hop")
 
-    with open(profile_store, "r", encoding="utf-8") as f:
-        rows = json.load(f)
-    rows[0]["ai_suggestions"] = _full_domain_suggestions()
-    rows[0]["profile_events"] = []
-    with open(profile_store, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2)
+    profile = service.repository.load_profile(state="working", system_name="HOP")
+    assert isinstance(profile, dict)
+    profile["ai_suggestions"] = _full_domain_suggestions()
+    profile["profile_events"] = []
+    service.repository.save_working_profile(profile)
 
-    old_suggestions = copy.deepcopy(rows[0]["ai_suggestions"])
+    old_suggestions = copy.deepcopy(profile["ai_suggestions"])
+    expected_previous = service._normalize_v27_ai_suggestions(old_suggestions)
     new_integration = {
         "integration_interfaces": {
             "integration_points": [{"description": "new integration point"}],
@@ -151,17 +211,15 @@ def test_set_ai_suggestions_updates_only_relevant_domain_and_keeps_previous(prof
         source="v2.docx",
     )
 
-    assert updated.get("ai_suggestions_previous") == old_suggestions
+    assert updated.get("ai_suggestions_previous") == expected_previous
     assert (
         updated.get("ai_suggestions", {})
-        .get("system_positioning", {})
-        .get("system_description")
-        == old_suggestions["system_positioning"]["system_description"]
+        .get("system_positioning.canonical.core_responsibility")
+        == old_suggestions["system_positioning"]["core_responsibility"]
     )
     assert (
         updated.get("ai_suggestions", {})
-        .get("integration_interfaces", {})
-        .get("integration_points")
+        .get("integration_interfaces.canonical.other_integrations")
     ) == [{"description": "new integration point"}]
 
     events = updated.get("profile_events") or []
@@ -252,10 +310,11 @@ def test_call_llm_merges_domain_hints_from_context(monkeypatch):
     call_counter = {"count": 0}
     stage2_prompts = []
 
-    def _fake_chat_raw(messages, temperature, max_tokens, retry_times):
+    def _fake_chat_raw(messages, temperature, max_tokens, retry_times, timeout=None):
         _ = retry_times
         _ = temperature
         _ = max_tokens
+        _ = timeout
         call_counter["count"] += 1
         user_prompt = messages[1]["content"]
         if call_counter["count"] == 1:
@@ -421,17 +480,17 @@ def test_chunking_path(monkeypatch):
         stage2_calls.append(kwargs)
         if kwargs["chunk_index"] == 0:
             return {
-                "system_positioning": {"system_description": "范围A"},
+                "system_positioning": {"core_responsibility": "范围A"},
                 "business_capabilities": {
-                    "module_structure": [{"module_name": "M1", "functions": [{"name": "开户", "desc": "开户登记"}]}]
+                    "functional_modules": [{"name": "M1", "description": "开户登记"}],
                 },
             }
         return {
-            "system_positioning": {"system_description": "范围B"},
+            "system_positioning": {"core_responsibility": "范围B"},
             "business_capabilities": {
-                "module_structure": [
-                    {"module_name": "M1", "functions": [{"name": "放款", "desc": "放款处理"}]},
-                    {"module_name": "M2", "functions": [{"name": "核算", "desc": "核算处理"}]},
+                "functional_modules": [
+                    {"name": "M1", "description": "放款处理"},
+                    {"name": "M2", "description": "核算处理"},
                 ]
             },
             "technical_architecture": {"tech_stack": ["Java"]},
@@ -461,18 +520,15 @@ def test_chunking_path(monkeypatch):
         "technical_architecture",
     ]
     assert result["related_systems"] == ["ECIF", "MOB"]
-    assert result["suggestions"]["system_positioning"]["system_description"] == "范围A; 范围B"
-    assert result["suggestions"]["business_capabilities"]["module_structure"] == [
+    assert result["suggestions"]["system_positioning"]["core_responsibility"] == "范围A; 范围B"
+    assert result["suggestions"]["business_capabilities"]["functional_modules"] == [
         {
-            "module_name": "M1",
-            "functions": [
-                {"name": "开户", "desc": "开户登记"},
-                {"name": "放款", "desc": "放款处理"},
-            ],
+            "name": "M1",
+            "description": "开户登记; 放款处理",
         },
         {
-            "module_name": "M2",
-            "functions": [{"name": "核算", "desc": "核算处理"}],
+            "name": "M2",
+            "description": "核算处理",
         },
     ]
 
@@ -724,7 +780,7 @@ def test_run_job_success_updates_status_and_sends_ready_notification(profile_ser
 
     assert task["status"] == "completed"
     assert task["notifications"][0]["systems"] == ["ECIF"]
-    assert profile["ai_suggestions"]["technical_architecture"]["tech_stack"] == ["Redis"]
+    assert profile["ai_suggestions"]["technical_architecture.canonical.tech_stack"] == ["Redis"]
     assert notifications == [
         {
             "user_id": "owner_1",
@@ -1049,11 +1105,11 @@ def test_calculate_body_budget_and_execute_stage_calls(monkeypatch):
         estimated_tokens=234,
     )
 
-    assert stage2["system_positioning"]["system_description"] == "系统定位"
-    assert stage2["business_capabilities"]["core_processes"] == ["核心流程"]
+    assert stage2["system_positioning"]["core_responsibility"] == "系统定位"
+    assert stage2["business_capabilities"]["business_flows"] == [{"name": "核心流程", "description": ""}]
     assert stage2["integration_interfaces"]["external_dependencies"] == ["依赖ESB"]
-    assert stage2["technical_architecture"]["architecture_positioning"] == "微服务架构"
-    assert stage2["constraints_risks"]["known_risks"] == ["强监管"]
+    assert stage2["technical_architecture"]["architecture_style"] == "微服务架构"
+    assert stage2["constraints_risks"]["risk_items"] == [{"name": "强监管", "impact": ""}]
     assert metrics[1]["stage"] == "stage2"
     assert metrics[1]["usage"]["total_tokens"] == 109
 

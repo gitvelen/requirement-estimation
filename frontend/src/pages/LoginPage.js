@@ -6,8 +6,16 @@ import './LoginPage.css';
 
 const { Title, Text } = Typography;
 
+const resolvePostLoginPath = (redirectPath, roles = []) => {
+  const roleList = Array.isArray(roles) ? roles : [];
+  if (roleList.includes('admin')) {
+    return '/dashboard/reports';
+  }
+  return redirectPath;
+};
+
 const LoginPage = () => {
-  const { login, isAuthenticated } = useAuth();
+  const { login, isAuthenticated, user } = useAuth();
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -20,16 +28,16 @@ const LoginPage = () => {
 
   useEffect(() => {
     if (isAuthenticated) {
-      navigate(redirectPath, { replace: true });
+      navigate(resolvePostLoginPath(redirectPath, user?.roles), { replace: true });
     }
-  }, [isAuthenticated, navigate, redirectPath]);
+  }, [isAuthenticated, navigate, redirectPath, user?.roles]);
 
   const handleFinish = async (values) => {
     try {
       setLoading(true);
-      await login(values.username, values.password);
+      const authData = await login(values.username, values.password);
       message.success('登录成功');
-      navigate(redirectPath, { replace: true });
+      navigate(resolvePostLoginPath(redirectPath, authData?.user?.roles), { replace: true });
     } catch (error) {
       message.error(error.response?.data?.detail || '登录失败');
     } finally {

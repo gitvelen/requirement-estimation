@@ -272,12 +272,13 @@ def test_system_profile_service_startup_migration_is_idempotent(tmp_path):
     store_path.write_text(json.dumps([legacy_profile], ensure_ascii=False), encoding="utf-8")
 
     SystemProfileService(store_path=str(store_path))
-    first_data = json.loads(store_path.read_text(encoding="utf-8"))[0]
+    first_service = SystemProfileService(store_path=str(store_path))
+    first_data = first_service.get_profile("HOP")
     first_migrated_at = first_data.get("_migrated_at")
     first_profile_data = first_data.get("profile_data")
 
-    SystemProfileService(store_path=str(store_path))
-    second_data = json.loads(store_path.read_text(encoding="utf-8"))[0]
+    second_service = SystemProfileService(store_path=str(store_path))
+    second_data = second_service.get_profile("HOP")
 
     assert second_data.get("_migrated") is True
     assert second_data.get("_migrated_at") == first_migrated_at

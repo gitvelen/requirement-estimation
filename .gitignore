@@ -44,6 +44,10 @@ Thumbs.db
 # Project specific
 logs/
 data/
+raw/
+wiki/
+output/
+.profile_artifacts.lock
 uploads/
 backups/
 reports/
@@ -59,6 +63,7 @@ memory.md
 # Node
 node_modules/
 frontend/build/
+
 
 # Docker
 *.log

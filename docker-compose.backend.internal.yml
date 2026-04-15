@@ -19,9 +19,12 @@ services:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
       - PYTHONUNBUFFERED=1
       - UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
+      - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
     networks:
       - app-network

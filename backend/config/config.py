@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     LLM_INPUT_MAX_TOKENS: int = int(os.getenv("LLM_INPUT_MAX_TOKENS", "25000"))
     LLM_CHUNK_OVERLAP_PARAGRAPHS: int = int(os.getenv("LLM_CHUNK_OVERLAP_PARAGRAPHS", "2"))
     ENABLE_LLM_CHUNKING: bool = _env_bool("ENABLE_LLM_CHUNKING", True)
+    PROFILE_IMPORT_LLM_TIMEOUT: int = int(os.getenv("PROFILE_IMPORT_LLM_TIMEOUT", "5"))
+    PROFILE_IMPORT_LLM_RETRY_TIMES: int = int(os.getenv("PROFILE_IMPORT_LLM_RETRY_TIMES", "1"))
+    PROFILE_IMPORT_LLM_ALLOW_CHUNKING: bool = _env_bool("PROFILE_IMPORT_LLM_ALLOW_CHUNKING", False)
 
     # Milvus向量数据库配置
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
@@ -62,6 +65,7 @@ class Settings(BaseSettings):
     EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "auto").strip().lower()  # auto/openai/dashscope
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")  # Embedding模型
     EMBEDDING_DIM: int = 1024  # 向量维度
+    PUBLISH_KNOWLEDGE_WAIT_SECONDS: float = float(os.getenv("PUBLISH_KNOWLEDGE_WAIT_SECONDS", "5"))
     KNOWLEDGE_TOP_K: int = 5  # 检索TopK数量
     KNOWLEDGE_SIMILARITY_THRESHOLD: float = 0.6  # 相似度阈值
 
@@ -109,6 +113,12 @@ class Settings(BaseSettings):
     # Excel报告配置
     REPORT_DIR: str = "data"
     REPORT_TEMPLATE_DIR: str = "templates"
+
+    # 系统级画像仓库根目录；为空时默认落到 REPORT_DIR/system_profiles
+    SYSTEM_PROFILE_ROOT: str = os.getenv("SYSTEM_PROFILE_ROOT", "").strip()
+
+    # 兼容旧配置：画像资产根目录。若 SYSTEM_PROFILE_ROOT 未配置，则回退到该值。
+    PROFILE_ARTIFACT_ROOT: str = os.getenv("PROFILE_ARTIFACT_ROOT", "").strip()
 
     # COSMIC功能点配置
     COSMIC_ENABLED: bool = True  # 是否启用COSMIC算法

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.config.config import settings
 from backend.service.memory_service import get_memory_service
+from backend.service.system_profile_repository import resolve_system_profile_root
 from backend.service.system_profile_service import get_system_profile_service
 
 
@@ -186,7 +187,7 @@ _code_scan_skill_adapter: Optional[CodeScanSkillAdapter] = None
 def get_code_scan_skill_adapter() -> CodeScanSkillAdapter:
     global _code_scan_skill_adapter
     expected_memory_path = os.path.join(settings.REPORT_DIR, "memory_records.json")
-    expected_profile_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    expected_profile_path = resolve_system_profile_root()
     if (
         _code_scan_skill_adapter is None
         or os.path.realpath(_code_scan_skill_adapter.memory_service.store_path) != os.path.realpath(expected_memory_path)

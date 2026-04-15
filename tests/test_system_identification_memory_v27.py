@@ -21,6 +21,7 @@ def isolated_runtime(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "REPORT_DIR", str(data_dir))
     monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
     monkeypatch.setattr(system_routes, "CSV_PATH", str(data_dir / "system_list.csv"))
 
     memory_service._memory_service = None
@@ -124,3 +125,139 @@ def test_identify_with_verdict_marks_unknown_when_nothing_is_selected(monkeypatc
     assert result["final_verdict"] == "unknown"
     assert result["selected_systems"] == []
     assert result["questions"] == ["请补充涉及的系统名称"]
+
+
+def test_identify_with_verdict_uses_profile_context_candidates_without_system_profile_vector_search(monkeypatch):
+    system_routes._write_systems(
+        [
+            {"id": "SYS-001", "name": "核心账务", "abbreviation": "HOP", "status": "运行中", "extra": {}},
+            {"id": "SYS-002", "name": "支付中台", "abbreviation": "PAY", "status": "运行中", "extra": {}},
+        ]
+    )
+
+    profile_service = system_profile_service.get_system_profile_service()
+    profile_service.ensure_profile("核心账务", system_id="SYS-001", actor={"username": "tester"})
+    profile_service.apply_v27_field_updates(
+        "核心账务",
+        system_id="SYS-001",
+        field_updates={
+            "system_positioning.canonical.service_scope": "账户开户、销户与账务处理",
+            "business_capabilities.canonical.functional_modules": ["账户服务", "总账处理"],
+        },
+        actor={"username": "tester"},
+    )
+
+    prompts = {}
+
+    class DummyKnowledgeService:
+        def search_similar_knowledge(self, **kwargs):
+            raise AssertionError("system_profile should not use vector search")
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_system_prompt",
+        lambda **kwargs: prompts.setdefault("user_prompt", kwargs.get("user_prompt") or "") or "{}",
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "extract_json",
+        lambda response: {
+            "systems": [
+                {
+                    "name": "核心账务",
+                    "type": "主系统",
+                    "description": "账务处理",
+                    "confidence": "高",
+                    "reasons": ["画像命中开户与账务处理语义"],
+                }
+            ],
+            "maybe_systems": [],
+            "questions": [],
+        },
+    )
+
+    agent = SystemIdentificationAgent(knowledge_service=DummyKnowledgeService())
+    result = agent.identify_with_verdict("新增开户校验并同步账务处理", task_id="task_ctx")
+
+    assert result["final_verdict"] == "matched"
+    assert [item["name"] for item in result["selected_systems"]] == ["核心账务"]
+    assert "候选系统榜单" in prompts["user_prompt"]
+    assert "账户开户、销户与账务处理" in prompts["user_prompt"]
+
+
+def test_search_relevant_profile_contexts_does_not_build_esb_context_for_relevance(monkeypatch):
+    system_routes._write_systems(
+        [
+            {"id": "SYS-001", "name": "核心账务", "abbreviation": "HOP", "status": "运行中", "extra": {}},
+        ]
+    )
+
+    profile_service = system_profile_service.get_system_profile_service()
+    profile_service.ensure_profile("核心账务", system_id="SYS-001", actor={"username": "tester"})
+    profile_service.apply_v27_field_updates(
+        "核心账务",
+        system_id="SYS-001",
+        field_updates={
+            "system_positioning.canonical.service_scope": "账户开户、销户与账务处理",
+            "business_capabilities.canonical.functional_modules": ["账户服务", "总账处理"],
+        },
+        actor={"username": "tester"},
+    )
+
+    monkeypatch.setattr(
+        profile_service,
+        "_build_esb_context",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("relevance scoring should not build esb context")),
+    )
+    monkeypatch.setattr(
+        profile_service,
+        "build_estimation_context",
+        lambda system_name: (_ for _ in ()).throw(AssertionError("relevance scoring should not build estimation context")),
+    )
+
+    results = profile_service.search_relevant_profile_contexts("新增开户校验并同步账务处理", limit=3)
+
+    assert len(results) == 1
+    assert results[0]["system_name"] == "核心账务"
+
+
+def test_identify_with_verdict_uses_budgeted_llm_timeout(monkeypatch):
+    system_routes._write_systems(
+        [
+            {"id": "SYS-001", "name": "核心账务", "abbreviation": "HOP", "status": "运行中", "extra": {}},
+        ]
+    )
+
+    monkeypatch.setattr(settings, "PROFILE_IMPORT_LLM_TIMEOUT", 7)
+    monkeypatch.setattr(settings, "PROFILE_IMPORT_LLM_RETRY_TIMES", 1)
+
+    captured = {}
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_system_prompt",
+        lambda **kwargs: captured.update(kwargs) or "{}",
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "extract_json",
+        lambda response: {
+            "systems": [
+                {
+                    "name": "核心账务",
+                    "type": "主系统",
+                    "description": "账务处理",
+                    "confidence": "高",
+                    "reasons": ["预算内完成识别"],
+                }
+            ],
+            "maybe_systems": [],
+            "questions": [],
+        },
+    )
+
+    agent = SystemIdentificationAgent(knowledge_service=None)
+    result = agent.identify_with_verdict("新增开户校验并同步账务处理", task_id="task_budget")
+
+    assert result["final_verdict"] == "matched"
+    assert captured["timeout"] == 7
+    assert captured["retry_times"] == 1

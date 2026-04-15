@@ -12,6 +12,7 @@ from backend.agent.feature_breakdown_agent import get_feature_breakdown_agent
 from backend.agent.work_estimation_agent import work_estimation_agent
 from backend.utils.excel_generator import excel_generator
 from backend.service.knowledge_service import get_knowledge_service
+from backend.service.system_profile_service import get_system_profile_service
 from backend.config.config import settings
 
 logger = logging.getLogger(__name__)
@@ -275,8 +276,17 @@ class AgentOrchestrator:
 
             logger.info(f"[处理中] 开始估算 {len(all_features)} 个功能点的工作量...")
 
+            profile_service = get_system_profile_service()
+            system_context_map = {
+                system_name: profile_service.build_estimation_context(system_name)
+                for system_name in systems_data.keys()
+            }
+
             # Delphi估算
-            estimates = work_estimation_agent.estimate(all_features)
+            estimates = work_estimation_agent.estimate(
+                all_features,
+                system_context_map=system_context_map,
+            )
 
             # 应用估算结果
             total_workload = 0
@@ -284,6 +294,13 @@ class AgentOrchestrator:
                 systems_data[system_name] = work_estimation_agent.apply_estimates_to_features(
                     systems_data[system_name],
                     estimates
+                )
+                profile_service.record_estimation_context_artifact(
+                    system_name=system_name,
+                    task_id=task_id,
+                    features=[feature for feature in systems_data[system_name] if isinstance(feature, dict)],
+                    context_payload=system_context_map.get(system_name, {}),
+                    trigger="agent_orchestrator",
                 )
                 # 统计工作量
                 system_workload = sum(f.get("预估人天", 0) for f in systems_data[system_name])
@@ -304,7 +321,9 @@ class AgentOrchestrator:
                         "pessimistic": detail.get("pessimistic"),
                         "expected": detail.get("expected"),
                         "reasoning": detail.get("reasoning"),
-                        "original_estimate": detail.get("original_estimate")
+                        "original_estimate": detail.get("original_estimate"),
+                        "profile_context_used": detail.get("profile_context_used"),
+                        "context_source": detail.get("context_source"),
                     } for fid, detail in estimation_details.items()
                 },
                 "total_workload": total_workload,

@@ -6,7 +6,11 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 
 # 定义构建参数（可通过 docker-compose 传递）
 ARG UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG UV_HTTP_TIMEOUT=120
+ARG UV_HTTP_RETRIES=8
 ENV UV_INDEX_URL=${UV_INDEX_URL}
+ENV UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT}
+ENV UV_HTTP_RETRIES=${UV_HTTP_RETRIES}
 
 # 安装系统依赖和 uv
 RUN apt-get update && apt-get install -y \

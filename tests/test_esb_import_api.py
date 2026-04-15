@@ -11,6 +11,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from backend.app import app
+from backend.api import esb_routes
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import esb_service
@@ -321,6 +322,40 @@ def test_v27_esb_import_returns_explicit_flag_error_when_global_governance_disab
         "ENABLE_V27_RUNTIME",
         "ENABLE_SERVICE_GOVERNANCE_IMPORT",
     ]
+
+
+def test_v27_esb_import_does_not_report_permission_error_as_missing_required_fields(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "ENABLE_SERVICE_GOVERNANCE_IMPORT", True)
+
+    _seed_user("v27_governance_admin_perm", "pwd123", ["admin"])
+    token = _login(client, "v27_governance_admin_perm", "pwd123")
+
+    class PermissionDeniedUpdater:
+        def import_governance(self, *, file_content: bytes, filename: str, actor=None):
+            raise PermissionError(
+                "[Errno 13] Permission denied: '/app/data/system_profiles/sid_1172b3b4__AI中台/manifest.json.tmp'"
+            )
+
+    monkeypatch.setattr(esb_routes, "get_service_governance_profile_updater", lambda: PermissionDeniedUpdater())
+
+    csv_content = (
+        "系统名称,服务场景码,交易名称,消费方系统名称,状态\n"
+        "AI中台,SC001,支付查询,核心账务,正常使用\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/v1/esb/imports",
+        files={"file": ("governance.csv", csv_content, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["error_code"] == "ESB_001"
+    assert payload["message"] == "服务治理导入失败"
+    assert "Permission denied" in payload["details"]["reason"]
 
 
 def test_esb_import_accepts_human_friendly_mapping_fields(client):

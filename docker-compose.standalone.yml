@@ -91,12 +91,15 @@ services:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
       - PYTHONUNBUFFERED=1
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
       - KNOWLEDGE_ENABLED=true
       - DASHSCOPE_API_KEY=dummy_key
+      - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
     networks:
       - app-network

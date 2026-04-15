@@ -243,3 +243,45 @@ def test_dashboard_rankings_system_activity_contains_system_name(client):
     items = activity_widget.get("data", {}).get("items", [])
     assert items
     assert all(str(item.get("system_name") or "").strip() for item in items)
+
+
+def test_dashboard_query_accepts_timezone_aware_profile_timestamps(client, monkeypatch):
+    _seed_user("dash_admin_tz", "pwd123", ["admin"])
+    manager = _seed_user("dash_mgr_tz", "pwd123", ["manager"])
+    expert = _seed_user("dash_exp_tz", "pwd123", ["expert"])
+
+    token = _login(client, "dash_admin_tz", "pwd123")
+    _seed_dashboard_tasks(manager, expert)
+
+    class StubProfileService:
+        def list_profiles(self):
+            return [
+                {
+                    "system_id": "sys_hop",
+                    "system_name": "HOP",
+                    "updated_at": "2026-04-10T10:00:00+08:00",
+                    "created_at": "2026-04-01T10:00:00+08:00",
+                    "document_count": 1,
+                    "fields": {"module_structure": [{"name": "贷款核算"}]},
+                    "completeness": {"documents_normal": 1},
+                }
+            ]
+
+    monkeypatch.setattr(task_routes, "get_system_profile_service", lambda: StubProfileService())
+
+    response = client.post(
+        "/api/v1/efficiency/dashboard/query",
+        json={
+            "page": "system",
+            "perspective": "executive",
+            "filters": {"time_range": "last_30d"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    widgets = response.json().get("result", {}).get("widgets", [])
+    profile_widget = next(item for item in widgets if item.get("widget_id") == "profile_completeness_ranking")
+    items = profile_widget.get("data", {}).get("items", [])
+    assert items
+    assert items[0]["system_id"] == "sys_hop"

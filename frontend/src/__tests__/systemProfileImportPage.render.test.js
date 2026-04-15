@@ -49,15 +49,7 @@ const renderPage = () => render(
   </MemoryRouter>
 );
 
-const uploadFileInCard = (title, fileName = 'demo.docx') => {
-  const card = screen.getByText(title).closest('.ant-card');
-  const input = card.querySelector('input[type="file"]');
-  const file = new File(['demo'], fileName, { type: 'application/octet-stream' });
-  fireEvent.change(input, { target: { files: [file] } });
-  return file;
-};
-
-describe('SystemProfileImportPage v2.7', () => {
+describe('SystemProfileImportPage batch import', () => {
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -80,9 +72,6 @@ describe('SystemProfileImportPage v2.7', () => {
       if (url === '/api/v1/system/systems') {
         return { data: { data: { systems: [RESPONSIBLE_SYSTEM] } } };
       }
-      if (url === '/api/v1/code-scan/jobs/') {
-        return { data: null };
-      }
       if (String(url).includes('/profile/import-history')) {
         return { data: { total: 0, items: [] } };
       }
@@ -100,12 +89,15 @@ describe('SystemProfileImportPage v2.7', () => {
           },
         };
       }
+      if (String(url).includes('/api/v1/code-scan/jobs/')) {
+        return { data: null };
+      }
       return { data: {} };
     });
     axios.post.mockResolvedValue({
       data: {
         result_status: 'queued',
-        execution_id: 'exec_req_001',
+        execution_id: 'exec_batch_001',
         scene_id: 'pm_document_ingest',
         execution_status: {
           status: 'completed',
@@ -113,7 +105,7 @@ describe('SystemProfileImportPage v2.7', () => {
         },
         import_result: {
           status: 'success',
-          file_name: 'demo.docx',
+          file_name: 'batch.zip',
           imported_at: '2026-03-13T12:00:00',
           failure_reason: null,
         },
@@ -125,95 +117,36 @@ describe('SystemProfileImportPage v2.7', () => {
     cleanup();
   });
 
-  it('renders only v2.7 document types while keeping code scan entry', async () => {
+  it('renders a single batch import entry instead of per-doc-type cards', async () => {
     renderPage();
 
-    expect(await screen.findByText('代码扫描')).toBeInTheDocument();
-    expect(screen.getByText('需求文档')).toBeInTheDocument();
-    expect(screen.getByText('设计文档')).toBeInTheDocument();
-    expect(screen.getByText('技术方案')).toBeInTheDocument();
-    expect(screen.queryByText('历史评估报告')).not.toBeInTheDocument();
-    expect(screen.queryByText('ESB服务治理文档')).not.toBeInTheDocument();
+    expect(await screen.findByText('文档导入')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '选择文档文件' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '批量导入文档' })).toBeInTheDocument();
+    expect(screen.queryByText('需求文档')).not.toBeInTheDocument();
+    expect(screen.queryByText('设计文档')).not.toBeInTheDocument();
+    expect(screen.queryByText('技术方案')).not.toBeInTheDocument();
   });
 
-  it('submits document imports through v2.7 profile import and refreshes execution status', async () => {
+  it('submits selected files through batch import API', async () => {
     renderPage();
 
-    uploadFileInCard('需求文档');
-    fireEvent.click(await screen.findByRole('button', { name: '导入需求文档' }));
+    const importCard = screen.getByText('文档导入').closest('.ant-card');
+    const input = importCard.querySelector('input[type="file"]');
+    const reqFile = new File(['req'], 'requirements.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const designFile = new File(['design'], 'design.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    fireEvent.change(input, { target: { files: [reqFile, designFile] } });
+
+    fireEvent.click(await screen.findByRole('button', { name: '批量导入文档' }));
 
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith(
-        '/api/v1/system-profiles/sys_pay/profile/import',
+        '/api/v1/system-profiles/sys_pay/profile/import-batch',
         expect.any(FormData),
         expect.objectContaining({
           headers: { 'Content-Type': 'multipart/form-data' },
         }),
       );
     });
-
-    await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledWith('/api/v1/system-profiles/sys_pay/profile/execution-status');
-    });
-  });
-
-  it('hides raw execution metadata and shows readable import summaries', async () => {
-    axios.get.mockImplementation(async (url) => {
-      if (url === '/api/v1/system/systems') {
-        return { data: { data: { systems: [RESPONSIBLE_SYSTEM] } } };
-      }
-      if (url === '/api/v1/code-scan/jobs/') {
-        return { data: null };
-      }
-      if (String(url).includes('/profile/import-history')) {
-        return {
-          data: {
-            total: 1,
-            items: [
-              {
-                doc_type: 'tech_solution',
-                status: 'success',
-                file_name: 'req-temp1.docx',
-                imported_at: '2026-03-14T13:57:29',
-                execution_id: 'exec_hist_001',
-              },
-            ],
-          },
-        };
-      }
-      if (String(url).includes('/profile/execution-status')) {
-        return {
-          data: {
-            execution_id: 'exec_latest_001',
-            scene_id: 'pm_document_ingest',
-            status: 'completed',
-            created_at: '2026-03-14T13:57:20',
-            completed_at: '2026-03-14T13:57:29',
-            skill_chain: ['tech_solution_skill'],
-            notifications: [],
-            error: null,
-          },
-        };
-      }
-      return { data: {} };
-    });
-
-    renderPage();
-
-    expect(await screen.findByText('最近一次处理已完成')).toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getAllByText('技术方案').length).toBeGreaterThan(0);
-    expect(screen.getByText('req-temp1.docx')).toBeInTheDocument();
-    expect(screen.queryByText(/execution_id/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/scene/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('pm_document_ingest')).not.toBeInTheDocument();
-    expect(screen.queryByText('tech_solution')).not.toBeInTheDocument();
-
-    uploadFileInCard('需求文档');
-    fireEvent.click(screen.getByRole('button', { name: '导入需求文档' }));
-
-    expect(await screen.findByText('demo.docx 已导入，可前往信息展示查看建议。')).toBeInTheDocument();
-    expect(screen.queryByText('本次导入结果')).not.toBeInTheDocument();
-    expect(screen.queryByText('completed')).not.toBeInTheDocument();
   });
 });

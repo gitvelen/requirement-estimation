@@ -220,6 +220,65 @@ class MemoryService:
         items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return items[:safe_limit]
 
+    def delete_records(
+        self,
+        system_id: str,
+        *,
+        memory_type: Optional[str] = None,
+        scene_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            raise ValueError("system_id不能为空")
+
+        normalized_memory_type = str(memory_type or "").strip()
+        normalized_scene_ids = {
+            str(scene_id or "").strip()
+            for scene_id in (scene_ids or [])
+            if str(scene_id or "").strip()
+        }
+
+        def _should_delete(record: Dict[str, Any]) -> bool:
+            if normalized_memory_type and str(record.get("memory_type") or "").strip() != normalized_memory_type:
+                return False
+            if normalized_scene_ids and str(record.get("scene_id") or "").strip() not in normalized_scene_ids:
+                return False
+            return True
+
+        with self._lock():
+            data = self._load_unlocked()
+            records = data.get(normalized_system_id) if isinstance(data.get(normalized_system_id), list) else []
+            kept: List[Dict[str, Any]] = []
+            deleted: List[Dict[str, Any]] = []
+            for record in records:
+                if isinstance(record, dict) and _should_delete(record):
+                    deleted.append(dict(record))
+                else:
+                    kept.append(record)
+
+            if len(deleted) == 0:
+                return {
+                    "system_id": normalized_system_id,
+                    "deleted_count": 0,
+                    "deleted_memory_ids": [],
+                }
+
+            if kept:
+                data[normalized_system_id] = kept
+            else:
+                data.pop(normalized_system_id, None)
+            self._save_unlocked(data)
+
+        return {
+            "system_id": normalized_system_id,
+            "deleted_count": len(deleted),
+            "deleted_memory_ids": [
+                str(record.get("memory_id") or "").strip()
+                for record in deleted
+                if str(record.get("memory_id") or "").strip()
+            ],
+        }
+
 
 _memory_service: Optional[MemoryService] = None
 

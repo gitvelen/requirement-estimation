@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -12,6 +13,7 @@ if ROOT_DIR not in sys.path:
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import memory_service
+from backend.service import profile_artifact_service
 from backend.service import runtime_execution_service
 from backend.service import system_profile_service
 from backend.service.service_governance_profile_updater import ServiceGovernanceProfileUpdater
@@ -161,6 +163,20 @@ def test_service_governance_import_updates_d3_and_returns_match_statistics(tmp_p
         {"system_id": "SYS-001", "system_name": "统一支付平台"},
         {"system_id": "SYS-002", "system_name": "信贷核心"},
     ]
+
+    artifact_service = profile_artifact_service.get_profile_artifact_service()
+    workspace_path = artifact_service.repository.get_workspace_path(system_id="SYS-001")
+    assert workspace_path
+    workspace = Path(workspace_path)
+    authoritative_candidate_dirs = list((workspace / "candidate" / "authoritative").glob("auth_cand_*"))
+    assert len(authoritative_candidate_dirs) == 1
+    assert (authoritative_candidate_dirs[0] / "authoritative_candidate.json").exists()
+
+    with open(workspace / "candidate" / "latest" / "merged_candidates.json", "r", encoding="utf-8") as f:
+        merged_candidates = json.load(f)
+    provided_services = merged_candidates["integration_interfaces.canonical.provided_services"]
+    assert provided_services["candidate_items"][0]["source_mode"] == "governance"
+    assert provided_services["selected_value"][0]["service_name"] == "支付查询"
 
 
 def test_service_governance_import_matches_names_after_ignoring_parentheses(tmp_path, monkeypatch):

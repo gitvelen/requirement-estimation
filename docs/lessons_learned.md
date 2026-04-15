@@ -21,6 +21,93 @@
 
 ## 条目列表
 
+### 2026-04-15｜宿主机与容器读取不同模型配置源，导致“本地探针正常、运行态任务卡死”错觉（部署/运行态/配置漂移）
+- **标签**：部署、运行态、配置、外部依赖
+- **触发（事实）**：用户反馈“项目经理导入需求变更申请表后 AI 状态一直停在 20%”；现场排查发现宿主机 Python 进程读取的是 [`.env`](/home/admin/Claude/requirement-estimation-system/.env) 中的公网 `DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1`，而 `requirement-backend` 容器实际通过 `env_file: .env.backend` 读取到 `DASHSCOPE_API_BASE=http://10.73.254.200:30000/v1`、`LLM_MODEL=Qwen3-32B`、`EMBEDDING_MODEL=Qwen3-Embedding-8B`。结果是宿主机最小 LLM 探针可成功，但容器内系统识别请求直接 `ConnectTimeout`，任务长期停在 20%。
+- **根因**：
+  1. 文档里虽然写了“backend 配置源是 `.env.backend`”，但现场排查时先用了宿主机进程做 LLM 探针，未第一时间核对容器实际环境变量。
+  2. `.env.backend` 中的内网模型网关 `10.73.254.200:30000/v1` 当前从容器内不可达，而公网 DashScope 兼容模式可达，形成“宿主机能通、容器不通”的假象。
+  3. 内网模型名 `Qwen3-32B / Qwen3-Embedding-8B` 在公网 DashScope 兼容模式下不可用，不能只切 base URL，必须连同模型名一起切到 `qwen-turbo / text-embedding-v2` 或其他可用组合。
+- **影响**：
+  - 运行中 backend 任务会在系统识别或后续 embedding 相关步骤超时
+  - 宿主机上的成功探针不能证明线上容器真实可用
+  - 配置漂移会把“代码热点”和“外部依赖不可达”混成一个问题，增加排查成本
+- **改进行动（可执行）**：
+  1. 任何外部依赖探针都必须同时记录“宿主机配置源”和“容器运行时环境变量”，不得只测其一。
+  2. Deployment/Hotfix 阶段遇到 LLM/embedding 超时时，先执行 `docker inspect <container> --format '{{json .Config.Env}}'`，确认容器真实 `DASHSCOPE_API_BASE / LLM_MODEL / EMBEDDING_*`。
+  3. 若需要从内网网关切回公网兼容模式，必须成组校验 `base_url + chat model + embedding model`，不能只改其中一项。
+  4. 对“当前任务必须立即恢复”的场景，可允许一次性覆写环境补跑单任务；但后续仍需通过标准重建发布让容器正式吃到新配置。
+- **验证方式（可复现）**：
+  - `docker inspect requirement-backend --format '{{json .Config.Env}}'`
+  - `docker exec requirement-backend sh -lc '/app/.venv/bin/python - <<\"PY\" ... print(settings.DASHSCOPE_API_BASE, settings.LLM_MODEL, settings.EMBEDDING_MODEL) ... PY'`
+  - 对 chat 模型与 embedding 模型分别做最小探针，且分别在宿主机与容器内执行
+- **升级（规则/清单/自动化）**：是（建议后续把“宿主机配置源 vs 容器运行时配置源对照”纳入 Deployment 固定门禁）
+
+### 2026-04-15｜Docker 显式 CMD 绕过 entrypoint 默认分支，导致生产环境实际退化为单 worker（部署/运行态/启动链路）
+- **标签**：部署、运行态、性能、启动链路
+- **触发（事实）**：业务反馈“系统比较卡，刷新后没反应”；现场排查发现 frontend 首页静态资源毫秒级返回，但 `requirement-backend` 一度 `unhealthy`，容器内 `curl http://localhost:443/api/v1/health` 超时，backend CPU 短时接近 `100%`。继续检查 `/proc/*/cmdline` 发现运行态只有单个 `uvicorn backend.app:app --host 0.0.0.0 --port 443` 进程，并没有实际带 `--workers 4`。
+- **根因**：
+  1. Dockerfile 已通过 `CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "443"]` 显式传参，导致 `entrypoint.sh` 中“无参数时才补 `--workers ${WORKERS:-4}`”的默认分支永远不会执行。
+  2. 启动日志只打印了配置值 `WORKERS=4`，没有校验真实进程命令行，误让人以为生产环境已经是多 worker。
+  3. 缺少对启动脚本的自动化回归，导致“配置看起来对、运行态实际不对”的问题长期未被发现。
+- **影响**：
+  - 同步 CPU/IO 请求会阻塞唯一 worker，表现为刷新卡死、healthcheck 超时、backend 被 Docker 判为 `unhealthy`
+  - 页面刷新和后台导入互相影响，业务体验退化明显
+- **改进行动（可执行）**：
+  1. 对显式 `uvicorn` 启动命令做统一组装，自动补齐 `--workers`、`--log-level` 等生产默认参数
+  2. 启动链路验证必须同时检查“日志声明”和“真实进程命令行/worker 数”
+  3. 为 `entrypoint.sh` 增加可 source 的测试入口，至少覆盖“默认生产模式会补多 worker”和“显式 workers 不被覆盖”两类回归
+- **验证方式（可复现）**：
+  - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_entrypoint_script.py`
+  - `docker exec requirement-backend sh -lc 'for p in /proc/[0-9]*; do cmd=$(tr "\0" " " < "$p/cmdline" 2>/dev/null); case "$cmd" in *uvicorn*|*backend.app:app*) echo "$cmd"; esac; done'`
+  - `docker logs --since 2m requirement-backend | rg "Started parent process|Started server process"`
+  - `curl -s -o /dev/null -w 'total=%{time_total} code=%{http_code}\n' http://127.0.0.1:443/api/v1/health`
+- **升级（规则/清单/自动化）**：是（建议后续把“启动参数/worker 数需核对真实进程命令行”纳入 Deployment 固定门禁）
+
+### 2026-04-10｜画像产物默认目录回退错误，导致运行态文件落到仓库根目录（实现/配置/运行态）
+- **标签**：实现、配置、运行态、目录治理
+- **触发（事实）**：v2.8 验收阶段发现 `raw/`、`wiki/`、`output/` 系统级目录直接出现在工作区根目录，且子目录名混入 `sys_pay_*` 之类测试夹具 ID；同时 `runtime_executions.json` 中出现了与系统清单真实名称不一致的目录片段。
+- **根因**：
+  1. `ProfileArtifactService` 的 singleton root 解析把空配置直接做了 `abspath("")`，实际落到了当前工作目录，而不是预期的 `REPORT_DIR/system_profiles`
+  2. 系统级 artifact 目录曾直接按 `system_id` 或旧三层目录命名，导致目录可读性差，也容易把测试夹具 ID 暴露到真实运行态目录
+  3. 缺少“默认根目录 + 每系统工作区命名 + legacy 迁移”三件套回归测试
+- **影响**：
+  - 运行态产物污染仓库根目录，`git status` 噪声大
+  - 用户无法从目录名直接识别对应系统
+  - 历史 `path/raw_artifact_path` 与真实期望口径漂移
+- **改进行动（可执行）**：
+  1. 统一通过单一 helper 解析 system workspace root；空配置必须固定回退到 `data/system_profiles`
+  2. 系统级目录默认使用 `sid_<short-system-id>__<system_name>`；仅在无法解析系统名称时回退 `system_id`
+  3. 为 legacy `system_profiles.json`、`import_history.json`、`extraction_tasks.json` 与旧 artifact 路径提供迁移/兼容逻辑，并同步重写 `runtime_executions.json`
+  4. 为工作区根目录产物补 `.gitignore` 保护，避免再次把运行态目录暴露为未跟踪文件
+- **验证方式（可复现）**：
+  - `python -m pytest -q tests/test_system_profile_repository.py tests/test_profile_storage_layout_v28.py tests/test_profile_artifact_service.py tests/test_system_profile_artifact_api.py`
+  - 检查 `get_profile_artifact_service().root_dir` 是否等于 `data/system_profiles`
+  - 检查工作区根目录不再出现系统级 `raw/wiki/output` 产物目录，且每系统产物进入 `sid_*__<system_name>/`
+- **升级（规则/清单/自动化）**：是（建议后续把“默认运行态产物不得落到仓库根目录”纳入实现阶段固定门禁）
+
+### 2026-04-10｜后端容器时区与宿主机不一致，且导入链路写入无时区时间戳，导致页面时间错位 8 小时（部署/运行态/时间治理）
+- **标签**：部署、运行态、时间治理、前后端协同
+- **触发（事实）**：知识导入页显示的“导入完成时间”与服务器时间相差 8 小时；现场核验发现宿主机为 `+0800 CST`，`requirement-backend` 容器为 `+0000 UTC`，导入历史与执行状态文件中的时间戳均为无时区 ISO 字符串。
+- **根因**：
+  1. Docker Compose 未为 backend 容器注入宿主机时区信息，容器默认运行在 `UTC`
+  2. 后端导入链路使用 `datetime.now().isoformat()` / `datetime.utcnow().isoformat()` 写入裸时间字符串，前端 `new Date(value)` 无法区分“本地时间”还是“UTC 裸值”
+  3. 修复后未同步考虑历史运行态文件，导致旧记录仍会在页面中持续显示错位时间
+- **影响**：
+  - 导入页、执行状态、运行态文件中的时间与宿主机不一致，用户误判导入是否刚完成
+  - 新旧数据混用时，问题会表现为“有的记录对、有的记录不对”，排查成本高
+- **改进行动（可执行）**：
+  1. backend compose 必须显式设置 `TZ`，并挂载 `/etc/localtime`、`/etc/timezone`
+  2. 用户可见或运行态追踪相关时间戳一律输出带 offset 的 ISO 字符串，例如 `2026-04-10T18:29:28.083300+08:00`
+  3. 涉及时间比较的代码必须兼容 aware datetime，避免 naive/aware 混比报错
+  4. 修复上线时，如已存在旧的无时区 UTC 裸时间记录，必须先备份再做一次定向回填
+- **验证方式（可复现）**：
+  - `date '+HOST=%Y-%m-%d %H:%M:%S %z %Z'`
+  - `docker exec requirement-backend date '+CONTAINER=%Y-%m-%d %H:%M:%S %z %Z'`
+  - 检查 `data/runtime_executions.json`、`data/extraction_tasks.json`、`data/system_profiles/*/source/imports/{history,extraction_task}.json` 中时间戳是否带 `+08:00`
+  - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_system_profile_import_api.py -k 'profile_import_success_returns_task_id_and_records_history or v27_profile_import_uses_runtime_and_execution_status_aliases'`
+- **升级（规则/清单/自动化）**：是（建议后续把“backend 容器时间需与宿主机一致 + 用户可见时间戳必须带时区”纳入 Deployment 固定门禁）
+
 ### 2026-02-06｜提案阶段遗漏用户反馈（文档/流程）
 - **标签**：文档、流程、需求
 - **触发（事实）**：在v2.0提案编写过程中，用户通过多轮交互（AskUserQuestion）提供了大量决策信息，但初始提案未包含这些内容，用户指出"你问的问题和我的答复，你分析后放到提案里了吗？"

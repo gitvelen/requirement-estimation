@@ -17,10 +17,13 @@ services:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     env_file:
       - .env.backend
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]

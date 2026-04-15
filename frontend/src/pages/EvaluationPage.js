@@ -67,6 +67,22 @@ const resolveFeatureEstimate = (record) => {
   };
 };
 
+const isProfileContextUsed = (record) => Boolean(record?.profileContextUsed ?? record?.profile_context_used);
+
+const formatProfileContextSource = (value) => {
+  const normalized = String(value || 'none').trim().toLowerCase();
+  if (normalized === 'canonical+wiki_candidate') {
+    return '已发布画像 + wiki高置信候选补位';
+  }
+  if (normalized === 'canonical') {
+    return '仅已发布画像';
+  }
+  if (normalized === 'wiki_candidate') {
+    return '仅 wiki高置信候选';
+  }
+  return '未使用画像上下文';
+};
+
 const EvaluationPage = () => {
   const { taskId } = useParams();
   const location = useLocation();
@@ -280,14 +296,28 @@ const EvaluationPage = () => {
 
   const renderExpandedEstimate = (record) => {
     const estimate = resolveFeatureEstimate(record);
+    const profileContextUsed = isProfileContextUsed(record);
+    const contextEvidence = (
+      <div style={{ background: '#f8fafc', border: '1px solid #d9e2ec', borderRadius: 8, padding: 12 }}>
+        <Space direction="vertical" size={6}>
+          <Tag color={profileContextUsed ? 'blue' : 'default'}>
+            {`画像上下文：${profileContextUsed ? '已使用' : '未使用'}`}
+          </Tag>
+          <Text>来源：{formatProfileContextSource(record?.contextSource || record?.context_source)}</Text>
+        </Space>
+      </div>
+    );
 
     if (estimate.degraded) {
       return (
-        <Alert
-          type="warning"
-          showIcon
-          message="LLM 估算未成功，显示为拆分阶段原始估值"
-        />
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="LLM 估算未成功，显示为拆分阶段原始估值"
+          />
+          {contextEvidence}
+        </Space>
       );
     }
 
@@ -298,6 +328,7 @@ const EvaluationPage = () => {
           <Text>最可能值：{estimate.mostLikely}</Text>
           <Text>悲观值：{estimate.pessimistic}</Text>
           <Text>估算理由：{record.reasoning || 'LLM 未返回理由'}</Text>
+          {contextEvidence}
         </Space>
       </div>
     );

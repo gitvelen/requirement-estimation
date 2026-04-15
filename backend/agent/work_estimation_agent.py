@@ -111,12 +111,18 @@ class WorkEstimationAgent:
             "original_estimate": original_estimate,
         }
 
-    def estimate(self, features: List[Dict]) -> Dict[str, float]:
+    def estimate(
+        self,
+        features: List[Dict],
+        *,
+        system_context_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, float]:
         """
         对功能点进行工作量估算（LLM三点估计 + PERT）
 
         Args:
             features: 功能点列表
+            system_context_map: 按系统名映射的画像上下文
 
         Returns:
             Dict: 每个功能点的估算工作量（人天）
@@ -130,8 +136,25 @@ class WorkEstimationAgent:
             for idx, feature in enumerate(features, 1):
                 key = self._feature_key(feature)
                 fallback = self._resolve_original_estimate(feature)
+                system_name = str(
+                    feature.get("系统")
+                    or feature.get("system")
+                    or feature.get("system_name")
+                    or ""
+                ).strip()
+                context_payload = (
+                    system_context_map.get(system_name, {})
+                    if isinstance(system_context_map, dict)
+                    else {}
+                )
+                system_context = str(context_payload.get("text") or "").strip()
+                profile_context_used = bool(context_payload.get("profile_context_used"))
+                context_source = str(context_payload.get("context_source") or "none").strip() or "none"
                 try:
-                    detail = self.estimate_three_point_for_feature(feature)
+                    detail = self.estimate_three_point_for_feature(
+                        feature,
+                        system_context=system_context,
+                    )
                 except Exception as exc:
                     logger.warning("LLM估算失败，使用降级值 feature=%s error=%s", key, exc)
                     detail = {
@@ -142,6 +165,8 @@ class WorkEstimationAgent:
                         "reasoning": None,
                         "original_estimate": round(fallback, 2),
                     }
+                detail["profile_context_used"] = profile_context_used
+                detail["context_source"] = context_source
                 estimates[key] = detail["expected"]
                 self._latest_estimation_details[key] = detail
                 total_estimated += detail["expected"]
@@ -338,6 +363,8 @@ class WorkEstimationAgent:
             feature["expected"] = round(man_days, 2)
             feature["reasoning"] = detail.get("reasoning")
             feature["预估人天"] = round(man_days, 2)
+            feature["profile_context_used"] = bool(detail.get("profile_context_used"))
+            feature["context_source"] = str(detail.get("context_source") or "none").strip() or "none"
 
             logger.info("功能点 '%s' 工作量: %.2f人天", feature_name, feature["预估人天"])
 

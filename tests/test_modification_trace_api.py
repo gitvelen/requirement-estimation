@@ -155,6 +155,40 @@ def test_ai_initial_snapshot_written_once(client, monkeypatch):
     assert after_second.get("ai_initial_features") == first_snapshot
 
 
+def test_process_task_sync_clears_stale_error_after_success(client, monkeypatch):
+    manager = _seed_user("snapshot_mgr_2", "pwd123", ["manager"])
+
+    task_id = "task_snapshot_error"
+    with task_routes._task_storage_context() as data:
+        data[task_id] = {
+            "task_id": task_id,
+            "status": "failed",
+            "ai_status": "failed",
+            "progress": 20,
+            "message": "处理失败: Request timed out.",
+            "error": "Request timed out.",
+            "file_path": "/tmp/req.docx",
+            "filename": "req.docx",
+            "creator_id": manager["id"],
+            "created_at": datetime.now().isoformat(),
+            "systems_data": {},
+        }
+
+    monkeypatch.setattr(task_routes.docx_parser, "parse", lambda _: {"requirement_content": "需求内容"})
+    monkeypatch.setattr(
+        task_routes,
+        "get_agent_orchestrator",
+        lambda: DummyOrchestrator({"HOP": [{"功能点": "开户", "reasoning": "首次推理"}]}),
+    )
+
+    task_routes.process_task_sync(task_id, "/tmp/req.docx")
+
+    task = task_routes._get_task(task_id)
+    assert task["status"] == "completed"
+    assert task["message"] == "评估完成"
+    assert "error" not in task
+
+
 def test_modification_trace_api_permissions_and_retention(client, monkeypatch):
     manager = _seed_user("trace_mgr", "pwd123", ["manager"])
     other = _seed_user("trace_other", "pwd123", ["manager"])

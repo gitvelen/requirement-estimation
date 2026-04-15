@@ -3,10 +3,9 @@ COSMIC功能点分析器
 根据COSMIC方法进行数据移动分析和计数
 """
 import logging
-import json
-import os
 from typing import Dict, List, Any
 from backend.utils.llm_client import llm_client
+from backend.utils.cosmic_config_store import DEFAULT_COSMIC_CONFIG, load_cosmic_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,73 +21,11 @@ class CosmicAnalyzer:
 
     def load_config(self):
         """加载配置"""
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "config",
-            "cosmic_config.json"
-        )
-
-        default_config = {
-            "data_group_rules": {
-                "enabled": True,
-                "min_attributes": 2,
-                "min_data_groups": 1
-            },
-            "functional_process_rules": {
-                "enabled": True,
-                "granularity": "medium",
-                "min_data_movements": 2,
-                "max_data_movements": 50
-            },
-            "data_movement_rules": {
-                "entry": {
-                    "enabled": True,
-                    "description": "数据从用户进入功能处理",
-                    "keywords": ["输入", "接收", "获取", "录入", "上传", "提交"],
-                    "weight": 1
-                },
-                "exit": {
-                    "enabled": True,
-                    "description": "数据从功能处理返回给用户",
-                    "keywords": ["输出", "返回", "显示", "展示", "响应", "结果"],
-                    "weight": 1
-                },
-                "read": {
-                    "enabled": True,
-                    "description": "从持久存储读取数据",
-                    "keywords": ["查询", "读取", "检索", "获取", "加载"],
-                    "weight": 1
-                },
-                "write": {
-                    "enabled": True,
-                    "description": "数据写入持久存储",
-                    "keywords": ["保存", "写入", "存储", "创建", "更新", "删除"],
-                    "weight": 1
-                }
-            },
-            "counting_rules": {
-                "cff_calculation_method": "sum",
-                "include_triggering_operations": True,
-                "count_unique_data_groups": True
-            },
-            "validation_rules": {
-                "min_cff_per_feature": 2,
-                "max_cff_per_feature": 100,
-                "validate_data_group_consistency": True
-            }
-        }
-
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-                logger.info(f"从配置文件加载COSMIC配置: {config_path}")
-            except Exception as e:
-                logger.warning(f"加载COSMIC配置失败: {e}，使用默认配置")
-                self.config = default_config
-        else:
-            logger.info("使用默认COSMIC配置")
-            self.config = default_config
+        try:
+            self.config = load_cosmic_config()
+        except Exception as e:
+            logger.warning(f"加载COSMIC配置失败: {e}，使用默认配置")
+            self.config = DEFAULT_COSMIC_CONFIG
 
     def analyze_feature(self, feature_description: str, feature_info: Dict = None) -> Dict[str, Any]:
         """

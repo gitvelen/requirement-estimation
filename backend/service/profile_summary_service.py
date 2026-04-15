@@ -630,26 +630,26 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
 {{
   "suggestions": {{
     "system_positioning": {{
-      "system_description": "系统描述文本",
+      "core_responsibility": "系统职责文本",
       "target_users": ["用户类型1", "用户类型2"],
-      "boundaries": ["边界说明1", "边界说明2"]
+      "business_domains": ["业务域1", "业务域2"]
     }},
     "business_capabilities": {{
-      "module_structure": [{{"module_name": "模块名", "functions": [{{"name": "功能名", "desc": "功能描述"}}]}}],
-      "core_processes": ["核心流程1", "核心流程2"]
+      "functional_modules": [{{"name": "模块名", "description": "模块职责"}}],
+      "business_flows": [{{"name": "流程名", "description": "流程说明"}}]
     }},
     "integration_interfaces": {{
-      "integration_points": [{{"peer_system": "对端系统", "protocol": "协议", "direction": "方向", "description": "描述"}}],
+      "other_integrations": [{{"peer_system": "对端系统", "protocol": "协议", "direction": "方向", "description": "描述"}}],
       "external_dependencies": ["外部依赖1", "外部依赖2"]
     }},
     "technical_architecture": {{
-      "architecture_positioning": "架构定位文本",
+      "architecture_style": "架构定位文本",
       "tech_stack": ["技术栈1", "技术栈2"],
       "performance_profile": {{"指标名": "指标值"}}
     }},
     "constraints_risks": {{
-      "key_constraints": [{{"category": "约束类别", "description": "约束描述"}}],
-      "known_risks": ["风险1", "风险2"]
+      "prerequisites": [{{"name": "前提条件", "description": "前提说明"}}],
+      "risk_items": [{{"name": "风险1", "impact": "风险影响"}}]
     }}
   }}
 }}
@@ -705,6 +705,69 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
         )
         return max(1, min(stage1_budget, stage2_budget))
 
+    def _normalize_named_suggestion_items(self, value: Any) -> List[Dict[str, str]]:
+        items = value if isinstance(value, list) else [value]
+        normalized: List[Dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                name = str(
+                    item.get("name")
+                    or item.get("module_name")
+                    or item.get("title")
+                    or item.get("category")
+                    or item.get("description")
+                    or ""
+                ).strip()
+                description = str(
+                    item.get("description")
+                    or item.get("desc")
+                    or item.get("summary")
+                    or item.get("purpose")
+                    or ""
+                ).strip()
+                functions = item.get("functions")
+                if not description and isinstance(functions, list):
+                    function_descs = []
+                    for function in functions:
+                        if not isinstance(function, dict):
+                            continue
+                        function_name = str(function.get("name") or "").strip()
+                        function_desc = str(function.get("desc") or function.get("description") or "").strip()
+                        if function_name and function_desc:
+                            function_descs.append(f"{function_name}:{function_desc}")
+                        elif function_name:
+                            function_descs.append(function_name)
+                    description = "；".join(function_descs)
+            else:
+                name = str(item or "").strip()
+                description = ""
+
+            if not name and not description:
+                continue
+            if not name:
+                name = description
+                description = ""
+            normalized.append({"name": name, "description": description})
+        return normalized
+
+    def _normalize_risk_suggestion_items(self, value: Any) -> List[Dict[str, str]]:
+        items = value if isinstance(value, list) else [value]
+        normalized: List[Dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                name = str(item.get("name") or item.get("title") or item.get("description") or "").strip()
+                impact = str(item.get("impact") or item.get("impact_level") or item.get("notes") or "").strip()
+            else:
+                name = str(item or "").strip()
+                impact = ""
+            if not name and not impact:
+                continue
+            if not name:
+                name = impact
+                impact = ""
+            normalized.append({"name": name, "impact": impact})
+        return normalized
+
     def _normalize_stage2_suggestions(self, stage2_parsed: Any) -> Dict[str, Any]:
         suggestions: Dict[str, Any] = {}
         if isinstance(stage2_parsed, dict):
@@ -724,35 +787,52 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
             normalized_domain: Dict[str, Any] = {}
 
             if domain_key == "system_positioning":
-                normalized_domain["system_description"] = domain_value.get("system_description", domain_value.get("description", ""))
+                normalized_domain["core_responsibility"] = domain_value.get(
+                    "core_responsibility",
+                    domain_value.get("system_description", domain_value.get("description", "")),
+                )
                 normalized_domain["target_users"] = domain_value.get("target_users", [])
-                normalized_domain["boundaries"] = domain_value.get("boundaries", [])
+                normalized_domain["business_domains"] = domain_value.get("business_domains", domain_value.get("business_domain", []))
 
             elif domain_key == "business_capabilities":
                 desc = domain_value.get("description", "")
-                normalized_domain["module_structure"] = domain_value.get("module_structure", [])
-                normalized_domain["core_processes"] = domain_value.get("core_processes", [])
-                if desc and not normalized_domain["core_processes"]:
-                    normalized_domain["core_processes"] = [desc]
+                normalized_domain["functional_modules"] = self._normalize_named_suggestion_items(
+                    domain_value.get("functional_modules", domain_value.get("module_structure", []))
+                )
+                normalized_domain["business_flows"] = self._normalize_named_suggestion_items(
+                    domain_value.get("business_flows", domain_value.get("core_processes", []))
+                )
+                if desc and not normalized_domain["business_flows"]:
+                    normalized_domain["business_flows"] = [{"name": desc, "description": ""}]
 
             elif domain_key == "integration_interfaces":
                 desc = domain_value.get("description", "")
-                normalized_domain["integration_points"] = domain_value.get("integration_points", [])
+                normalized_domain["other_integrations"] = domain_value.get(
+                    "other_integrations",
+                    domain_value.get("integration_points", []),
+                )
                 normalized_domain["external_dependencies"] = domain_value.get("external_dependencies", [])
                 if desc and not normalized_domain["external_dependencies"]:
                     normalized_domain["external_dependencies"] = [desc]
 
             elif domain_key == "technical_architecture":
-                normalized_domain["architecture_positioning"] = domain_value.get("architecture_positioning", domain_value.get("description", ""))
+                normalized_domain["architecture_style"] = domain_value.get(
+                    "architecture_style",
+                    domain_value.get("architecture_positioning", domain_value.get("description", "")),
+                )
                 normalized_domain["tech_stack"] = domain_value.get("tech_stack", [])
                 normalized_domain["performance_profile"] = domain_value.get("performance_profile", {})
 
             elif domain_key == "constraints_risks":
                 desc = domain_value.get("description", "")
-                normalized_domain["key_constraints"] = domain_value.get("key_constraints", [])
-                normalized_domain["known_risks"] = domain_value.get("known_risks", [])
-                if desc and not normalized_domain["known_risks"]:
-                    normalized_domain["known_risks"] = [desc]
+                normalized_domain["prerequisites"] = self._normalize_named_suggestion_items(
+                    domain_value.get("prerequisites", domain_value.get("key_constraints", []))
+                )
+                normalized_domain["risk_items"] = self._normalize_risk_suggestion_items(
+                    domain_value.get("risk_items", domain_value.get("known_risks", []))
+                )
+                if desc and not normalized_domain["risk_items"]:
+                    normalized_domain["risk_items"] = [{"name": desc, "impact": ""}]
 
             if normalized_domain:
                 normalized_suggestions[domain_key] = normalized_domain
@@ -767,6 +847,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
         context_text: str,
         chunk_index: Optional[int],
         estimated_tokens: int,
+        llm_timeout: Optional[float] = None,
+        llm_retry_times: int = 3,
     ) -> Dict[str, Any]:
         stage1_prompt = self._build_stage1_prompt(
             system_id=system_id,
@@ -781,7 +863,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
             ],
             temperature=0.1,
             max_tokens=600,
-            retry_times=3,
+            retry_times=max(int(llm_retry_times or 1), 1),
+            timeout=llm_timeout,
         )
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         usage = extract_usage_from_response(response)
@@ -819,6 +902,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
         relevant_domains: List[str],
         chunk_index: Optional[int],
         estimated_tokens: int,
+        llm_timeout: Optional[float] = None,
+        llm_retry_times: int = 3,
     ) -> Dict[str, Any]:
         stage2_prompt = self._build_stage2_prompt(
             system_id=system_id,
@@ -834,7 +919,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
             ],
             temperature=0.2,
             max_tokens=2500,
-            retry_times=3,
+            retry_times=max(int(llm_retry_times or 1), 1),
+            timeout=llm_timeout,
         )
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         usage = extract_usage_from_response(response)
@@ -860,11 +946,16 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
         system_name: str,
         context: Optional[str] = None,
         context_bundle: Optional[SummaryContextBundle] = None,
+        llm_timeout: Optional[float] = None,
+        llm_retry_times: int = 3,
+        allow_chunking: Optional[bool] = None,
     ) -> Dict[str, Any]:
         bundle = context_bundle or SummaryContextBundle(
             static_prefix_text="",
             chunkable_body_text=str(context or ""),
         )
+        normalized_retry_times = max(int(llm_retry_times or 1), 1)
+        chunking_enabled = getattr(settings, "ENABLE_LLM_CHUNKING", True) if allow_chunking is None else bool(allow_chunking)
         body_budget = self._calculate_body_budget(
             system_id=system_id,
             system_name=system_name,
@@ -881,6 +972,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 context_text=context_text,
                 chunk_index=None,
                 estimated_tokens=body_tokens,
+                llm_timeout=llm_timeout,
+                llm_retry_times=normalized_retry_times,
             )
             relevant_domains = stage1_result.get("relevant_domains") or list(PROFILE_DOMAIN_KEYS)
             stage2_suggestions = self._execute_stage2(
@@ -890,6 +983,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 relevant_domains=relevant_domains,
                 chunk_index=None,
                 estimated_tokens=body_tokens,
+                llm_timeout=llm_timeout,
+                llm_retry_times=normalized_retry_times,
             )
             return {
                 "suggestions": stage2_suggestions if isinstance(stage2_suggestions, dict) else {},
@@ -897,7 +992,7 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 "related_systems": stage1_result.get("related_systems") or [],
             }
 
-        if not getattr(settings, "ENABLE_LLM_CHUNKING", True):
+        if not chunking_enabled:
             raise ValueError("CHUNKING_DISABLED_OVERSIZE")
 
         chunks = chunk_text(
@@ -916,6 +1011,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                     context_text=context_text,
                     chunk_index=chunk.chunk_index,
                     estimated_tokens=chunk.estimated_tokens,
+                    llm_timeout=llm_timeout,
+                    llm_retry_times=normalized_retry_times,
                 )
             )
 
@@ -932,6 +1029,8 @@ system_positioning, business_capabilities, integration_interfaces, technical_arc
                 relevant_domains=relevant_domains,
                 chunk_index=chunk.chunk_index,
                 estimated_tokens=chunk.estimated_tokens,
+                llm_timeout=llm_timeout,
+                llm_retry_times=normalized_retry_times,
             )
             merged_suggestions = deep_merge(merged_suggestions, chunk_suggestions)
 

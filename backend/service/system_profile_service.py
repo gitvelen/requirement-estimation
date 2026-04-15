@@ -8,10 +8,10 @@ import copy
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -21,10 +21,31 @@ except ImportError:
     FCNTL_AVAILABLE = False
 
 from backend.config.config import settings
+from backend.service.memory_service import get_memory_service
+from backend.service.profile_artifact_service import get_profile_artifact_service
+from backend.service.runtime_execution_service import get_runtime_execution_service
+from backend.service.system_profile_repository import (
+    SystemProfileRepository,
+    get_system_profile_repository,
+    resolve_system_profile_root,
+)
 from backend.service.profile_schema_service import (
+    DOMAIN_TITLES,
+    PROFILE_CARD_DEFINITIONS,
+    PROFILE_CARD_DEFINITIONS_BY_KEY,
     V27_DOMAIN_KEYS,
+    apply_card_content_to_profile,
+    build_card_candidates,
+    build_domain_summary,
     build_empty_profile_data,
+    build_profile_cards,
+    get_card_keys_for_field_path,
+    get_field_value,
+    get_logical_field_key,
+    has_non_empty_value,
     normalize_profile_data,
+    normalize_card_baselines,
+    resolve_canonical_field_path,
     set_field_value,
 )
 from backend.service.system_profile_legacy_helper import (
@@ -55,6 +76,7 @@ from backend.service.system_profile_legacy_helper import (
     normalize_text_payload as normalize_text_entries,
     build_profile_data_from_legacy_fields,
 )
+from backend.utils.time_utils import current_time_iso
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +84,50 @@ PROFILE_FIELD_KEYS = LEGACY_PROFILE_FIELD_KEYS
 PROFILE_V24_DOMAIN_KEYS = LEGACY_PROFILE_DOMAIN_KEYS
 PROFILE_V24_TO_LEGACY_FIELD = LEGACY_PROFILE_FIELD_MAPPING
 V27_LEGACY_TO_CANONICAL_FIELD = {
-    ("system_positioning", "system_description"): "service_scope",
-    ("system_positioning", "boundaries"): "system_boundary",
-    ("business_capabilities", "core_processes"): "business_processes",
+    ("system_positioning", "system_description"): "core_responsibility",
+    ("system_positioning", "service_scope"): "core_responsibility",
+    ("system_positioning", "business_domain"): "business_domains",
+    ("business_capabilities", "core_processes"): "business_flows",
+    ("business_capabilities", "business_processes"): "business_flows",
+    ("business_capabilities", "data_assets"): "data_reports",
     ("integration_interfaces", "integration_points"): "other_integrations",
     ("technical_architecture", "architecture_positioning"): "architecture_style",
-    ("constraints_risks", "key_constraints"): "technical_constraints",
+    ("constraints_risks", "key_constraints"): "prerequisites",
+    ("constraints_risks", "technical_constraints"): "prerequisites",
+    ("constraints_risks", "known_risks"): "risk_items",
 }
 V27_CANONICAL_TO_LEGACY_FIELDS: Dict[tuple[str, str], List[str]] = {}
 for (_domain_key, _legacy_field), _canonical_field in V27_LEGACY_TO_CANONICAL_FIELD.items():
     V27_CANONICAL_TO_LEGACY_FIELDS.setdefault((_domain_key, _canonical_field), []).append(_legacy_field)
 
+PROFILE_WORKSPACE_RESET_SCENE_IDS = [
+    "pm_document_ingest",
+    "admin_service_governance_import",
+    "admin_system_catalog_import",
+]
+AUTHORITATIVE_ONLY_CANDIDATE_FIELDS = {
+    "integration_interfaces.canonical.provided_services",
+    "integration_interfaces.canonical.consumed_services",
+}
+
 
 class SystemProfileService:
     def __init__(self, store_path: Optional[str] = None) -> None:
-        self.store_path = store_path or os.path.join(settings.REPORT_DIR, "system_profiles.json")
-        self.lock_path = f"{self.store_path}.lock"
-        self.import_history_store_path = os.path.join(settings.REPORT_DIR, "import_history.json")
-        self.extraction_task_store_path = os.path.join(settings.REPORT_DIR, "extraction_tasks.json")
+        requested_path = str(store_path or "").strip()
+        legacy_store_dir = str(getattr(settings, "REPORT_DIR", "") or "").strip() or "data"
+        explicit_legacy_store_path = ""
+        if requested_path.lower().endswith(".json"):
+            explicit_legacy_store_path = os.path.abspath(requested_path)
+            legacy_store_dir = os.path.dirname(explicit_legacy_store_path) or legacy_store_dir
+            requested_path = os.path.splitext(requested_path)[0]
+        self.store_path = resolve_system_profile_root(requested_path or None)
+        self.repository = SystemProfileRepository(root_dir=self.store_path)
+        self.lock_path = os.path.join(self.store_path, ".service.lock")
+        self.import_history_store_path = os.path.join(self.store_path, "_compat_import_history.json")
+        self.extraction_task_store_path = os.path.join(self.store_path, "_compat_extraction_tasks.json")
+        self.legacy_store_path = explicit_legacy_store_path or os.path.join(legacy_store_dir, "system_profiles.json")
+        self.legacy_import_history_store_path = os.path.join(legacy_store_dir, "import_history.json")
+        self.legacy_extraction_task_store_path = os.path.join(legacy_store_dir, "extraction_tasks.json")
         self._mutex = threading.RLock()
         self._extraction_task_listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._run_startup_migration()
@@ -99,22 +147,14 @@ class SystemProfileService:
                 yield
 
     def _load_unlocked(self) -> List[Dict[str, Any]]:
-        if not os.path.exists(self.store_path):
-            return []
         try:
-            with open(self.store_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, list) else []
+            return self.repository.list_profiles(state="working")
         except Exception as exc:
             logger.warning(f"读取系统画像失败: {exc}")
             return []
 
     def _save_unlocked(self, items: List[Dict[str, Any]]) -> None:
-        os.makedirs(os.path.dirname(self.store_path) or ".", exist_ok=True)
-        tmp_path = f"{self.store_path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, self.store_path)
+        self.repository.save_working_profiles(items)
 
     def _load_object_file_unlocked(self, path: str) -> Dict[str, Any]:
         if not os.path.exists(path):
@@ -133,6 +173,153 @@ class SystemProfileService:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
+
+    def _resolve_profile_system_id(self, profile: Optional[Dict[str, Any]], fallback_name: str = "") -> str:
+        if isinstance(profile, dict):
+            direct_system_id = str(profile.get("system_id") or "").strip()
+            if direct_system_id:
+                return direct_system_id
+            profile_name = str(profile.get("system_name") or fallback_name or "").strip()
+            if profile_name:
+                return self._resolve_system_id_from_catalog(profile_name)
+        fallback_profile_name = str(fallback_name or "").strip()
+        if not fallback_profile_name:
+            return ""
+        return self._resolve_system_id_from_catalog(fallback_profile_name)
+
+    def _resolve_artifact_operator_id(self, actor: Optional[Dict[str, Any]]) -> str:
+        return str((actor or {}).get("username") or (actor or {}).get("id") or "system").strip() or "system"
+
+    def _get_latest_wiki_artifact_id(self, system_id: str) -> Optional[str]:
+        latest_projection = self._get_latest_projection_record(system_id)
+        artifact_id = str((latest_projection or {}).get("artifact_id") or "").strip()
+        if artifact_id:
+            return artifact_id
+        latest_wiki = self._get_latest_wiki_candidate_record(system_id)
+        artifact_id = str((latest_wiki or {}).get("artifact_id") or "").strip()
+        return artifact_id or None
+
+    def _append_output_artifact(
+        self,
+        *,
+        system_id: str,
+        payload: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+        source_artifact_id: Optional[str] = None,
+        latest_file_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return None
+        try:
+            return get_profile_artifact_service().append_layer_record(
+                layer="output",
+                system_id=normalized_system_id,
+                payload=payload if isinstance(payload, dict) else {},
+                operator_id=self._resolve_artifact_operator_id(actor),
+                source_artifact_id=source_artifact_id,
+                latest_file_name=latest_file_name,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("写入系统画像 output 产物失败 system=%s error=%s", normalized_system_id, exc)
+            return None
+
+    def _record_decision_output(
+        self,
+        *,
+        profile: Optional[Dict[str, Any]],
+        system_name: str,
+        decision_action: str,
+        actor: Optional[Dict[str, Any]] = None,
+        domain: Optional[str] = None,
+        sub_field: Optional[str] = None,
+        target_field_path: Optional[str] = None,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_system_name = str(system_name or "").strip()
+        system_id = self._resolve_profile_system_id(profile, normalized_system_name)
+        if not system_id:
+            return None
+
+        payload = {
+            "output_type": "decision_log",
+            "decision_action": str(decision_action or "").strip() or "unknown",
+            "system_id": system_id,
+            "system_name": normalized_system_name,
+            "domain": str(domain or "").strip() or None,
+            "sub_field": str(sub_field or "").strip() or None,
+            "target_field_path": str(target_field_path or "").strip() or None,
+            "profile_status": str((profile or {}).get("status") or "draft").strip() or "draft",
+            "created_at": current_time_iso(),
+        }
+        if isinstance(extra_payload, dict):
+            payload.update(extra_payload)
+
+        return self._append_output_artifact(
+            system_id=system_id,
+            payload=payload,
+            actor=actor,
+            source_artifact_id=self._get_latest_wiki_artifact_id(system_id),
+            latest_file_name="decisions/latest_decision.json",
+        )
+
+    def record_estimation_context_artifact(
+        self,
+        *,
+        system_name: str,
+        task_id: str,
+        features: List[Dict[str, Any]],
+        context_payload: Optional[Dict[str, Any]] = None,
+        actor: Optional[Dict[str, Any]] = None,
+        trigger: str = "task_estimate",
+    ) -> Optional[Dict[str, Any]]:
+        normalized_system_name = str(system_name or "").strip()
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_system_name or not normalized_task_id:
+            return None
+
+        normalized_context = context_payload if isinstance(context_payload, dict) else {}
+        system_id = str(normalized_context.get("system_id") or "").strip() or self._resolve_system_id_from_catalog(normalized_system_name)
+        if not system_id:
+            return None
+
+        feature_items: List[Dict[str, Any]] = []
+        for feature in features or []:
+            if not isinstance(feature, dict):
+                continue
+            feature_items.append(
+                {
+                    "feature_id": str(feature.get("id") or "").strip() or None,
+                    "feature_name": str(feature.get("功能点") or feature.get("name") or "").strip(),
+                    "expected": feature.get("expected") if feature.get("expected") is not None else feature.get("预估人天"),
+                    "original_estimate": feature.get("original_estimate"),
+                    "profile_context_used": bool(feature.get("profile_context_used")),
+                    "context_source": str(feature.get("context_source") or normalized_context.get("context_source") or "none").strip() or "none",
+                }
+            )
+        if not feature_items:
+            return None
+
+        payload = {
+            "output_type": "estimation_context",
+            "task_id": normalized_task_id,
+            "trigger": str(trigger or "").strip() or "task_estimate",
+            "system_id": system_id,
+            "system_name": normalized_system_name,
+            "profile_context_used": bool(normalized_context.get("profile_context_used")),
+            "context_source": str(normalized_context.get("context_source") or "none").strip() or "none",
+            "context_text": str(normalized_context.get("text") or "").strip(),
+            "feature_count": len(feature_items),
+            "features": feature_items,
+            "generated_at": current_time_iso(),
+        }
+        return self._append_output_artifact(
+            system_id=system_id,
+            payload=payload,
+            actor=actor,
+            source_artifact_id=self._get_latest_wiki_artifact_id(system_id),
+            latest_file_name="estimation/latest_estimation.json",
+        )
 
     def _find_profile(self, items: List[Dict[str, Any]], system_name: str) -> Optional[Dict[str, Any]]:
         for item in items:
@@ -156,28 +343,30 @@ class SystemProfileService:
         raw_ignored = value if isinstance(value, dict) else {}
         normalized: Dict[str, Any] = {}
         for raw_key, raw_value in raw_ignored.items():
-            field_path = str(raw_key or "").strip()
+            raw_field_path = str(raw_key or "").strip()
+            field_path = resolve_canonical_field_path(raw_field_path)
             if not field_path or "." not in field_path:
                 continue
-            domain_key, sub_field = field_path.split(".", 1)
-            domain_key = domain_key.strip()
-            sub_field = sub_field.strip()
-            if not domain_key or not sub_field:
-                continue
-            normalized[f"{domain_key}.{sub_field}"] = copy.deepcopy(raw_value)
+            if raw_field_path and "." in raw_field_path and raw_field_path not in normalized:
+                normalized[raw_field_path] = copy.deepcopy(raw_value)
+            if field_path not in normalized or raw_field_path == field_path:
+                normalized[field_path] = copy.deepcopy(raw_value)
         return normalized
 
     def _normalize_v27_metadata_map(self, value: Any) -> Dict[str, Any]:
         raw_map = value if isinstance(value, dict) else {}
         normalized: Dict[str, Any] = {}
         for raw_key, raw_value in raw_map.items():
-            field_path = str(raw_key or "").strip()
+            field_path = resolve_canonical_field_path(str(raw_key or "").strip())
             if not field_path:
                 continue
             if isinstance(raw_value, dict):
-                normalized[field_path] = copy.deepcopy(raw_value)
+                payload = copy.deepcopy(raw_value)
             else:
-                normalized[field_path] = {"value": copy.deepcopy(raw_value)}
+                payload = {"value": copy.deepcopy(raw_value)}
+            payload.setdefault("logical_field", get_logical_field_key(field_path))
+            payload.setdefault("canonical_field_path", field_path)
+            normalized[field_path] = payload
         return normalized
 
     def _normalize_v27_ai_suggestions(self, value: Any) -> Dict[str, Any]:
@@ -187,11 +376,39 @@ class SystemProfileService:
             field_path = str(raw_key or "").strip()
             if not field_path:
                 continue
-            normalized[field_path] = copy.deepcopy(raw_value)
+            if "." in field_path:
+                canonical_field_path = resolve_canonical_field_path(field_path)
+                if canonical_field_path not in normalized or field_path == canonical_field_path:
+                    normalized[canonical_field_path] = copy.deepcopy(raw_value)
+                continue
+
+            domain_key = field_path
+            if domain_key not in V27_DOMAIN_KEYS or not isinstance(raw_value, dict):
+                normalized[field_path] = copy.deepcopy(raw_value)
+                continue
+
+            canonical_payload = raw_value.get("canonical") if isinstance(raw_value.get("canonical"), dict) else None
+            if canonical_payload:
+                for nested_key, nested_value in canonical_payload.items():
+                    canonical_field_path = resolve_canonical_field_path(f"{domain_key}.canonical.{nested_key}")
+                    if canonical_field_path not in normalized or canonical_field_path == f"{domain_key}.canonical.{nested_key}":
+                        normalized[canonical_field_path] = copy.deepcopy(nested_value)
+
+            for nested_key, nested_value in raw_value.items():
+                nested_field = str(nested_key or "").strip()
+                if not nested_field or nested_field == "canonical":
+                    continue
+                canonical_sub_field = self._resolve_v27_canonical_sub_field(domain_key, nested_field)
+                canonical_field_path = resolve_canonical_field_path(f"{domain_key}.canonical.{canonical_sub_field}")
+                if canonical_field_path not in normalized or canonical_field_path == f"{domain_key}.canonical.{nested_field}":
+                    normalized[canonical_field_path] = copy.deepcopy(nested_value)
         return normalized
 
+    def _normalize_v27_card_baselines(self, value: Any) -> Dict[str, Dict[str, Any]]:
+        return normalize_card_baselines(value)
+
     def _build_v27_profile_record(self, system_name: str, system_id: str, now: str) -> Dict[str, Any]:
-        return {
+        profile = {
             "system_id": system_id,
             "system_name": system_name,
             "status": "draft",
@@ -200,15 +417,124 @@ class SystemProfileService:
             "profile_data": build_empty_profile_data(),
             "field_sources": {},
             "ai_suggestions": {},
+            "ai_suggestion_ignored": {},
+            "card_baselines": {},
             "evidence_refs": [],
         }
+        self._refresh_v27_card_views(profile)
+        return profile
+
+    def _refresh_v27_card_views(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            return profile
+
+        profile_data = normalize_profile_data(profile.get("profile_data"))
+        field_sources = self._normalize_v27_metadata_map(profile.get("field_sources"))
+        projection_suggestions = self._load_projection_candidate_map(str(profile.get("system_id") or "").strip())
+        stored_ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+        card_candidate_source = projection_suggestions or stored_ai_suggestions
+        ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+        baselines = self._normalize_v27_card_baselines(profile.get("card_baselines"))
+
+        profile["profile_data"] = profile_data
+        profile["field_sources"] = field_sources
+        profile["ai_suggestions"] = stored_ai_suggestions
+        profile["card_baselines"] = baselines
+        profile["board_version"] = "cards_v1"
+        profile["profile_cards"] = build_profile_cards(
+            profile_data,
+            field_sources=field_sources,
+            baselines=baselines,
+        )
+        profile["card_candidates"] = build_card_candidates(
+            card_candidate_source,
+            ignored_map=ignored_map,
+            profile_data=profile_data,
+        )
+        profile["domain_summary"] = build_domain_summary(
+            profile.get("profile_cards"),
+            card_candidates=profile.get("card_candidates"),
+        )
+        return profile
+
+    def _update_v27_card_baselines_from_sources(
+        self,
+        profile: Dict[str, Any],
+        *,
+        field_updates: Dict[str, Any],
+        field_sources: Dict[str, Any],
+    ) -> None:
+        if not field_updates or not field_sources:
+            return
+
+        trusted_paths = [
+            field_path
+            for field_path, source_meta in field_sources.items()
+            if isinstance(source_meta, dict) and str(source_meta.get("source") or "").strip() in {"system_catalog", "governance"}
+        ]
+        if not trusted_paths:
+            return
+
+        baselines = self._normalize_v27_card_baselines(profile.get("card_baselines"))
+        normalized_profile = normalize_profile_data(profile.get("profile_data"))
+        for field_path in trusted_paths:
+            card_keys = get_card_keys_for_field_path(field_path)
+            if not card_keys:
+                continue
+            value = get_field_value(normalized_profile, field_path)
+            if not has_non_empty_value(value):
+                continue
+            for card_key in card_keys:
+                card_baseline = dict(baselines.get(card_key) or {})
+                card_baseline[field_path] = copy.deepcopy(value)
+                baselines[card_key] = card_baseline
+        profile["card_baselines"] = baselines
+
+    def _resolve_card_candidate_content(
+        self,
+        profile: Dict[str, Any],
+        *,
+        card_key: str,
+    ) -> Dict[str, Any]:
+        candidate_cards = profile.get("card_candidates") if isinstance(profile.get("card_candidates"), dict) else {}
+        candidate_card = candidate_cards.get(card_key) if isinstance(candidate_cards.get(card_key), dict) else {}
+        candidate_content = candidate_card.get("content") if isinstance(candidate_card.get("content"), dict) else {}
+        if candidate_content:
+            return copy.deepcopy(candidate_content)
+
+        projection_suggestions = self._load_projection_candidate_map(str(profile.get("system_id") or "").strip())
+        stored_ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+        card_candidate_source = projection_suggestions or stored_ai_suggestions
+        ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+        raw_candidate_cards = build_card_candidates(
+            card_candidate_source,
+            ignored_map=ignored_map,
+        )
+        raw_candidate_card = raw_candidate_cards.get(card_key) if isinstance(raw_candidate_cards.get(card_key), dict) else {}
+        raw_candidate_content = raw_candidate_card.get("content") if isinstance(raw_candidate_card.get("content"), dict) else {}
+        return copy.deepcopy(raw_candidate_content) if raw_candidate_content else {}
+
+    def _field_updates_to_card_content(
+        self,
+        profile: Dict[str, Any],
+        *,
+        card_key: str,
+        source: str = "manual",
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        profile_cards = profile.get("profile_cards") if isinstance(profile.get("profile_cards"), dict) else {}
+        card = profile_cards.get(card_key) if isinstance(profile_cards.get(card_key), dict) else {}
+        content = card.get("content") if isinstance(card.get("content"), dict) else {}
+        field_updates = {}
+        field_sources = {}
+        for field_path, value in content.items():
+            field_updates[str(field_path)] = copy.deepcopy(value)
+            field_sources[str(field_path)] = {"source": source}
+        return field_updates, field_sources
 
     def _normalize_profile_for_output(self, profile: Dict[str, Any]) -> Dict[str, Any]:
         if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
             payload = dict(profile or {})
-            payload["profile_data"] = normalize_profile_data(payload.get("profile_data"))
-            payload["field_sources"] = self._normalize_v27_metadata_map(payload.get("field_sources"))
-            payload["ai_suggestions"] = self._normalize_v27_ai_suggestions(payload.get("ai_suggestions"))
+            self._refresh_v27_card_views(payload)
             payload["ai_suggestions_previous"] = (
                 self._normalize_v27_ai_suggestions(payload.get("ai_suggestions_previous"))
                 if isinstance(payload.get("ai_suggestions_previous"), dict)
@@ -271,7 +597,7 @@ class SystemProfileService:
             return False
 
         changed = False
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         v27_enabled = getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False)
         fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
         fields = self._normalize_fields_for_output(fields)
@@ -325,6 +651,9 @@ class SystemProfileService:
 
     def _run_startup_migration(self) -> None:
         try:
+            self.repository.migrate_legacy_profile_store(self.legacy_store_path)
+            self.repository.migrate_legacy_import_history(self.legacy_import_history_store_path)
+            self.repository.migrate_legacy_extraction_tasks(self.legacy_extraction_task_store_path)
             with self._lock():
                 items = self._load_unlocked()
                 changed = False
@@ -354,7 +683,7 @@ class SystemProfileService:
             {
                 "event_id": uuid.uuid4().hex,
                 "event_type": str(event_type or "").strip(),
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": current_time_iso(),
                 "source": str(source or "").strip(),
                 "summary": str(summary or "").strip(),
                 "affected_domains": list(affected_domains or []),
@@ -439,6 +768,11 @@ class SystemProfileService:
     def _resolve_v27_canonical_sub_field(self, domain: str, sub_field: str) -> str:
         normalized_domain = str(domain or "").strip()
         normalized_sub_field = str(sub_field or "").strip()
+        canonical_field_path = resolve_canonical_field_path(
+            f"{normalized_domain}.canonical.{normalized_sub_field}"
+        )
+        if canonical_field_path.startswith(f"{normalized_domain}.canonical."):
+            return canonical_field_path.split(".canonical.", 1)[1]
         return V27_LEGACY_TO_CANONICAL_FIELD.get((normalized_domain, normalized_sub_field), normalized_sub_field)
 
     def _iter_v27_suggestion_field_candidates(self, domain: str, sub_field: str) -> List[str]:
@@ -570,6 +904,24 @@ class SystemProfileService:
         next_suggestions[f"{domain}.canonical.{canonical_sub_field}"] = copy.deepcopy(value)
         return next_suggestions
 
+    def _remove_v27_domain_suggestions(
+        self,
+        suggestions: Any,
+        *,
+        domain: str,
+    ) -> Dict[str, Any]:
+        normalized_domain = str(domain or "").strip()
+        next_suggestions = self._normalize_v27_ai_suggestions(suggestions)
+        if not normalized_domain:
+            return next_suggestions
+
+        domain_prefix = f"{normalized_domain}."
+        for field_path in list(next_suggestions.keys()):
+            if str(field_path or "").strip().startswith(domain_prefix):
+                next_suggestions.pop(field_path, None)
+        next_suggestions.pop(normalized_domain, None)
+        return next_suggestions
+
     def _clear_v27_ignored_entries(
         self,
         ignored_map: Any,
@@ -652,7 +1004,10 @@ class SystemProfileService:
             raise ValueError("invalid_domain_or_sub_field")
 
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
-        now = datetime.now().isoformat()
+        now = current_time_iso()
+        accepted_value = None
+        target_sub_field = normalized_sub_field
+        normalized_profile: Dict[str, Any]
 
         with self._lock():
             items = self._load_unlocked()
@@ -754,8 +1109,22 @@ class SystemProfileService:
             profile["updated_at"] = now
             profile["updated_by_name"] = actor_name
             self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
 
-            return self._normalize_profile_for_output(profile)
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="accept_suggestion",
+            actor=actor,
+            domain=normalized_domain,
+            sub_field=matched_sub_field,
+            target_field_path=f"{normalized_domain}.canonical.{target_sub_field}",
+            extra_payload={
+                "accepted_value": copy.deepcopy(accepted_value),
+                "requested_sub_field": normalized_sub_field,
+            },
+        )
+        return normalized_profile
 
     def rollback_ai_suggestion(
         self,
@@ -774,7 +1143,10 @@ class SystemProfileService:
             raise ValueError("invalid_domain_or_sub_field")
 
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
-        now = datetime.now().isoformat()
+        now = current_time_iso()
+        normalized_profile: Dict[str, Any]
+        rolled_back_value: Any = None
+        matched_sub_field = normalized_sub_field
 
         with self._lock():
             items = self._load_unlocked()
@@ -857,11 +1229,25 @@ class SystemProfileService:
             profile["updated_at"] = now
             profile["updated_by_name"] = actor_name
             self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
 
-            return {
-                "profile": self._normalize_profile_for_output(profile),
-                "rolled_back_value": rolled_back_value,
-            }
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="rollback_suggestion",
+            actor=actor,
+            domain=normalized_domain,
+            sub_field=matched_sub_field,
+            target_field_path=f"{normalized_domain}.canonical.{self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)}",
+            extra_payload={
+                "rolled_back_value": copy.deepcopy(rolled_back_value),
+                "requested_sub_field": normalized_sub_field,
+            },
+        )
+        return {
+            "profile": normalized_profile,
+            "rolled_back_value": rolled_back_value,
+        }
 
     def ignore_ai_suggestion(
         self,
@@ -880,7 +1266,10 @@ class SystemProfileService:
             raise ValueError("invalid_domain_or_sub_field")
 
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
-        now = datetime.now().isoformat()
+        now = current_time_iso()
+        ignored_value: Any = None
+        normalized_profile: Dict[str, Any]
+        matched_sub_field = normalized_sub_field
 
         with self._lock():
             items = self._load_unlocked()
@@ -912,8 +1301,11 @@ class SystemProfileService:
                     raise ValueError("SUGGESTION_NOT_FOUND")
 
             ignored_key = f"{normalized_domain}.{matched_sub_field}"
+            requested_ignored_key = f"{normalized_domain}.{normalized_sub_field}"
             ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
             ignored_map[ignored_key] = ignored_value
+            if requested_ignored_key != ignored_key:
+                ignored_map[requested_ignored_key] = copy.deepcopy(ignored_value)
             profile["ai_suggestion_ignored"] = ignored_map
 
             self._append_profile_event(
@@ -926,8 +1318,276 @@ class SystemProfileService:
             profile["updated_at"] = now
             profile["updated_by_name"] = actor_name
             self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
 
-            return self._normalize_profile_for_output(profile)
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="ignore_suggestion",
+            actor=actor,
+            domain=normalized_domain,
+            sub_field=matched_sub_field,
+            target_field_path=f"{normalized_domain}.canonical.{self._resolve_v27_canonical_sub_field(normalized_domain, matched_sub_field)}",
+            extra_payload={
+                "ignored_value": copy.deepcopy(ignored_value),
+                "requested_sub_field": normalized_sub_field,
+            },
+        )
+        return normalized_profile
+
+    def _parse_v27_field_path(self, field_path: str) -> tuple[Optional[str], Optional[str]]:
+        normalized_path = str(field_path or "").strip()
+        if not normalized_path:
+            return None, None
+        if ".canonical." in normalized_path:
+            domain_key, sub_field = normalized_path.split(".canonical.", 1)
+            return str(domain_key or "").strip() or None, str(sub_field or "").strip() or None
+        if "." not in normalized_path:
+            return None, None
+        domain_key, sub_field = normalized_path.split(".", 1)
+        return str(domain_key or "").strip() or None, str(sub_field or "").strip() or None
+
+    def _require_v27_card_key(self, card_key: str) -> str:
+        normalized_card_key = str(card_key or "").strip()
+        if normalized_card_key not in PROFILE_CARD_DEFINITIONS_BY_KEY:
+            raise ValueError("invalid_card_key")
+        return normalized_card_key
+
+    def _apply_flat_field_content(
+        self,
+        profile: Dict[str, Any],
+        *,
+        card_key: str,
+        card_content: Dict[str, Any],
+        actor_name: str,
+        scene_id: str,
+        event_type: str,
+        summary: str,
+        clear_suggestions: bool = False,
+        mark_ignored: bool = False,
+        apply_to_profile: bool = True,
+    ) -> Dict[str, Any]:
+        profile_data = normalize_profile_data(profile.get("profile_data"))
+        field_sources = self._normalize_v27_metadata_map(profile.get("field_sources"))
+        ai_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+        ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+
+        for field_path, value in card_content.items():
+            if apply_to_profile:
+                profile_data = set_field_value(profile_data, field_path, value)
+            if not mark_ignored:
+                field_sources[str(field_path)] = {
+                    "source": "manual",
+                    "scene_id": scene_id,
+                    "card_key": card_key,
+                }
+
+            domain_key, sub_field = self._parse_v27_field_path(field_path)
+            if not domain_key or not sub_field:
+                continue
+            if clear_suggestions:
+                ai_suggestions = self._remove_v27_suggestion_entries(
+                    ai_suggestions,
+                    domain=domain_key,
+                    sub_field=sub_field,
+                )
+                ignored_map, _ = self._clear_v27_ignored_entries(
+                    ignored_map,
+                    domain=domain_key,
+                    sub_field=sub_field,
+                )
+            if mark_ignored:
+                ignored_map[field_path] = copy.deepcopy(value)
+
+        if apply_to_profile:
+            profile["profile_data"] = profile_data
+        profile["field_sources"] = field_sources
+        profile["ai_suggestions"] = ai_suggestions
+        profile["ai_suggestion_ignored"] = ignored_map
+
+        if apply_to_profile:
+            legacy_fields = self._normalize_fields_for_storage(profile.get(LEGACY_FIELDS_KEY) or {})
+            for key, value in self._extract_legacy_fields_from_profile_data(profile_data).items():
+                legacy_fields[key] = value
+            profile[LEGACY_FIELDS_KEY] = legacy_fields
+
+        self._append_profile_event(
+            profile,
+            event_type=event_type,
+            source=actor_name,
+            summary=summary,
+            affected_domains=[PROFILE_CARD_DEFINITIONS_BY_KEY[card_key]["domain_key"]],
+        )
+        self._refresh_v27_card_views(profile)
+        return profile
+
+    def accept_card_candidate(
+        self,
+        system_name: str,
+        *,
+        card_key: str,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        normalized_card_key = self._require_v27_card_key(card_key)
+        if not name:
+            raise ValueError("system_name不能为空")
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            raise ValueError("v27_schema_disabled")
+
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        now = current_time_iso()
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                raise ValueError("系统画像不存在")
+
+            self._refresh_v27_card_views(profile)
+            candidate_content = self._resolve_card_candidate_content(
+                profile,
+                card_key=normalized_card_key,
+            )
+            if not candidate_content:
+                raise ValueError("card_candidate_not_found")
+
+            self._apply_flat_field_content(
+                profile,
+                card_key=normalized_card_key,
+                card_content=candidate_content,
+                actor_name=actor_name,
+                scene_id="card_candidate_accept",
+                event_type="ai_suggestion_accept",
+                summary=f"采纳卡片 {normalized_card_key} 的候选内容",
+                clear_suggestions=True,
+            )
+            profile["updated_at"] = now
+            profile["updated_by_name"] = actor_name
+            self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
+
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="accept_card_candidate",
+            actor=actor,
+            target_field_path=normalized_card_key,
+            extra_payload={"card_key": normalized_card_key},
+        )
+        return normalized_profile
+
+    def ignore_card_candidate(
+        self,
+        system_name: str,
+        *,
+        card_key: str,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        normalized_card_key = self._require_v27_card_key(card_key)
+        if not name:
+            raise ValueError("system_name不能为空")
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            raise ValueError("v27_schema_disabled")
+
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        now = current_time_iso()
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                raise ValueError("系统画像不存在")
+
+            self._refresh_v27_card_views(profile)
+            candidate_content = self._resolve_card_candidate_content(
+                profile,
+                card_key=normalized_card_key,
+            )
+            if not candidate_content:
+                raise ValueError("card_candidate_not_found")
+
+            self._apply_flat_field_content(
+                profile,
+                card_key=normalized_card_key,
+                card_content=candidate_content,
+                actor_name=actor_name,
+                scene_id="card_candidate_ignore",
+                event_type="ai_suggestion_ignore",
+                summary=f"忽略卡片 {normalized_card_key} 的候选内容",
+                mark_ignored=True,
+                apply_to_profile=False,
+            )
+            profile["updated_at"] = now
+            profile["updated_by_name"] = actor_name
+            self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
+
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="ignore_card_candidate",
+            actor=actor,
+            target_field_path=normalized_card_key,
+            extra_payload={"card_key": normalized_card_key},
+        )
+        return normalized_profile
+
+    def restore_card_baseline(
+        self,
+        system_name: str,
+        *,
+        card_key: str,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        name = str(system_name or "").strip()
+        normalized_card_key = self._require_v27_card_key(card_key)
+        if not name:
+            raise ValueError("system_name不能为空")
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            raise ValueError("v27_schema_disabled")
+
+        actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        now = current_time_iso()
+
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, name)
+            if not profile:
+                raise ValueError("系统画像不存在")
+
+            self._refresh_v27_card_views(profile)
+            profile_cards = profile.get("profile_cards") if isinstance(profile.get("profile_cards"), dict) else {}
+            profile_card = profile_cards.get(normalized_card_key) if isinstance(profile_cards.get(normalized_card_key), dict) else {}
+            baseline_content = profile_card.get("baseline_content") if isinstance(profile_card.get("baseline_content"), dict) else {}
+            if not baseline_content:
+                raise ValueError("card_baseline_not_found")
+
+            self._apply_flat_field_content(
+                profile,
+                card_key=normalized_card_key,
+                card_content=baseline_content,
+                actor_name=actor_name,
+                scene_id="card_baseline_restore",
+                event_type="manual_edit",
+                summary=f"恢复卡片 {normalized_card_key} 的高可信基线",
+                clear_suggestions=False,
+            )
+            profile["updated_at"] = now
+            profile["updated_by_name"] = actor_name
+            self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
+
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="restore_card_baseline",
+            actor=actor,
+            target_field_path=normalized_card_key,
+            extra_payload={"card_key": normalized_card_key},
+        )
+        return normalized_profile
 
     def record_import_history(
         self,
@@ -939,12 +1599,13 @@ class SystemProfileService:
         operator_id: str,
         failure_reason: Optional[str] = None,
         execution_id: Optional[str] = None,
+        artifact_refs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_system_id = str(system_id or "").strip()
         if not normalized_system_id:
             raise ValueError("system_id不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         item = {
             "id": uuid.uuid4().hex,
             "doc_type": str(doc_type or "").strip(),
@@ -954,18 +1615,102 @@ class SystemProfileService:
             "failure_reason": None if not str(failure_reason or "").strip() else str(failure_reason or "").strip(),
             "operator_id": str(operator_id or "").strip() or "unknown",
             "execution_id": None if not str(execution_id or "").strip() else str(execution_id or "").strip(),
+            "artifact_refs": artifact_refs if isinstance(artifact_refs, dict) else {},
         }
 
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.import_history_store_path)
-            records = payload.get(normalized_system_id) if isinstance(payload.get(normalized_system_id), list) else []
-            records = [record for record in records if isinstance(record, dict)]
-            records.append(item)
-            records.sort(key=lambda record: str(record.get("imported_at") or ""), reverse=True)
-            payload[normalized_system_id] = records
-            self._save_object_file_unlocked(self.import_history_store_path, payload)
+        system_name = self._resolve_workspace_system_name(normalized_system_id)
+        return self.repository.append_import_history(
+            system_id=normalized_system_id,
+            system_name=system_name,
+            item=item,
+        )
 
-        return dict(item)
+    def reset_profile_workspace(
+        self,
+        system_name: str,
+        *,
+        system_id: Optional[str] = None,
+        actor: Optional[Dict[str, Any]] = None,
+        reason: str = "manual_reset",
+    ) -> Dict[str, Any]:
+        normalized_system_name = str(system_name or "").strip()
+        normalized_system_id = str(system_id or "").strip() or self._resolve_system_id_from_catalog(normalized_system_name)
+        if not normalized_system_name and not normalized_system_id:
+            raise ValueError("system_id不能为空")
+
+        resolved_system_name = self._resolve_workspace_system_name(
+            normalized_system_id,
+            preferred_name=normalized_system_name,
+        )
+        deleted_workspace = self.repository.delete_workspace(
+            system_id=normalized_system_id,
+            system_name=resolved_system_name,
+        )
+        runtime_cleanup = get_runtime_execution_service().delete_executions(
+            normalized_system_id,
+            scene_ids=PROFILE_WORKSPACE_RESET_SCENE_IDS,
+        ) if normalized_system_id else {"deleted_count": 0, "deleted_execution_ids": []}
+        memory_cleanup = get_memory_service().delete_records(
+            normalized_system_id,
+            memory_type="profile_update",
+            scene_ids=PROFILE_WORKSPACE_RESET_SCENE_IDS,
+        ) if normalized_system_id else {"deleted_count": 0, "deleted_memory_ids": []}
+
+        deleted = bool(
+            deleted_workspace.get("deleted")
+            or int(runtime_cleanup.get("deleted_count") or 0) > 0
+            or int(memory_cleanup.get("deleted_count") or 0) > 0
+        )
+
+        return {
+            "system_id": normalized_system_id or str(deleted_workspace.get("system_id") or "").strip(),
+            "system_name": resolved_system_name or str(deleted_workspace.get("system_name") or "").strip(),
+            "reason": str(reason or "").strip() or "manual_reset",
+            "workspace_deleted": bool(deleted_workspace.get("deleted")),
+            "workspace_path": deleted_workspace.get("workspace_path"),
+            "deleted_runtime_executions": int(runtime_cleanup.get("deleted_count") or 0),
+            "deleted_memory_records": int(memory_cleanup.get("deleted_count") or 0),
+            "deleted": deleted,
+            "deleted_at": current_time_iso(),
+            "deleted_by": self._resolve_artifact_operator_id(actor),
+        }
+
+    def reset_all_profile_workspaces(
+        self,
+        *,
+        actor: Optional[Dict[str, Any]] = None,
+        reason: str = "manual_reset_all",
+    ) -> Dict[str, Any]:
+        systems = self.repository.list_workspace_identities()
+        results: List[Dict[str, Any]] = []
+        deleted_workspace_count = 0
+        deleted_runtime_execution_count = 0
+        deleted_memory_record_count = 0
+
+        for item in systems:
+            system_id = str(item.get("system_id") or "").strip()
+            system_name = str(item.get("system_name") or "").strip()
+            result = self.reset_profile_workspace(
+                system_name,
+                system_id=system_id,
+                actor=actor,
+                reason=reason,
+            )
+            results.append(result)
+            if result.get("workspace_deleted"):
+                deleted_workspace_count += 1
+            deleted_runtime_execution_count += int(result.get("deleted_runtime_executions") or 0)
+            deleted_memory_record_count += int(result.get("deleted_memory_records") or 0)
+
+        return {
+            "reason": str(reason or "").strip() or "manual_reset_all",
+            "systems": results,
+            "deleted_workspace_count": deleted_workspace_count,
+            "deleted_runtime_execution_count": deleted_runtime_execution_count,
+            "deleted_memory_record_count": deleted_memory_record_count,
+            "deleted_at": current_time_iso(),
+            "deleted_by": self._resolve_artifact_operator_id(actor),
+        }
 
     def get_import_history(self, system_id: str, *, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         normalized_system_id = str(system_id or "").strip()
@@ -975,15 +1720,12 @@ class SystemProfileService:
         safe_limit = max(1, min(int(limit or 50), 200))
         safe_offset = max(0, int(offset or 0))
 
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.import_history_store_path)
-            records = payload.get(normalized_system_id) if isinstance(payload.get(normalized_system_id), list) else []
-            records = [record for record in records if isinstance(record, dict)]
-            records.sort(key=lambda record: str(record.get("imported_at") or ""), reverse=True)
-            return {
-                "total": len(records),
-                "items": records[safe_offset : safe_offset + safe_limit],
-            }
+        records = self.repository.get_import_history(system_id=normalized_system_id)
+        records.sort(key=lambda record: str(record.get("imported_at") or ""), reverse=True)
+        return {
+            "total": len(records),
+            "items": records[safe_offset : safe_offset + safe_limit],
+        }
 
     def register_extraction_task_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         if not callable(listener):
@@ -1029,36 +1771,37 @@ class SystemProfileService:
             raise ValueError("task_id不能为空")
 
         normalized_status = str(status or "").strip().lower() or "pending"
-        now = datetime.now().isoformat()
+        now = current_time_iso()
 
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.extraction_task_store_path)
-            existing = payload.get(normalized_system_id) if isinstance(payload.get(normalized_system_id), dict) else {}
-            if str(existing.get("task_id") or "").strip() != normalized_task_id:
-                existing = {}
+        existing = self.repository.get_extraction_task(system_id=normalized_system_id) or {}
+        if str(existing.get("task_id") or "").strip() != normalized_task_id:
+            existing = {}
 
-            task = {
-                "task_id": normalized_task_id,
-                "status": normalized_status,
-                "trigger": str(trigger or "").strip() or "document_import",
-                "source_file": str(source_file or existing.get("source_file") or "").strip(),
-                "created_at": str(created_at or existing.get("created_at") or now),
-                "completed_at": completed_at if (completed_at is not None) else existing.get("completed_at"),
-                "error": error if (error is not None) else existing.get("error"),
-                "notifications": notifications if isinstance(notifications, list) else list(existing.get("notifications") or []),
-            }
+        task = {
+            "task_id": normalized_task_id,
+            "status": normalized_status,
+            "trigger": str(trigger or "").strip() or "document_import",
+            "source_file": str(source_file or existing.get("source_file") or "").strip(),
+            "created_at": str(created_at or existing.get("created_at") or now),
+            "completed_at": completed_at if (completed_at is not None) else existing.get("completed_at"),
+            "error": error if (error is not None) else existing.get("error"),
+            "notifications": notifications if isinstance(notifications, list) else list(existing.get("notifications") or []),
+        }
 
-            if normalized_status in {"pending", "processing"}:
-                task["completed_at"] = None
-            elif normalized_status in {"completed", "failed"}:
-                task["completed_at"] = str(task.get("completed_at") or now)
+        if normalized_status in {"pending", "processing"}:
+            task["completed_at"] = None
+        elif normalized_status in {"completed", "failed"}:
+            task["completed_at"] = str(task.get("completed_at") or now)
 
-            if normalized_status != "failed" and not str(error or "").strip():
-                task["error"] = None
+        if normalized_status != "failed" and not str(error or "").strip():
+            task["error"] = None
 
-            payload[normalized_system_id] = task
-            self._save_object_file_unlocked(self.extraction_task_store_path, payload)
-            result = dict(task)
+        system_name = self._resolve_workspace_system_name(normalized_system_id)
+        result = self.repository.save_extraction_task(
+            system_id=normalized_system_id,
+            system_name=system_name,
+            task=task,
+        )
         self._notify_extraction_task_listeners(normalized_system_id, result)
         return result
 
@@ -1079,43 +1822,42 @@ class SystemProfileService:
             raise ValueError("task_id不能为空")
 
         normalized_status = str(status or "").strip().lower() or "pending"
-        now = datetime.now().isoformat()
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.extraction_task_store_path)
-            existing = payload.get(normalized_system_id) if isinstance(payload.get(normalized_system_id), dict) else {}
+        now = current_time_iso()
+        existing = self.repository.get_extraction_task(system_id=normalized_system_id) or {}
 
-            existing_task_id = str(existing.get("task_id") or "").strip()
-            if existing_task_id and existing_task_id != normalized_task_id:
-                # Ignore stale status updates from older tasks when a newer task has already
-                # been recorded for the same system.
-                return dict(existing)
+        existing_task_id = str(existing.get("task_id") or "").strip()
+        if existing_task_id and existing_task_id != normalized_task_id:
+            return dict(existing)
 
-            if existing_task_id != normalized_task_id:
-                existing = {
-                    "task_id": normalized_task_id,
-                    "trigger": "document_import",
-                    "source_file": "",
-                    "created_at": now,
-                    "notifications": [],
-                }
+        if existing_task_id != normalized_task_id:
+            existing = {
+                "task_id": normalized_task_id,
+                "trigger": "document_import",
+                "source_file": "",
+                "created_at": now,
+                "notifications": [],
+            }
 
-            existing["status"] = normalized_status
-            if normalized_status in {"pending", "processing"}:
-                existing["completed_at"] = None
-            elif normalized_status in {"completed", "failed"}:
-                existing["completed_at"] = now
+        existing["status"] = normalized_status
+        if normalized_status in {"pending", "processing"}:
+            existing["completed_at"] = None
+        elif normalized_status in {"completed", "failed"}:
+            existing["completed_at"] = now
 
-            if notifications is not None:
-                existing["notifications"] = notifications if isinstance(notifications, list) else []
+        if notifications is not None:
+            existing["notifications"] = notifications if isinstance(notifications, list) else []
 
-            if error is not None:
-                existing["error"] = str(error).strip() or None
-            elif normalized_status != "failed":
-                existing["error"] = None
+        if error is not None:
+            existing["error"] = str(error).strip() or None
+        elif normalized_status != "failed":
+            existing["error"] = None
 
-            payload[normalized_system_id] = existing
-            self._save_object_file_unlocked(self.extraction_task_store_path, payload)
-            result = dict(existing)
+        system_name = self._resolve_workspace_system_name(normalized_system_id)
+        result = self.repository.save_extraction_task(
+            system_id=normalized_system_id,
+            system_name=system_name,
+            task=existing,
+        )
         self._notify_extraction_task_listeners(normalized_system_id, result)
         return result
 
@@ -1124,33 +1866,15 @@ class SystemProfileService:
         if not normalized_system_id:
             raise ValueError("system_id不能为空")
 
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.extraction_task_store_path)
-            task = payload.get(normalized_system_id)
-            if not isinstance(task, dict):
-                return None
-            return dict(task)
+        task = self.repository.get_extraction_task(system_id=normalized_system_id)
+        return dict(task) if isinstance(task, dict) else None
 
     def get_extraction_task_by_task_id(self, task_id: str) -> Optional[Dict[str, Any]]:
         normalized_task_id = str(task_id or "").strip()
         if not normalized_task_id:
             raise ValueError("task_id不能为空")
 
-        with self._lock():
-            payload = self._load_object_file_unlocked(self.extraction_task_store_path)
-            if not isinstance(payload, dict):
-                return None
-
-            for system_id, task in payload.items():
-                if not isinstance(task, dict):
-                    continue
-                if str(task.get("task_id") or "").strip() != normalized_task_id:
-                    continue
-                return {
-                    "system_id": str(system_id or "").strip(),
-                    "task": dict(task),
-                }
-        return None
+        return self.repository.get_extraction_task_by_task_id(normalized_task_id)
 
     def get_profile(self, system_name: str) -> Optional[Dict[str, Any]]:
         name = str(system_name or "").strip()
@@ -1188,7 +1912,7 @@ class SystemProfileService:
                 actor=actor,
             )
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         normalized_system_id = str(system_id or "").strip()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
@@ -1236,7 +1960,7 @@ class SystemProfileService:
         incoming_sources = payload.get("field_sources") if isinstance(payload.get("field_sources"), dict) else {}
         incoming_ignored = self._normalize_ai_suggestion_ignored_for_storage(payload.get("ai_suggestion_ignored"))
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
 
@@ -1314,7 +2038,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         normalized_system_id = str(payload.get("system_id") or "").strip()
         incoming_profile_data = normalize_profile_data(payload.get("profile_data"))
         evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
@@ -1346,6 +2070,12 @@ class SystemProfileService:
             existing["updated_at"] = now
             existing.pop(LEGACY_FIELDS_KEY, None)
             existing.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            self._update_v27_card_baselines_from_sources(
+                existing,
+                field_updates=incoming_profile_data,
+                field_sources=incoming_sources,
+            )
+            self._refresh_v27_card_views(existing)
 
             self._save_unlocked(items)
 
@@ -1362,7 +2092,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
 
@@ -1378,6 +2108,7 @@ class SystemProfileService:
             profile["updated_at"] = now
             profile.pop(LEGACY_FIELDS_KEY, None)
             profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            self._refresh_v27_card_views(profile)
             self._save_unlocked(items)
 
         return self._normalize_profile_for_output(profile)
@@ -1398,7 +2129,7 @@ class SystemProfileService:
         if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
             raise ValueError("v27_schema_disabled")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         normalized_system_id = str(system_id or "").strip()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
@@ -1430,6 +2161,12 @@ class SystemProfileService:
             profile["updated_at"] = now
             profile.pop(LEGACY_FIELDS_KEY, None)
             profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
+            self._update_v27_card_baselines_from_sources(
+                profile,
+                field_updates=normalized_updates,
+                field_sources=normalized_sources,
+            )
+            self._refresh_v27_card_views(profile)
 
             self._save_unlocked(items)
 
@@ -1446,7 +2183,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         normalized_system_id = str(system_id or "").strip()
 
@@ -1495,7 +2232,7 @@ class SystemProfileService:
         if not normalized_job_id:
             return
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         normalized_status = str(status or "").strip().lower() or "running"
 
         with self._lock():
@@ -1532,7 +2269,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "system"
         source_text = str(source or "").strip() or actor_name
         normalized_trigger = str(trigger or "").strip() or "document_import"
@@ -1547,48 +2284,83 @@ class SystemProfileService:
             fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
             fields = self._normalize_fields_for_output(fields)
 
-            existing_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
-            if not isinstance(existing_suggestions, dict) or not existing_suggestions:
-                existing_suggestions = self._empty_profile_data()
+            updated_domains: List[str] = []
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                existing_suggestions = self._normalize_v27_ai_suggestions(profile.get("ai_suggestions"))
+                profile["ai_suggestions_previous"] = copy.deepcopy(existing_suggestions)
 
-            profile["ai_suggestions_previous"] = copy.deepcopy(existing_suggestions)
-
-            incoming_is_v24 = self._is_v24_profile_shape(raw_suggestions)
-            if incoming_is_v24:
-                normalized_incoming = copy.deepcopy(raw_suggestions)
+                normalized_incoming = self._normalize_v27_ai_suggestions(raw_suggestions)
                 inferred_domains = [
                     domain
-                    for domain in PROFILE_V24_DOMAIN_KEYS
-                    if domain in normalized_incoming and self._has_value(normalized_incoming.get(domain))
+                    for domain in V27_DOMAIN_KEYS
+                    if any(str(field_path or "").strip().startswith(f"{domain}.") for field_path in normalized_incoming.keys())
                 ]
-            else:
-                normalized_incoming = self._migrate_suggestions_structure(raw_suggestions, fields)
-                inferred_domains = []
-                for (domain_key, sub_field), legacy_field in PROFILE_V24_TO_LEGACY_FIELD.items():
-                    if legacy_field in raw_suggestions and self._has_value(raw_suggestions.get(legacy_field)):
-                        if domain_key not in inferred_domains:
-                            inferred_domains.append(domain_key)
-                        # If domain appears multiple times, no-op; keep ordered unique list.
-                        _ = sub_field
+                if isinstance(relevant_domains, list) and relevant_domains:
+                    target_domains = [
+                        str(domain).strip()
+                        for domain in relevant_domains
+                        if str(domain).strip() in V27_DOMAIN_KEYS
+                    ]
+                else:
+                    target_domains = inferred_domains
 
-            if isinstance(relevant_domains, list) and relevant_domains:
-                target_domains = [
-                    str(domain).strip()
-                    for domain in relevant_domains
-                    if str(domain).strip() in PROFILE_V24_DOMAIN_KEYS
-                ]
+                merged_suggestions = copy.deepcopy(existing_suggestions)
+                for domain in target_domains:
+                    domain_entries = {
+                        field_path: copy.deepcopy(value)
+                        for field_path, value in normalized_incoming.items()
+                        if str(field_path or "").strip().startswith(f"{domain}.")
+                    }
+                    if not domain_entries:
+                        continue
+                    merged_suggestions = self._remove_v27_domain_suggestions(
+                        merged_suggestions,
+                        domain=domain,
+                    )
+                    merged_suggestions.update(domain_entries)
+                    if domain not in updated_domains:
+                        updated_domains.append(domain)
             else:
-                target_domains = inferred_domains
+                existing_suggestions = self._ensure_suggestions_shape(profile, key="ai_suggestions", fields=fields)
+                if not isinstance(existing_suggestions, dict) or not existing_suggestions:
+                    existing_suggestions = self._empty_profile_data()
 
-            merged_suggestions = copy.deepcopy(existing_suggestions)
-            updated_domains: List[str] = []
-            for domain in target_domains:
-                domain_payload = normalized_incoming.get(domain)
-                if not isinstance(domain_payload, dict):
-                    continue
-                merged_suggestions[domain] = copy.deepcopy(domain_payload)
-                if domain not in updated_domains:
-                    updated_domains.append(domain)
+                profile["ai_suggestions_previous"] = copy.deepcopy(existing_suggestions)
+
+                incoming_is_v24 = self._is_v24_profile_shape(raw_suggestions)
+                if incoming_is_v24:
+                    normalized_incoming = copy.deepcopy(raw_suggestions)
+                    inferred_domains = [
+                        domain
+                        for domain in PROFILE_V24_DOMAIN_KEYS
+                        if domain in normalized_incoming and self._has_value(normalized_incoming.get(domain))
+                    ]
+                else:
+                    normalized_incoming = self._migrate_suggestions_structure(raw_suggestions, fields)
+                    inferred_domains = []
+                    for (domain_key, sub_field), legacy_field in PROFILE_V24_TO_LEGACY_FIELD.items():
+                        if legacy_field in raw_suggestions and self._has_value(raw_suggestions.get(legacy_field)):
+                            if domain_key not in inferred_domains:
+                                inferred_domains.append(domain_key)
+                            _ = sub_field
+
+                if isinstance(relevant_domains, list) and relevant_domains:
+                    target_domains = [
+                        str(domain).strip()
+                        for domain in relevant_domains
+                        if str(domain).strip() in PROFILE_V24_DOMAIN_KEYS
+                    ]
+                else:
+                    target_domains = inferred_domains
+
+                merged_suggestions = copy.deepcopy(existing_suggestions)
+                for domain in target_domains:
+                    domain_payload = normalized_incoming.get(domain)
+                    if not isinstance(domain_payload, dict):
+                        continue
+                    merged_suggestions[domain] = copy.deepcopy(domain_payload)
+                    if domain not in updated_domains:
+                        updated_domains.append(domain)
 
             profile["ai_suggestions"] = merged_suggestions
             profile["ai_suggestions_updated_at"] = now
@@ -1605,6 +2377,7 @@ class SystemProfileService:
                 summary=summary,
                 affected_domains=updated_domains,
             )
+            self._refresh_v27_card_views(profile)
             self._save_unlocked(items)
 
         return self._normalize_profile_for_output(profile)
@@ -1640,7 +2413,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
         normalized_system_id = str(system_id or "").strip()
@@ -1719,7 +2492,7 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
         normalized_system_id = str(system_id or "").strip()
@@ -1800,7 +2573,7 @@ class SystemProfileService:
             raise ValueError("system_name不能为空")
 
         normalized_level = str(level or "normal").strip().lower() or "normal"
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
         normalized_system_id = str(system_id or "").strip()
@@ -1880,9 +2653,12 @@ class SystemProfileService:
         if not name:
             raise ValueError("system_name不能为空")
 
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         actor_id = (actor or {}).get("id") or (actor or {}).get("username") or "unknown"
         actor_name = (actor or {}).get("displayName") or (actor or {}).get("username") or "unknown"
+        normalized_profile: Dict[str, Any]
+        knowledge_index_status = "skipped"
+        knowledge_index_error: Optional[str] = None
 
         with self._lock():
             items = self._load_unlocked()
@@ -1895,6 +2671,7 @@ class SystemProfileService:
                 profile_snapshot["profile_data"] = normalize_profile_data(profile_snapshot.get("profile_data"))
                 profile_snapshot["field_sources"] = self._normalize_v27_metadata_map(profile_snapshot.get("field_sources"))
                 profile_snapshot["ai_suggestions"] = self._normalize_v27_ai_suggestions(profile_snapshot.get("ai_suggestions"))
+                self._refresh_v27_card_views(profile_snapshot)
                 profile_snapshot.pop(LEGACY_FIELDS_KEY, None)
                 profile_snapshot.pop(LEGACY_PENDING_FIELDS_KEY, None)
             else:
@@ -1909,32 +2686,6 @@ class SystemProfileService:
             profile_snapshot["updated_by_name"] = actor_name
             profile_snapshot["updated_at"] = now
 
-        try:
-            from backend.service.knowledge_service import get_knowledge_service
-            knowledge_service = get_knowledge_service()
-            text = self._build_profile_text(profile_snapshot)
-            metadata = (
-                {
-                    "system_id": str(profile_snapshot.get("system_id") or "").strip(),
-                    "status": "published",
-                    "profile_data": normalize_profile_data(profile_snapshot.get("profile_data")),
-                    "field_sources": self._normalize_v27_metadata_map(profile_snapshot.get("field_sources")),
-                }
-                if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False)
-                else profile_snapshot.get(LEGACY_FIELDS_KEY) or {}
-            )
-            embedding = knowledge_service.embedding_service.generate_embedding(text)
-            knowledge_service.vector_store.insert_knowledge(
-                system_name=profile_snapshot.get("system_name"),
-                knowledge_type="system_profile",
-                content=text,
-                embedding=embedding,
-                metadata=metadata,
-                source_file="system_profile_manual",
-            )
-        except Exception as exc:
-            raise RuntimeError(f"embedding服务不可用: {exc}") from exc
-
         with self._lock():
             items = self._load_unlocked()
             profile = self._find_profile(items, name)
@@ -1944,6 +2695,7 @@ class SystemProfileService:
             if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
                 profile["profile_data"] = normalize_profile_data(profile.get("profile_data"))
                 profile["field_sources"] = self._normalize_v27_metadata_map(profile.get("field_sources"))
+                self._refresh_v27_card_views(profile)
                 profile.pop(LEGACY_FIELDS_KEY, None)
                 profile.pop(LEGACY_PENDING_FIELDS_KEY, None)
             else:
@@ -1958,8 +2710,20 @@ class SystemProfileService:
             profile["updated_at"] = now
 
             self._save_unlocked(items)
+            normalized_profile = self._normalize_profile_for_output(profile)
 
-            return self._normalize_profile_for_output(profile)
+        self._record_decision_output(
+            profile=normalized_profile,
+            system_name=name,
+            decision_action="publish_profile",
+            actor=actor,
+            extra_payload={
+                "published_at": now,
+                "knowledge_index_status": knowledge_index_status,
+                "knowledge_index_error": knowledge_index_error,
+            },
+        )
+        return normalized_profile
 
     def _calc_pending_fields(self, profile: Dict[str, Any]) -> List[str]:
         fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
@@ -2023,12 +2787,929 @@ class SystemProfileService:
                 names.append(function_name)
         return names[:limit]
 
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _profile_data_has_meaningful_content(self, profile_data: Any) -> bool:
+        normalized = normalize_profile_data(profile_data)
+        for domain_key in V27_DOMAIN_KEYS:
+            canonical = normalized.get(domain_key, {}).get("canonical", {})
+            if has_non_empty_value(canonical):
+                return True
+        return False
+
+    def _resolve_system_id_from_catalog(self, system_name: str) -> str:
+        normalized_name = str(system_name or "").strip()
+        if not normalized_name:
+            return ""
+        try:
+            from backend.api import system_routes
+
+            owner_info = system_routes.resolve_system_owner(system_name=normalized_name)
+        except Exception:
+            return ""
+        return str(owner_info.get("system_id") or "").strip()
+
+    def _resolve_system_name_from_catalog(self, system_id: str) -> str:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return ""
+        try:
+            from backend.api import system_routes
+
+            owner_info = system_routes.resolve_system_owner(system_id=normalized_system_id)
+        except Exception:
+            return ""
+        return str(owner_info.get("system_name") or "").strip()
+
+    def _resolve_workspace_system_name(self, system_id: str, *, preferred_name: str = "") -> str:
+        normalized_system_id = str(system_id or "").strip()
+        normalized_preferred_name = str(preferred_name or "").strip()
+        if normalized_preferred_name:
+            return normalized_preferred_name
+        if not normalized_system_id:
+            return ""
+
+        identity = self.repository.get_workspace_identity(system_id=normalized_system_id) or {}
+        workspace_name = str(identity.get("system_name") or "").strip()
+        if workspace_name:
+            return workspace_name
+        return self._resolve_system_name_from_catalog(normalized_system_id) or normalized_system_id
+
+    def _get_latest_wiki_candidate_record(self, system_id: str) -> Optional[Dict[str, Any]]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return None
+        try:
+            from backend.service.profile_artifact_service import get_profile_artifact_service
+
+            items = get_profile_artifact_service().list_layer_records(
+                layer="wiki",
+                system_id=normalized_system_id,
+            )
+        except Exception:
+            return None
+        if not items:
+            return None
+        for item in items:
+            category = str(item.get("category") or "").strip()
+            if category in {"", "documents"}:
+                return dict(item)
+        return dict(items[0])
+
+    def _normalize_wiki_candidate_map(self, value: Any) -> Dict[str, Dict[str, Any]]:
+        raw_candidates = value if isinstance(value, dict) else {}
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for raw_field_path, raw_payload in raw_candidates.items():
+            field_path = resolve_canonical_field_path(str(raw_field_path or "").strip())
+            if not field_path:
+                continue
+            if isinstance(raw_payload, dict):
+                payload = dict(raw_payload)
+            else:
+                payload = {"value": raw_payload}
+            candidate_value = payload.get("value")
+            if not has_non_empty_value(candidate_value):
+                continue
+            payload["logical_field"] = get_logical_field_key(field_path)
+            payload["canonical_field_path"] = field_path
+            payload.setdefault("validation_status", "passed")
+            payload.setdefault("validation_reason", "")
+            payload.setdefault("schema_version", "logical_candidate_v1")
+            if field_path not in normalized or str(raw_field_path or "").strip() == field_path:
+                normalized[field_path] = payload
+        return normalized
+
+    def _normalize_projection_candidate_map(self, value: Any) -> Dict[str, Dict[str, Any]]:
+        raw_candidates = value if isinstance(value, dict) else {}
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for raw_field_path, raw_payload in raw_candidates.items():
+            field_path = resolve_canonical_field_path(str(raw_field_path or "").strip())
+            if not field_path or not isinstance(raw_payload, dict):
+                continue
+            selected_value = raw_payload.get("selected_value")
+            if not has_non_empty_value(selected_value):
+                continue
+            candidate_items = copy.deepcopy(raw_payload.get("candidate_items")) if isinstance(raw_payload.get("candidate_items"), list) else []
+            confidence = raw_payload.get("confidence")
+            if confidence is None and candidate_items:
+                confidences = [
+                    self._safe_float(item.get("confidence"), default=1.0)
+                    for item in candidate_items
+                    if isinstance(item, dict)
+                ]
+                confidence = max(confidences) if confidences else 1.0
+            normalized[field_path] = {
+                "value": copy.deepcopy(selected_value),
+                "confidence": confidence,
+                "reason": raw_payload.get("selection_policy") or raw_payload.get("reason") or "",
+                "candidate_items": candidate_items,
+                "source_mode": raw_payload.get("source_mode"),
+                "logical_field": get_logical_field_key(field_path),
+                "canonical_field_path": field_path,
+                "validation_status": raw_payload.get("validation_status") or "passed",
+                "validation_reason": raw_payload.get("validation_reason") or "",
+                "schema_version": raw_payload.get("schema_version") or "logical_candidate_v1",
+            }
+        return normalized
+
+    def _priority_for_candidate_source(self, source_mode: str) -> int:
+        return {
+            "governance": 0,
+            "system_catalog": 1,
+            "manual": 2,
+            "document_llm": 3,
+            "code_scan": 3,
+            "document": 4,
+            "pm_document_ingest": 4,
+            "candidate": 5,
+        }.get(str(source_mode or "").strip(), 9)
+
+    def _merge_candidate_values(self, values: List[Any]) -> Any:
+        meaningful = [copy.deepcopy(value) for value in values if has_non_empty_value(value)]
+        if not meaningful:
+            return None
+        first = meaningful[0]
+        if isinstance(first, dict):
+            keys: List[str] = []
+            for value in meaningful:
+                if not isinstance(value, dict):
+                    continue
+                for key in value.keys():
+                    if key not in keys:
+                        keys.append(key)
+            merged: Dict[str, Any] = {}
+            for key in keys:
+                nested_values = [value.get(key) for value in meaningful if isinstance(value, dict) and has_non_empty_value(value.get(key))]
+                if not nested_values:
+                    continue
+                merged[key] = self._merge_candidate_values(nested_values)
+            return merged
+        if isinstance(first, list):
+            merged_items: List[Any] = []
+            seen = set()
+            for value in meaningful:
+                if isinstance(value, list):
+                    items = value
+                else:
+                    items = [value]
+                for item in items:
+                    if not has_non_empty_value(item):
+                        continue
+                    if isinstance(item, (dict, list)):
+                        marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                    else:
+                        marker = str(item).strip()
+                    if not marker or marker in seen:
+                        continue
+                    seen.add(marker)
+                    merged_items.append(copy.deepcopy(item))
+            return merged_items
+
+        texts: List[str] = []
+        for value in meaningful:
+            text = str(value or "").strip()
+            if text and text not in texts:
+                texts.append(text)
+        if not texts:
+            return None
+        if len(texts) == 1:
+            return texts[0]
+        return "\n".join(texts)
+
+    def _extract_candidate_items_from_record(self, record: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        category = str(record.get("category") or "").strip()
+        source_mode = str(payload.get("source_mode") or "").strip()
+        if not source_mode:
+            if category == "authoritative":
+                source_mode = str(payload.get("authority") or "authoritative").strip() or "authoritative"
+            else:
+                source_mode = "document"
+
+        result: Dict[str, List[Dict[str, Any]]] = {}
+
+        candidate_groups = [
+            (
+                self._normalize_wiki_candidate_map(
+                    payload.get("field_candidates") if isinstance(payload.get("field_candidates"), dict) else payload.get("candidates")
+                ),
+                source_mode,
+            )
+        ]
+        llm_candidates = payload.get("llm_candidates")
+        if isinstance(llm_candidates, dict):
+            candidate_groups.append((self._normalize_wiki_candidate_map(llm_candidates), "document_llm"))
+
+        for normalized_candidates, group_source_mode in candidate_groups:
+            for field_path, candidate in normalized_candidates.items():
+                result.setdefault(field_path, []).append(
+                    {
+                        "candidate_artifact_id": str(record.get("artifact_id") or "").strip(),
+                        "source_artifact_id": str(record.get("source_artifact_id") or "").strip() or None,
+                        "source_mode": group_source_mode,
+                        "category": category or "documents",
+                        "doc_type": str(payload.get("doc_type") or "").strip() or None,
+                        "file_name": str(payload.get("file_name") or "").strip() or None,
+                        "value": copy.deepcopy(candidate.get("value")),
+                        "confidence": candidate.get("confidence"),
+                        "reason": str(candidate.get("reason") or "").strip(),
+                        "source_anchors": copy.deepcopy(candidate.get("source_anchors")) if isinstance(candidate.get("source_anchors"), list) else [],
+                        "logical_field": str(candidate.get("logical_field") or get_logical_field_key(field_path)).strip(),
+                        "canonical_field_path": str(candidate.get("canonical_field_path") or field_path).strip() or field_path,
+                        "validation_status": str(candidate.get("validation_status") or "passed").strip() or "passed",
+                        "validation_reason": str(candidate.get("validation_reason") or "").strip(),
+                        "schema_version": str(candidate.get("schema_version") or "logical_candidate_v1").strip() or "logical_candidate_v1",
+                        "created_at": str(record.get("created_at") or "").strip(),
+                    }
+                )
+        return result
+
+    def _candidate_supersede_key(self, item: Dict[str, Any]) -> Optional[tuple]:
+        source_mode = str(item.get("source_mode") or "").strip()
+        if source_mode not in {"document", "document_llm", "pm_document_ingest"}:
+            return None
+        file_name = str(item.get("file_name") or "").strip().lower()
+        doc_type = str(item.get("doc_type") or "").strip().lower()
+        category = str(item.get("category") or "").strip().lower() or "documents"
+        if file_name:
+            return (category, source_mode, doc_type, file_name)
+        source_artifact_id = str(item.get("source_artifact_id") or "").strip()
+        if source_artifact_id:
+            return (category, source_mode, doc_type, source_artifact_id)
+        return None
+
+    def _record_supersede_key(self, record: Dict[str, Any]) -> Optional[tuple]:
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        category = str(record.get("category") or "").strip().lower() or "documents"
+        source_mode = str(payload.get("source_mode") or "").strip()
+        if not source_mode:
+            if category == "authoritative":
+                source_mode = str(payload.get("authority") or "authoritative").strip() or "authoritative"
+            else:
+                source_mode = "document"
+        if source_mode not in {"document", "pm_document_ingest"}:
+            return None
+        doc_type = str(payload.get("doc_type") or "").strip().lower()
+        file_name = str(payload.get("file_name") or "").strip().lower()
+        if file_name:
+            return (category, source_mode, doc_type, file_name)
+        source_artifact_id = str(record.get("source_artifact_id") or "").strip()
+        if source_artifact_id:
+            return (category, source_mode, doc_type, source_artifact_id)
+        return None
+
+    def _merge_candidate_records(self, records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        effective_records: List[Dict[str, Any]] = []
+        superseded_record_keys = set()
+        for record in sorted(records, key=lambda item: str(item.get("created_at") or ""), reverse=True):
+            supersede_key = self._record_supersede_key(record)
+            if supersede_key is not None:
+                if supersede_key in superseded_record_keys:
+                    continue
+                superseded_record_keys.add(supersede_key)
+            effective_records.append(record)
+
+        merged_source_items: Dict[str, List[Dict[str, Any]]] = {}
+        for record in effective_records:
+            extracted = self._extract_candidate_items_from_record(record)
+            for field_path, items in extracted.items():
+                merged_source_items.setdefault(field_path, []).extend(items)
+
+        merged_candidates: Dict[str, Dict[str, Any]] = {}
+        for field_path, items in merged_source_items.items():
+            if not items:
+                continue
+            deduped_latest_items: List[Dict[str, Any]] = []
+            superseded_keys = set()
+            for item in sorted(items, key=lambda candidate: str(candidate.get("created_at") or ""), reverse=True):
+                supersede_key = self._candidate_supersede_key(item)
+                if supersede_key is not None:
+                    if supersede_key in superseded_keys:
+                        continue
+                    superseded_keys.add(supersede_key)
+                deduped_latest_items.append(item)
+
+            sorted_items = sorted(
+                deduped_latest_items,
+                key=lambda item: (
+                    self._priority_for_candidate_source(str(item.get("source_mode") or "")),
+                    str(item.get("created_at") or ""),
+                ),
+            )
+            authoritative_items = [
+                item
+                for item in sorted_items
+                if str(item.get("source_mode") or "").strip() in {"system_catalog", "governance"}
+            ]
+            governance_items = [
+                item
+                for item in sorted_items
+                if str(item.get("source_mode") or "").strip() == "governance"
+            ]
+            if field_path in AUTHORITATIVE_ONLY_CANDIDATE_FIELDS:
+                if not governance_items:
+                    continue
+                selected_value = self._merge_candidate_values([item.get("value") for item in governance_items])
+                if not has_non_empty_value(selected_value):
+                    continue
+                merged_candidates[field_path] = {
+                    "selected_value": selected_value,
+                    "candidate_items": sorted_items,
+                    "candidate_count": len(sorted_items),
+                    "confidence": max((self._safe_float(item.get("confidence"), default=0.0) for item in governance_items), default=0.0),
+                    "selection_policy": "governance_only",
+                    "source_mode": "governance",
+                    "logical_field": str((governance_items[0] if governance_items else {}).get("logical_field") or get_logical_field_key(field_path)).strip(),
+                    "canonical_field_path": field_path,
+                    "validation_status": "passed",
+                    "validation_reason": "",
+                    "schema_version": str((governance_items[0] if governance_items else {}).get("schema_version") or "logical_candidate_v1").strip() or "logical_candidate_v1",
+                }
+                continue
+            llm_items = [
+                item
+                for item in sorted_items
+                if str(item.get("source_mode") or "").strip() == "document_llm"
+            ]
+            prefer_llm = bool(llm_items) and all(
+                not isinstance(item.get("value"), (dict, list))
+                for item in llm_items
+            )
+            merge_base = authoritative_items or (llm_items if prefer_llm else []) or sorted_items
+            selected_value = self._merge_candidate_values([item.get("value") for item in merge_base])
+            if not has_non_empty_value(selected_value):
+                continue
+            source_mode = str((merge_base[0] if merge_base else {}).get("source_mode") or "candidate").strip() or "candidate"
+            merged_candidates[field_path] = {
+                "selected_value": selected_value,
+                "candidate_items": sorted_items,
+                "candidate_count": len(sorted_items),
+                "confidence": max((self._safe_float(item.get("confidence"), default=0.0) for item in sorted_items), default=0.0),
+                "selection_policy": "authoritative_preferred" if authoritative_items else "merge_all",
+                "source_mode": source_mode,
+                "logical_field": str((merge_base[0] if merge_base else {}).get("logical_field") or get_logical_field_key(field_path)).strip(),
+                "canonical_field_path": field_path,
+                "validation_status": "passed",
+                "validation_reason": "",
+                "schema_version": str((merge_base[0] if merge_base else {}).get("schema_version") or "logical_candidate_v1").strip() or "logical_candidate_v1",
+            }
+        return merged_candidates
+
+    def _load_latest_projection_bundle(self, system_id: str) -> Dict[str, Any]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return {}
+        workspace_path = self.repository.get_workspace_path(system_id=normalized_system_id)
+        if not workspace_path:
+            return {}
+
+        latest_dir = os.path.join(workspace_path, "candidate", "latest")
+        if not os.path.isdir(latest_dir):
+            return {}
+
+        return {
+            "system_projection": self._read_json_file(os.path.join(latest_dir, "system_projection.json")) or {},
+            "merged_candidates": self._read_json_file(os.path.join(latest_dir, "merged_candidates.json")) or {},
+            "card_render": self._read_json_file(os.path.join(latest_dir, "card_render.json")) or {},
+        }
+
+    def _load_projection_candidate_map(self, system_id: str) -> Dict[str, Dict[str, Any]]:
+        projection_bundle = self._load_latest_projection_bundle(system_id)
+        merged_candidates = projection_bundle.get("merged_candidates") if isinstance(projection_bundle.get("merged_candidates"), dict) else {}
+        return self._normalize_projection_candidate_map(merged_candidates)
+
+    def _get_latest_projection_record(self, system_id: str) -> Optional[Dict[str, Any]]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return None
+        try:
+            items = get_profile_artifact_service().list_candidate_records(
+                system_id=normalized_system_id,
+                category="projections",
+            )
+        except Exception:
+            return None
+        if not items:
+            return None
+        return dict(items[0])
+
+    def refresh_candidate_projection(
+        self,
+        system_name: str,
+        *,
+        system_id: str,
+        actor: Optional[Dict[str, Any]] = None,
+        sync_ai_suggestions: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_system_id = str(system_id or "").strip()
+        normalized_system_name = self._resolve_workspace_system_name(
+            normalized_system_id,
+            preferred_name=system_name,
+        )
+        if not normalized_system_id:
+            return None
+        if normalized_system_name:
+            self.ensure_profile(normalized_system_name, system_id=normalized_system_id, actor=actor)
+
+        candidate_records = get_profile_artifact_service().list_candidate_records(
+            system_id=normalized_system_id,
+        )
+        candidate_records = [
+            item
+            for item in candidate_records
+            if str(item.get("category") or "").strip() in {"documents", "authoritative"}
+        ]
+        merged_candidates = self._merge_candidate_records(candidate_records)
+
+        projection_candidate_map = self._normalize_projection_candidate_map(merged_candidates)
+        candidate_profile_data = build_empty_profile_data()
+        for field_path, candidate in projection_candidate_map.items():
+            try:
+                candidate_profile_data = set_field_value(candidate_profile_data, field_path, candidate.get("value"))
+            except ValueError:
+                continue
+
+        ignored_map: Dict[str, Any] = {}
+        with self._lock():
+            items = self._load_unlocked()
+            profile = self._find_profile(items, normalized_system_name)
+            if profile:
+                ignored_map = self._normalize_ai_suggestion_ignored_for_storage(profile.get("ai_suggestion_ignored"))
+                if sync_ai_suggestions:
+                    profile["ai_suggestions"] = copy.deepcopy(projection_candidate_map)
+                self._refresh_v27_card_views(profile)
+                profile["updated_at"] = str(profile.get("updated_at") or current_time_iso())
+                self._save_unlocked(items)
+
+        card_render = build_card_candidates(
+            projection_candidate_map,
+            ignored_map=ignored_map,
+        )
+        projection_payload = {
+            "projection_type": "system_projection",
+            "system_id": normalized_system_id,
+            "system_name": normalized_system_name,
+            "source_record_ids": [str(item.get("artifact_id") or "").strip() for item in candidate_records],
+            "merged_candidates": merged_candidates,
+            "card_render": card_render,
+        }
+        return get_profile_artifact_service().append_candidate_record(
+            system_id=normalized_system_id,
+            category="projections",
+            payload=projection_payload,
+            operator_id=str((actor or {}).get("username") or (actor or {}).get("id") or "system"),
+            source_artifact_id=str(candidate_records[0].get("artifact_id") or "").strip() if candidate_records else None,
+            latest_payloads={
+                "system_projection.json": projection_payload,
+                "merged_candidates.json": merged_candidates,
+                "card_render.json": card_render,
+                "candidate_profile.json": projection_payload,
+            },
+        )
+
+    def record_authoritative_candidate(
+        self,
+        system_name: str,
+        *,
+        system_id: str,
+        authority: str,
+        field_candidates: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+        source_artifact_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_system_id = str(system_id or "").strip()
+        normalized_system_name = str(system_name or "").strip()
+        if not normalized_system_id or not field_candidates:
+            return None
+
+        payload = {
+            "candidate_type": "authoritative_candidate",
+            "system_id": normalized_system_id,
+            "system_name": normalized_system_name,
+            "authority": str(authority or "").strip() or "authoritative",
+            "source_mode": str(authority or "").strip() or "authoritative",
+            "field_candidates": copy.deepcopy(field_candidates),
+        }
+        if isinstance(metadata, dict):
+            payload["metadata"] = copy.deepcopy(metadata)
+
+        return get_profile_artifact_service().append_candidate_record(
+            system_id=normalized_system_id,
+            category="authoritative",
+            payload=payload,
+            operator_id=str((actor or {}).get("username") or (actor or {}).get("id") or "system"),
+            source_artifact_id=source_artifact_id,
+            metadata=metadata,
+        )
+
+    def _read_json_file(self, path: str) -> Any:
+        normalized_path = str(path or "").strip()
+        if not normalized_path or not os.path.exists(normalized_path):
+            return None
+        try:
+            with open(normalized_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.debug("读取JSON文件失败 path=%s error=%s", normalized_path, exc)
+            return None
+
+    def _load_latest_candidate_bundle(self, system_id: str) -> Dict[str, Any]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            return {}
+        bundle = self._load_latest_projection_bundle(normalized_system_id)
+        latest_documents = []
+        try:
+            latest_documents = get_profile_artifact_service().list_candidate_records(
+                system_id=normalized_system_id,
+                category="documents",
+            )
+        except Exception:
+            latest_documents = []
+        if latest_documents:
+            latest_document = latest_documents[0]
+            base_dir = os.path.dirname(os.path.join(get_profile_artifact_service().root_dir, str(latest_document.get("path") or "").strip()))
+            for file_name in ("source_manifest.json", "profile_projection.json", "dossier.json", "quality_report.json", "review_queue.json"):
+                bundle[file_name[:-5]] = self._read_json_file(os.path.join(base_dir, file_name))
+        return bundle
+
+    def _build_context_card_list(self, profile: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized_profile = profile if isinstance(profile, dict) else {}
+        profile_cards = normalized_profile.get("profile_cards") if isinstance(normalized_profile.get("profile_cards"), dict) else {}
+        candidate_cards = normalized_profile.get("card_candidates") if isinstance(normalized_profile.get("card_candidates"), dict) else {}
+
+        cards: List[Dict[str, Any]] = []
+        for definition in PROFILE_CARD_DEFINITIONS:
+            card_key = str(definition.get("card_key") or "").strip()
+            current_card = profile_cards.get(card_key) if isinstance(profile_cards.get(card_key), dict) else {}
+            candidate_card = candidate_cards.get(card_key) if isinstance(candidate_cards.get(card_key), dict) else {}
+            cards.append(
+                {
+                    "card_key": card_key,
+                    "domain_key": definition.get("domain_key"),
+                    "domain_title": DOMAIN_TITLES.get(definition.get("domain_key"), definition.get("domain_key")),
+                    "title": definition.get("title"),
+                    "has_content": has_non_empty_value(current_card.get("content")) if isinstance(current_card, dict) else False,
+                    "has_candidate": has_non_empty_value(candidate_card.get("content")) if isinstance(candidate_card, dict) else False,
+                    "source_mode": current_card.get("source_mode") if isinstance(current_card, dict) else "none",
+                    "source_summary": current_card.get("source_summary") if isinstance(current_card, dict) else "暂无来源",
+                    "summary": copy.deepcopy(current_card.get("summary")) if isinstance(current_card, dict) else {},
+                    "candidate_summary": copy.deepcopy(candidate_card.get("summary")) if isinstance(candidate_card, dict) else {},
+                    "editable": bool(current_card.get("editable", True)) if isinstance(current_card, dict) else True,
+                }
+            )
+        return cards
+
+    def _build_document_context(self, profile: Optional[Dict[str, Any]], candidate_bundle: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
+        normalized_profile = profile if isinstance(profile, dict) else {}
+        normalized_system_id = str(normalized_profile.get("system_id") or "").strip()
+        documents: List[Dict[str, Any]] = []
+
+        try:
+            candidate_records = get_profile_artifact_service().list_candidate_records(
+                system_id=normalized_system_id,
+                category="documents",
+            )
+        except Exception:
+            candidate_records = []
+
+        for record in candidate_records:
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            documents.append(
+                {
+                    "source_type": "document_candidate",
+                    "source_id": str(record.get("artifact_id") or "").strip(),
+                    "source_file": str(payload.get("file_name") or "").strip(),
+                    "doc_type": str(payload.get("doc_type") or "").strip(),
+                    "source_path": str(payload.get("raw_artifact_id") or "").strip(),
+                    "chunk_count": int(payload.get("chunk_count") or 0),
+                    "created_at": str(record.get("created_at") or "").strip(),
+                }
+            )
+        return documents[: max(int(top_k or 0), 0)]
+
+    def _build_code_scan_context(self, profile: Optional[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        normalized_profile = profile if isinstance(profile, dict) else {}
+        evidence_refs = normalized_profile.get("evidence_refs") if isinstance(normalized_profile.get("evidence_refs"), list) else []
+        scan_refs = [
+            ref
+            for ref in evidence_refs
+            if isinstance(ref, dict) and str(ref.get("source_type") or "").strip() == "code_scan"
+        ]
+        scan_refs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        if not scan_refs:
+            return []
+
+        latest_ref = scan_refs[0]
+        payload = self._read_json_file(str(latest_ref.get("source_path") or "").strip())
+        items = payload.get("items") if isinstance(payload, dict) and isinstance(payload.get("items"), list) else []
+
+        capabilities: List[Dict[str, Any]] = []
+        for item in items[: max(int(top_k or 0), 0)]:
+            if not isinstance(item, dict):
+                continue
+            capabilities.append(
+                {
+                    "entry_type": str(item.get("entry_type") or "").strip(),
+                    "entry_id": str(item.get("entry_id") or "").strip(),
+                    "summary": str(item.get("summary") or "").strip(),
+                    "location": copy.deepcopy(item.get("location")) if isinstance(item.get("location"), dict) else {},
+                    "keywords": copy.deepcopy(item.get("keywords")) if isinstance(item.get("keywords"), list) else [],
+                    "related_calls": copy.deepcopy(item.get("related_calls")) if isinstance(item.get("related_calls"), list) else [],
+                }
+            )
+        return capabilities
+
+    def _build_esb_context(
+        self,
+        *,
+        system_name: str,
+        system_id: str,
+        query: str,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        try:
+            from backend.service.esb_service import get_esb_service
+
+            esb_query = str(query or "").strip() or str(system_name or "").strip()
+            if not esb_query:
+                return []
+            return get_esb_service().search_esb(
+                query=esb_query,
+                system_id=system_id or None,
+                system_name=system_name or None,
+                top_k=top_k,
+                similarity_threshold=0.0,
+            )
+        except Exception as exc:
+            logger.debug("构建ESB上下文失败 system=%s error=%s", system_name, exc)
+            return []
+
+    def build_context_bundle(
+        self,
+        system_name: str,
+        *,
+        query: str = "",
+        top_k: int = 20,
+    ) -> Dict[str, Any]:
+        normalized_name = str(system_name or "").strip()
+        safe_top_k = max(1, min(int(top_k or 20), 50))
+        if not normalized_name:
+            return {
+                "system_name": "",
+                "system_id": "",
+                "profile_text": "",
+                "context_source": "none",
+                "profile_cards": [],
+                "candidate_cards": [],
+                "documents": [],
+                "capabilities": [],
+                "integrations": [],
+                "quality_report": {},
+                "review_queue": [],
+                "completeness_score": 0,
+                "degraded": False,
+            }
+
+        profile = self.get_profile(normalized_name) or {}
+        estimation_context = self.build_estimation_context(normalized_name)
+        resolved_system_id = (
+            str(estimation_context.get("system_id") or "").strip()
+            or str(profile.get("system_id") or "").strip()
+            or self._resolve_system_id_from_catalog(normalized_name)
+        )
+        candidate_bundle = self._load_latest_candidate_bundle(resolved_system_id)
+        profile_cards = self._build_context_card_list(profile)
+        candidate_cards = [
+            item
+            for item in profile_cards
+            if bool(item.get("has_candidate"))
+        ]
+        documents = self._build_document_context(profile, candidate_bundle, safe_top_k)
+        capabilities = self._build_code_scan_context(profile, safe_top_k)
+        integrations = self._build_esb_context(
+            system_name=normalized_name,
+            system_id=resolved_system_id,
+            query=query,
+            top_k=safe_top_k,
+        )
+        completeness_score = int(
+            profile.get("completeness_score")
+            if isinstance(profile, dict) and profile.get("completeness_score") is not None
+            else self._calculate_completeness_score(
+                profile.get("completeness") if isinstance(profile.get("completeness"), dict) else {}
+            )
+        )
+
+        return {
+            "system_name": normalized_name,
+            "system_id": resolved_system_id,
+            "profile_text": str(estimation_context.get("text") or "").strip(),
+            "context_source": str(estimation_context.get("context_source") or "none").strip() or "none",
+            "profile_cards": profile_cards,
+            "candidate_cards": candidate_cards,
+            "documents": documents,
+            "capabilities": capabilities,
+            "integrations": integrations,
+            "quality_report": candidate_bundle.get("quality_report") if isinstance(candidate_bundle.get("quality_report"), dict) else {},
+            "review_queue": candidate_bundle.get("review_queue") if isinstance(candidate_bundle.get("review_queue"), list) else [],
+            "completeness_score": completeness_score,
+            "degraded": False,
+        }
+
+    def _tokenize_relevance_query(self, text: str) -> List[str]:
+        normalized = str(text or "").lower()
+        if not normalized:
+            return []
+        tokens = [
+            token.strip()
+            for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fa5]+", normalized)
+            if len(token.strip()) >= 2
+        ]
+        cjk_segments = re.findall(r"[\u4e00-\u9fa5]{2,}", normalized)
+        for segment in cjk_segments:
+            if len(segment) <= 4:
+                tokens.append(segment)
+                continue
+            max_size = min(len(segment), 4)
+            for size in range(2, max_size + 1):
+                for index in range(0, len(segment) - size + 1):
+                    tokens.append(segment[index : index + size])
+        if len(normalized) <= 24 and normalized not in tokens:
+            tokens.insert(0, normalized)
+        ordered: List[str] = []
+        for token in tokens:
+            if token not in ordered:
+                ordered.append(token)
+        return ordered[:24]
+
+    def search_relevant_profile_contexts(self, query_text: str, *, limit: int = 8) -> List[Dict[str, Any]]:
+        normalized_query = str(query_text or "").strip()
+        safe_limit = max(1, min(int(limit or 8), 20))
+        profiles = self.list_profiles()
+        if not profiles:
+            return []
+
+        tokens = self._tokenize_relevance_query(normalized_query)
+        query_lower = normalized_query.lower()
+        scored: List[Dict[str, Any]] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            system_name = str(profile.get("system_name") or "").strip()
+            if not system_name:
+                continue
+            profile_cards = self._build_context_card_list(profile)
+            profile_text = ""
+            context_source = "none"
+            if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+                profile_data = normalize_profile_data(profile.get("profile_data"))
+                if self._profile_data_has_meaningful_content(profile_data):
+                    profile_text = self._build_profile_text(
+                        {
+                            "system_name": system_name,
+                            "profile_data": profile_data,
+                        }
+                    ).strip()
+                    context_source = "canonical"
+            else:
+                if self._has_value((profile.get(LEGACY_FIELDS_KEY) or {})):
+                    profile_text = self._build_profile_text(profile).strip()
+                    context_source = "canonical"
+            haystack = " ".join(
+                [
+                    system_name,
+                    profile_text,
+                    json.dumps(profile_cards, ensure_ascii=False),
+                ]
+            ).lower()
+
+            score = 0.0
+            if system_name.lower() in query_lower:
+                score += 10.0
+            for token in tokens:
+                if token and token in haystack:
+                    score += 1.5
+            score += float(profile.get("completeness_score") or 0) / 100.0
+            if profile.get("status") == "published":
+                score += 0.5
+            if score <= 0:
+                continue
+
+            scored.append(
+                {
+                    "system_name": system_name,
+                    "system_id": str(profile.get("system_id") or "").strip(),
+                    "score": round(score, 4),
+                    "profile_text": profile_text,
+                    "profile_cards": copy.deepcopy(profile_cards),
+                    "context_source": context_source,
+                    "completeness_score": int(profile.get("completeness_score") or 0),
+                }
+            )
+
+        scored.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                -int(item.get("completeness_score") or 0),
+                str(item.get("system_name") or ""),
+            )
+        )
+        return scored[:safe_limit]
+
+    def build_estimation_context(self, system_name: str) -> Dict[str, Any]:
+        normalized_name = str(system_name or "").strip()
+        result = {
+            "system_name": normalized_name,
+            "system_id": "",
+            "text": "",
+            "profile_context_used": False,
+            "context_source": "none",
+        }
+        if not normalized_name:
+            return result
+
+        profile = self.get_profile(normalized_name) or {}
+        system_id = str(profile.get("system_id") or "").strip()
+        if not system_id:
+            system_id = self._resolve_system_id_from_catalog(normalized_name)
+        result["system_id"] = system_id
+
+        if not getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
+            if profile and self._has_value(profile.get(LEGACY_FIELDS_KEY)):
+                result["text"] = self._build_profile_text(profile)
+                result["profile_context_used"] = True
+                result["context_source"] = "canonical"
+            return result
+
+        canonical_profile_data = normalize_profile_data((profile or {}).get("profile_data"))
+        merged_profile_data = normalize_profile_data(canonical_profile_data)
+        context_sources: List[str] = []
+        if self._profile_data_has_meaningful_content(canonical_profile_data):
+            context_sources.append("canonical")
+
+        projection_used = False
+        projection_candidates = self._load_projection_candidate_map(system_id)
+        for field_path, candidate in projection_candidates.items():
+            confidence = self._safe_float(candidate.get("confidence"), default=0.0)
+            if confidence < 0.6:
+                continue
+            if has_non_empty_value(get_field_value(merged_profile_data, field_path)):
+                continue
+            try:
+                merged_profile_data = set_field_value(merged_profile_data, field_path, candidate.get("value"))
+            except ValueError:
+                continue
+            projection_used = True
+
+        if projection_used:
+            context_sources.append("projection_candidate")
+        elif not projection_candidates:
+            latest_wiki = self._get_latest_wiki_candidate_record(system_id)
+            wiki_payload = latest_wiki.get("payload") if isinstance(latest_wiki, dict) else {}
+            wiki_candidates = self._normalize_wiki_candidate_map(
+                wiki_payload.get("candidates") if isinstance(wiki_payload, dict) else {}
+            )
+            wiki_used = False
+            for field_path, candidate in wiki_candidates.items():
+                confidence = self._safe_float(candidate.get("confidence"), default=0.0)
+                if confidence < 0.6:
+                    continue
+                if has_non_empty_value(get_field_value(merged_profile_data, field_path)):
+                    continue
+                try:
+                    merged_profile_data = set_field_value(merged_profile_data, field_path, candidate.get("value"))
+                except ValueError:
+                    continue
+                wiki_used = True
+            if wiki_used:
+                context_sources.append("wiki_candidate")
+
+        if not context_sources or not self._profile_data_has_meaningful_content(merged_profile_data):
+            return result
+
+        result["text"] = self._build_profile_text(
+            {
+                "system_name": normalized_name,
+                "profile_data": merged_profile_data,
+            }
+        )
+        result["profile_context_used"] = True
+        result["context_source"] = "+".join(context_sources)
+        return result
+
     def _build_profile_text(self, profile: Dict[str, Any]) -> str:
         if getattr(settings, "ENABLE_V27_PROFILE_SCHEMA", False):
             profile_data = normalize_profile_data(profile.get("profile_data"))
             positioning = profile_data["system_positioning"]["canonical"]
             business = profile_data["business_capabilities"]["canonical"]
             integration = profile_data["integration_interfaces"]["canonical"]
+            technical = profile_data["technical_architecture"]["canonical"]
             constraints = profile_data["constraints_risks"]["canonical"]
 
             def _join_values(items: Any, key_candidates: Optional[List[str]] = None) -> str:
@@ -2052,11 +3733,12 @@ class SystemProfileService:
             return (
                 f"系统名称:{profile.get('system_name','')} | "
                 f"系统类型:{positioning.get('system_type', '')} | "
-                f"服务范围:{positioning.get('service_scope', '')} | "
-                f"功能模块:{_join_values(business.get('functional_modules'))} | "
+                f"服务定位:{positioning.get('core_responsibility', '')} | "
+                f"功能模块:{_join_values(business.get('functional_modules'), ['name', 'description'])} | "
                 f"提供服务:{_join_values(integration.get('provided_services'))} | "
                 f"依赖服务:{_join_values(integration.get('consumed_services'))} | "
-                f"已知风险:{_join_values(constraints.get('known_risks'))}"
+                f"技术架构:{technical.get('architecture_style', '')} | "
+                f"风险事项:{_join_values(constraints.get('risk_items'), ['name', 'impact'])}"
             )
 
         fields = profile.get(LEGACY_FIELDS_KEY) if isinstance(profile.get(LEGACY_FIELDS_KEY), dict) else {}
@@ -2089,8 +3771,8 @@ class SystemProfileService:
             positioning = profile_data["system_positioning"]["canonical"]
             business = profile_data["business_capabilities"]["canonical"]
             missing = []
-            if not self._has_value(positioning.get("service_scope")):
-                missing.append("system_positioning.canonical.service_scope")
+            if not self._has_value(positioning.get("core_responsibility")):
+                missing.append("system_positioning.canonical.core_responsibility")
             if not self._has_value(business.get("functional_modules")):
                 missing.append("business_capabilities.canonical.functional_modules")
         else:
@@ -2116,7 +3798,7 @@ _system_profile_service = None
 
 def get_system_profile_service() -> SystemProfileService:
     global _system_profile_service
-    expected_path = os.path.join(settings.REPORT_DIR, "system_profiles.json")
+    expected_path = resolve_system_profile_root()
     if (
         _system_profile_service is None
         or os.path.realpath(_system_profile_service.store_path) != os.path.realpath(expected_path)

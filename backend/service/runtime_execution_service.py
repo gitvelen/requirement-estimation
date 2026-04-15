@@ -5,7 +5,7 @@ import os
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 try:
@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover
     FCNTL_AVAILABLE = False
 
 from backend.config.config import settings
+from backend.utils.time_utils import current_time, current_time_iso, parse_iso_datetime
 
 
 class RuntimeExecutionService:
@@ -73,16 +74,15 @@ class RuntimeExecutionService:
 
     def _cleanup_expired(self, executions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         retention_days = int(getattr(settings, "RUNTIME_EXECUTION_RETENTION_DAYS", 180) or 180)
-        cutoff = datetime.now() - timedelta(days=max(retention_days, 1))
+        cutoff = current_time() - timedelta(days=max(retention_days, 1))
         kept: List[Dict[str, Any]] = []
         for item in executions:
             created_at = str(item.get("created_at") or "").strip()
             if not created_at:
                 kept.append(item)
                 continue
-            try:
-                created_dt = datetime.fromisoformat(created_at)
-            except ValueError:
+            created_dt = parse_iso_datetime(created_at)
+            if created_dt is None:
                 kept.append(item)
                 continue
             if created_dt >= cutoff:
@@ -117,7 +117,7 @@ class RuntimeExecutionService:
         notifications: Optional[List[str]] = None,
         input_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        now = datetime.now().isoformat()
+        now = current_time_iso()
         execution = {
             "execution_id": f"exec_{uuid.uuid4().hex}",
             "scene_id": str(scene_id or "").strip(),
@@ -180,7 +180,7 @@ class RuntimeExecutionService:
                 if input_snapshot is not None:
                     item["input_snapshot"] = input_snapshot if isinstance(input_snapshot, dict) else None
                 if item["status"] in {"completed", "failed", "partial_success"}:
-                    item["completed_at"] = datetime.now().isoformat()
+                    item["completed_at"] = current_time_iso()
                 updated = dict(item)
                 break
 
@@ -216,6 +216,69 @@ class RuntimeExecutionService:
             latest = self._load_latest_unlocked()
         item = latest.get(normalized_system_id)
         return dict(item) if isinstance(item, dict) else None
+
+    def delete_executions(
+        self,
+        system_id: str,
+        *,
+        scene_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_system_id = str(system_id or "").strip()
+        if not normalized_system_id:
+            raise ValueError("system_id不能为空")
+
+        normalized_scene_ids = {
+            str(scene_id or "").strip()
+            for scene_id in (scene_ids or [])
+            if str(scene_id or "").strip()
+        }
+
+        def _should_delete(item: Dict[str, Any]) -> bool:
+            if str(item.get("system_id") or "").strip() != normalized_system_id:
+                return False
+            if not normalized_scene_ids:
+                return True
+            return str(item.get("scene_id") or "").strip() in normalized_scene_ids
+
+        with self._lock():
+            executions = self._load_executions_unlocked()
+            kept: List[Dict[str, Any]] = []
+            deleted: List[Dict[str, Any]] = []
+            for item in executions:
+                if isinstance(item, dict) and _should_delete(item):
+                    deleted.append(dict(item))
+                else:
+                    kept.append(item)
+
+            if len(deleted) == 0:
+                return {
+                    "system_id": normalized_system_id,
+                    "deleted_count": 0,
+                    "deleted_execution_ids": [],
+                }
+
+            self._save_executions_unlocked(kept)
+
+            latest = self._load_latest_unlocked()
+            remaining_for_system = [
+                item for item in kept
+                if isinstance(item, dict) and str(item.get("system_id") or "").strip() == normalized_system_id
+            ]
+            if remaining_for_system:
+                latest[normalized_system_id] = self._build_latest_summary(remaining_for_system[-1])
+            else:
+                latest.pop(normalized_system_id, None)
+            self._save_latest_unlocked(latest)
+
+        return {
+            "system_id": normalized_system_id,
+            "deleted_count": len(deleted),
+            "deleted_execution_ids": [
+                str(item.get("execution_id") or "").strip()
+                for item in deleted
+                if str(item.get("execution_id") or "").strip()
+            ],
+        }
 
 
 _runtime_execution_service: Optional[RuntimeExecutionService] = None

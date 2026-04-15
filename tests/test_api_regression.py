@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from datetime import datetime
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -16,6 +17,9 @@ from backend.service import ai_effect_service
 from backend.api import routes as task_routes
 from backend.api import notification_routes
 from backend.api import profile_routes
+from backend.api import cosmic_routes
+from backend.utils import cosmic_config_store
+from backend.utils.cosmic_analyzer import CosmicAnalyzer
 
 
 @pytest.fixture()
@@ -666,3 +670,55 @@ def test_cosmic_config_admin_only(client):
     )
     assert response.status_code == 200
     assert response.json().get("code") == 200
+
+
+def test_cosmic_reset_allows_admin_bearer_token(client, tmp_path, monkeypatch):
+    admin, manager, manager_2, expert = seed_users()
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(tmp_path / "data"))
+    cosmic_config_path = tmp_path / "data" / "cosmic_config.json"
+
+    admin_token = login(client, admin["username"], "admin123")
+    response = client.post(
+        "/api/v1/cosmic/reset",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json().get("code") == 200
+
+    with open(cosmic_config_path, "r", encoding="utf-8") as fh:
+        saved_config = json.load(fh)
+    assert saved_config == cosmic_config_store.DEFAULT_COSMIC_CONFIG
+
+
+def test_cosmic_save_persists_to_report_dir_and_analyzer_reads_same_file(client, tmp_path, monkeypatch):
+    admin, manager, manager_2, expert = seed_users()
+
+    monkeypatch.setattr(settings, "REPORT_DIR", str(tmp_path / "data"))
+    report_dir = tmp_path / "data"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    cosmic_config_path = report_dir / "cosmic_config.json"
+
+    admin_token = login(client, admin["username"], "admin123")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    updated_config = json.loads(json.dumps(cosmic_config_store.DEFAULT_COSMIC_CONFIG))
+    updated_config["functional_process_rules"]["granularity"] = "fine"
+    updated_config["data_movement_rules"]["entry"]["keywords"] = ["录入", "提交"]
+
+    response = client.post(
+        "/api/v1/cosmic/config",
+        headers=headers,
+        json=updated_config,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["functional_process_rules"]["granularity"] == "fine"
+
+    with open(cosmic_config_path, "r", encoding="utf-8") as fh:
+        saved_config = json.load(fh)
+    assert saved_config["functional_process_rules"]["granularity"] == "fine"
+    assert saved_config["data_movement_rules"]["entry"]["keywords"] == ["录入", "提交"]
+
+    analyzer = CosmicAnalyzer()
+    assert analyzer.config["functional_process_rules"]["granularity"] == "fine"
+    assert analyzer.config["data_movement_rules"]["entry"]["keywords"] == ["录入", "提交"]
