@@ -128,6 +128,14 @@ const SystemProfileImportPage = () => {
   const [importHistory, setImportHistory] = useState([]);
   const [executionStatus, setExecutionStatus] = useState(null);
 
+  // 性能优化：添加缓存
+  const [importHistoryCache, setImportHistoryCache] = useState({});
+  const [executionStatusCache, setExecutionStatusCache] = useState({});
+
+  // 性能优化：添加分页状态
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize] = useState(10);
+
   const [scanRepoPath, setScanRepoPath] = useState('');
   const [scanArchiveFiles, setScanArchiveFiles] = useState([]);
   const [scanSubmitting, setScanSubmitting] = useState(false);
@@ -176,6 +184,12 @@ const SystemProfileImportPage = () => {
     return resolveSystemOwnership(selectedSystem, user).canWrite;
   }, [isManager, selectedSystem, user]);
 
+  // 性能优化：分页数据计算
+  const paginatedHistory = useMemo(() => {
+    const startIndex = (historyPage - 1) * historyPageSize;
+    return importHistory.slice(startIndex, startIndex + historyPageSize);
+  }, [importHistory, historyPage, historyPageSize]);
+
   const loadSystems = useCallback(async () => {
     try {
       const response = await axios.get('/api/v1/system/systems');
@@ -192,13 +206,27 @@ const SystemProfileImportPage = () => {
       return;
     }
 
+    // 检查缓存（5分钟有效期）
+    const cached = importHistoryCache[systemId];
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+      setImportHistory(cached.data);
+      return;
+    }
+
     try {
       const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/import-history`);
-      setImportHistory(Array.isArray(response.data?.items) ? response.data.items : []);
+      const data = Array.isArray(response.data?.items) ? response.data.items : [];
+      setImportHistory(data);
+
+      // 更新缓存
+      setImportHistoryCache(prev => ({
+        ...prev,
+        [systemId]: { data, timestamp: Date.now() }
+      }));
     } catch (error) {
       setImportHistory([]);
     }
-  }, []);
+  }, [importHistoryCache]);
 
   const loadExecutionStatus = useCallback(async (systemId) => {
     if (!systemId) {
@@ -206,13 +234,27 @@ const SystemProfileImportPage = () => {
       return;
     }
 
+    // 检查缓存（5分钟有效期）
+    const cached = executionStatusCache[systemId];
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+      setExecutionStatus(cached.data);
+      return;
+    }
+
     try {
       const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/execution-status`);
-      setExecutionStatus(response.data || null);
+      const data = response.data || null;
+      setExecutionStatus(data);
+
+      // 更新缓存
+      setExecutionStatusCache(prev => ({
+        ...prev,
+        [systemId]: { data, timestamp: Date.now() }
+      }));
     } catch (error) {
       setExecutionStatus(null);
     }
-  }, []);
+  }, [executionStatusCache]);
 
   const loadScanJob = useCallback(async (jobId) => {
     const normalizedJobId = String(jobId || '').trim();
@@ -597,7 +639,15 @@ const SystemProfileImportPage = () => {
         <Card title="导入历史">
           <List
             size="small"
-            dataSource={importHistory}
+            dataSource={paginatedHistory}
+            pagination={{
+              current: historyPage,
+              pageSize: historyPageSize,
+              total: importHistory.length,
+              onChange: (page) => setHistoryPage(page),
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 条记录`
+            }}
             renderItem={(item) => {
               const statusTag = getImportStatusTag(item.status);
               return (

@@ -97,10 +97,13 @@ def _seed_task(task_id: str, creator_id: str):
 
 
 class DummyOrchestrator:
-    def __init__(self, systems_data):
+    def __init__(self, systems_data, captured_requirement_data=None):
         self._systems_data = systems_data
+        self._captured_requirement_data = captured_requirement_data
 
     def process_with_retry(self, task_id, requirement_data, max_retry, progress_callback=None):
+        if self._captured_requirement_data is not None:
+            self._captured_requirement_data.update(requirement_data)
         if progress_callback:
             progress_callback(80, "dummy")
         # 【v2.4】返回 4 个值：report_path, systems_data, ai_system_analysis, ai_original_output
@@ -187,6 +190,50 @@ def test_process_task_sync_clears_stale_error_after_success(client, monkeypatch)
     assert task["status"] == "completed"
     assert task["message"] == "评估完成"
     assert "error" not in task
+
+
+def test_process_task_sync_prefers_parsed_requirement_name_over_filename(client, monkeypatch):
+    manager = _seed_user("snapshot_mgr_3", "pwd123", ["manager"])
+
+    task_id = "task_snapshot_name"
+    with task_routes._task_storage_context() as data:
+        data[task_id] = {
+            "task_id": task_id,
+            "status": "pending",
+            "ai_status": "pending",
+            "progress": 0,
+            "message": "",
+            "file_path": "/tmp/req.docx",
+            "filename": "req.docx",
+            "creator_id": manager["id"],
+            "created_at": datetime.now().isoformat(),
+            "systems_data": {},
+        }
+
+    monkeypatch.setattr(
+        task_routes.docx_parser,
+        "parse",
+        lambda _: {
+            "requirement_content": "需求内容",
+            "requirement_name": "真实需求名称",
+            "requirement_summary": "真实需求摘要",
+        },
+    )
+    captured_requirement_data = {}
+    monkeypatch.setattr(
+        task_routes,
+        "get_agent_orchestrator",
+        lambda: DummyOrchestrator(
+            {"HOP": [{"功能点": "开户", "reasoning": "首次推理"}]},
+            captured_requirement_data=captured_requirement_data,
+        ),
+    )
+
+    task_routes.process_task_sync(task_id, "/tmp/req.docx")
+
+    task = task_routes._get_task(task_id)
+    assert captured_requirement_data["requirement_name"] == "真实需求名称"
+    assert task["requirement_name"] == "真实需求名称"
 
 
 def test_modification_trace_api_permissions_and_retention(client, monkeypatch):

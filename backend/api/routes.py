@@ -1277,20 +1277,25 @@ def process_task_sync(task_id: str, file_path: str):
         else:
             raise ValueError(f"不支持的文件类型: {ext}")
 
-        # 提取文档文件名（不包含扩展名）作为需求名称
+        def _is_placeholder_requirement_name(value: Any) -> bool:
+            normalized = str(value or "").strip()
+            return normalized in {"", "需求名称", "需求名", "name", "requirement_name"}
+
+        # 优先保留文档里解析出的真实需求名称，仅在缺失/占位时回退到文件名
         task_snapshot = _get_task(task_id) or {}
         original_filename = task_snapshot.get("filename", "")
-        if original_filename:
-            # 去掉.docx扩展名
-            requirement_name = original_filename.rsplit(".", 1)[0] if "." in original_filename else original_filename
+        parsed_requirement_name = str(requirement_data.get("requirement_name") or "").strip()
+        if _is_placeholder_requirement_name(parsed_requirement_name):
+            if original_filename:
+                requirement_name = original_filename.rsplit(".", 1)[0] if "." in original_filename else original_filename
+            else:
+                basename = os.path.basename(file_path)
+                requirement_name = basename.rsplit(".", 1)[0] if "." in basename else basename
         else:
-            # 如果没有文件名，使用文件路径的basename
-            basename = os.path.basename(file_path)
-            requirement_name = basename.rsplit(".", 1)[0] if "." in basename else basename
+            requirement_name = parsed_requirement_name
 
-        # 使用文档文件名覆盖需求名称
         requirement_data["requirement_name"] = requirement_name
-        logger.info(f"使用文档文件名作为需求名称: {requirement_name}")
+        logger.info(f"本次评估使用的需求名称: {requirement_name}")
 
         update_progress(15, "文档解析完成")
 

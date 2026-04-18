@@ -189,7 +189,7 @@ class ProfileArtifactService:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False)  # 移除 indent=2 以提升性能
         os.replace(tmp, path)
 
     def _write_jsonl_file(self, path: str, rows: List[Dict[str, Any]]) -> None:

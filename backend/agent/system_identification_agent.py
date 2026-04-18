@@ -76,20 +76,45 @@ class DirectDecisionResolver:
         if not alias_hits:
             return None
 
+        stable_aliases = [
+            alias
+            for alias, matched_systems in alias_hits.items()
+            if len({str(item.get("id") or item.get("name") or "").strip() for item in matched_systems}) == 1
+        ]
         ambiguous_aliases = [
             alias
             for alias, matched_systems in alias_hits.items()
             if len({str(item.get("id") or item.get("name") or "").strip() for item in matched_systems}) > 1
         ]
+        selected_systems = self._dedupe_systems(
+            [item for alias in stable_aliases for item in alias_hits.get(alias, [])]
+        )
         if ambiguous_aliases:
-            candidate_systems = self._dedupe_systems(
-                [item for alias in ambiguous_aliases for item in alias_hits.get(alias, [])]
-            )
+            candidate_systems = self._dedupe_systems([item for alias in ambiguous_aliases for item in alias_hits.get(alias, [])])
+            maybe_systems = self._build_maybe_systems(candidate_systems, ambiguous_aliases)
             questions = [f"别名“{alias}”可对应多个系统，请补充标准系统名称。" for alias in ambiguous_aliases]
+            if selected_systems:
+                selected_names = [item["name"] for item in selected_systems if str(item.get("name") or "").strip()]
+                return {
+                    "final_verdict": "matched",
+                    "selected_systems": selected_systems,
+                    "candidate_systems": candidate_systems,
+                    "maybe_systems": maybe_systems,
+                    "questions": questions,
+                    "reason_summary": (
+                        f"直接命中稳定系统：{', '.join(selected_names)}；"
+                        f"同时存在待确认别名：{', '.join(ambiguous_aliases)}"
+                    ),
+                    "matched_aliases": stable_aliases,
+                    "context_degraded": False,
+                    "degraded_reasons": [],
+                    "result_status": "success",
+                }
             return {
                 "final_verdict": "ambiguous",
                 "selected_systems": [],
                 "candidate_systems": candidate_systems,
+                "maybe_systems": maybe_systems,
                 "questions": questions,
                 "reason_summary": f"直接判定命中了歧义别名：{', '.join(ambiguous_aliases)}",
                 "matched_aliases": ambiguous_aliases,
@@ -98,14 +123,12 @@ class DirectDecisionResolver:
                 "result_status": "success",
             }
 
-        selected_systems = self._dedupe_systems(
-            [system for matched_systems in alias_hits.values() for system in matched_systems]
-        )
-        matched_aliases = list(alias_hits.keys())
+        matched_aliases = stable_aliases
         return {
             "final_verdict": "matched",
             "selected_systems": selected_systems,
             "candidate_systems": list(selected_systems),
+            "maybe_systems": [],
             "questions": [],
             "reason_summary": f"直接命中系统清单稳定别名：{', '.join(matched_aliases)}",
             "matched_aliases": matched_aliases,
@@ -113,6 +136,26 @@ class DirectDecisionResolver:
             "degraded_reasons": [],
             "result_status": "success",
         }
+
+    def _build_maybe_systems(
+        self,
+        candidate_systems: List[Dict[str, Any]],
+        ambiguous_aliases: List[str],
+    ) -> List[Dict[str, Any]]:
+        reason = f"命中歧义别名“{', '.join(ambiguous_aliases)}”，需补充标准系统名称"
+        result: List[Dict[str, Any]] = []
+        for item in candidate_systems:
+            result.append(
+                {
+                    "system_id": _normalize_text(item.get("system_id") or item.get("id")),
+                    "name": _normalize_text(item.get("name")),
+                    "confidence": "低",
+                    "reason": reason,
+                    "type": item.get("type") or "主系统",
+                    "description": item.get("description") or "",
+                }
+            )
+        return result
 
     def _contains_alias(self, text: str, alias: str) -> bool:
         normalized_alias = _normalize_text(alias)
