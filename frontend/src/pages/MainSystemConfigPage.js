@@ -26,6 +26,19 @@ import axios from 'axios';
 
 const { Title, Text } = Typography;
 
+const EXTRA_DETAIL_GRID_STYLE = {
+  display: 'grid',
+  gap: 12,
+  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+};
+
+const EXTRA_DETAIL_ITEM_STYLE = {
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: '1px solid #f0f0f0',
+  background: '#fafafa',
+};
+
 const MainSystemConfigPage = ({ embedded = false }) => {
   const [systems, setSystems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -185,13 +198,16 @@ const MainSystemConfigPage = ({ embedded = false }) => {
       width: 120,
       render: (text) => (text ? <Tag color={getStatusColor(text)}>{text}</Tag> : '-')
     },
-    ...extraKeys.map((key) => ({
-      title: key,
-      key: `extra-${key}`,
-      dataIndex: ['extra', key],
-      width: 220,
-      render: (text) => (text ? String(text) : '-')
-    })),
+    {
+      title: '扩展字段',
+      key: 'extra-summary',
+      width: 120,
+      render: (_, record) => {
+        const extra = record?.extra || {};
+        const count = Object.entries(extra).filter(([, value]) => String(value || '').trim()).length;
+        return count ? <Tag>{`${count} 项`}</Tag> : '-';
+      }
+    },
     {
       title: '操作',
       key: 'action',
@@ -265,7 +281,28 @@ const MainSystemConfigPage = ({ embedded = false }) => {
           dataSource={systems}
           rowKey={(record, index) => record.id || `${record.name || 'row'}-${index}`}
           loading={loading}
-          scroll={{ x: 'max-content' }}
+          expandable={{
+            rowExpandable: (record) => Object.keys(record?.extra || {}).length > 0,
+            expandedRowRender: (record) => {
+              const entries = Object.entries(record?.extra || {}).filter(([, value]) => String(value || '').trim());
+              if (!entries.length) {
+                return <Text type="secondary">无扩展字段</Text>;
+              }
+              return (
+                <div style={EXTRA_DETAIL_GRID_STYLE}>
+                  {entries.map(([key, value]) => (
+                    <div key={key} style={EXTRA_DETAIL_ITEM_STYLE}>
+                      <Text strong>{key}</Text>
+                      <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {String(value)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            },
+          }}
+          scroll={{ x: 900 }}
           pagination={{
             pageSize: 10,
             showSizeChanger: true,

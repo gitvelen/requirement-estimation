@@ -5,8 +5,8 @@
 |---|---|
 | 状态 | In Progress |
 | 作者 | Codex |
-| 日期 | 2026-04-08 |
-| 版本 | v0.5 |
+| 日期 | 2026-04-10 |
+| 版本 | v0.7 |
 | 目标环境 | STAGING / TEST |
 | 基线版本（对比口径） | `v2.6` |
 | 部署版本 | `HEAD`（working tree） |
@@ -230,6 +230,76 @@ bash deploy-backend-internal.sh
 - 当前 `docs/v2.7/status.md` 标记为 `_phase=Deployment`、`_change_status=in_progress`、`_run_status=wait_confirm`
 - 当前语义：业务已验收通过，待主分支收口、tag 与完成态同步
 
+## 2026-04-10 运行态时区修复记录
+
+### 问题与根因
+- 2026-04-10 在 STAGING/TEST 复查时发现“知识导入”页面显示的导入完成时间与服务器时间相差 8 小时。
+- 现场核验结果：
+  - 宿主机：`2026-04-10 18:27:02 +0800 CST`
+  - `requirement-backend` 容器：`2026-04-10 10:25:27 +0000 UTC`
+- 根因收敛为两点：
+  - 容器未继承宿主机时区，运行在 `UTC`
+  - 后端导入链路写入的是不带时区的 ISO 字符串，前端按本地时间直接展示，导致旧记录表现为“服务器时间不一致”
+
+### 实际执行
+- 代码修复：
+  - 新增统一时间 helper，导入历史、执行状态、系统画像工作区产物统一写入带时区的本地 ISO 时间
+  - `runtime_execution_service` 与 `system_profile_routes` 补齐 aware datetime 比较兼容
+- 容器修复：
+  - 在 backend compose 配置中增加 `TZ=${TZ:-Asia/Shanghai}`
+  - 挂载 `/etc/localtime:/etc/localtime:ro` 与 `/etc/timezone:/etc/timezone:ro`
+  - 执行 `docker compose up -d --build backend`
+- 历史数据回填：
+  - 先备份到 `data/_timezone_backup_20260410/`
+  - 将 `data/runtime_executions.json`、`data/extraction_tasks.json`、以及 `data/system_profiles/*/source/imports/{history,extraction_task}.json` 中旧的“无时区 UTC 裸时间”转换为 `+08:00` 本地时间
+
+### 验证证据
+- 自动化：
+  - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_system_profile_import_api.py -k 'profile_import_success_returns_task_id_and_records_history or v27_profile_import_uses_runtime_and_execution_status_aliases'` → `2 passed`
+  - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_system_profile_import_api.py tests/test_profile_artifact_service.py tests/test_system_profile_artifact_api.py tests/test_system_profile_repository.py tests/test_profile_storage_layout_v28.py` → `39 passed`
+- 运行态：
+  - `docker inspect requirement-backend --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'` → `status=running health=healthy`
+  - `curl -fsS http://127.0.0.1:443/api/v1/health` → `{"status":"healthy",...}`
+  - `date '+HOST=%Y-%m-%d %H:%M:%S %z %Z'` 与 `docker exec requirement-backend date '+CONTAINER=%Y-%m-%d %H:%M:%S %z %Z'` 均返回 `+0800 CST`
+  - 容器内临时目录验证 `record_import_history / upsert_extraction_task / create_execution/update_execution`，生成时间戳示例：
+  - `2026-04-10T18:29:28.083300+08:00`
+  - `2026-04-10T18:29:28.533978+08:00`
+  - `data/system_profiles/sid_019bccd4__贷款核算/source/imports/history.json` 与 `.../extraction_task.json` 已回填为 `+08:00` 本地时间
+
+## 2026-04-10 发布画像降级修复记录
+
+### 问题与根因
+- 用户在 STAGING/TEST 点击“发布画像”时，`POST /api/v1/system-profiles/{system_name}/publish` 返回 `503 EMB_001`。
+- 根因收敛为发布链路把 embedding/向量写入作为同步阻断步骤；当 embedding 网关 `http://10.73.254.200:30000/v1` 超时，发布动作被一并判失败。
+
+### 实际执行
+- 代码修复：
+  - `SystemProfileService.publish_profile` 改为先持久化正式画像，再执行知识索引。
+  - 发布后的知识索引改为“有限等待 + 后台继续”，默认等待上限 `PUBLISH_KNOWLEDGE_WAIT_SECONDS=5` 秒；超时后发布直接返回成功，并在审计产物中记录 `knowledge_index_status=queued`。
+  - 为发布链路补充两类回归：
+    - embedding 不可用时，发布仍成功；
+    - embedding 响应过慢时，发布不会被长时间阻塞。
+- 容器发布：
+  - 执行 `docker compose -f docker-compose.backend.yml up -d --build backend`
+
+### 验证证据
+- 自动化：
+  - `python -m pytest -q tests/test_system_profile_publish_rules.py tests/test_profile_schema_v27.py tests/test_system_profile_artifact_api.py` → `27 passed`
+- 运行态：
+  - `docker inspect requirement-backend --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'` → `status=running health=healthy`
+  - `curl -fsS http://127.0.0.1:443/api/v1/health` → `{"status":"healthy",...}`
+  - 使用 `manager/manager123` 登录并对 `贷款核算` 发起真实请求：
+    - `GET /api/v1/system-profiles/贷款核算` → `200`
+    - `POST /api/v1/system-profiles/贷款核算/publish` → `200`
+  - 本次真实发布耗时约 `7.867s`；后端日志记录：
+    - `发布系统画像知识库写入超时，转后台继续 system=贷款核算 timeout=5.0s`
+    - `POST /api/v1/system-profiles/%E8%B4%B7%E6%AC%BE%E6%A0%B8%E7%AE%97/publish HTTP/1.1" 200 OK`
+  - 审计产物 `data/system_profiles/sid_019bccd4__贷款核算/audit/decisions/latest_decision.json` 记录：
+    - `decision_action=publish_profile`
+    - `profile_status=published`
+    - `knowledge_index_status=queued`
+    - `knowledge_index_error=知识库写入超过5s，已转后台继续`
+
 
 ## 变更记录
 | 版本 | 日期 | 说明 | 作者 |
@@ -239,3 +309,5 @@ bash deploy-backend-internal.sh
 | v0.3 | 2026-03-15 | 补齐 Deployment 模板要求的目标环境与本次上线 CR 区块，作为 v2.7 发布基线文档 | Codex |
 | v0.4 | 2026-04-08 | 追加补丁 `CR-20260408-001` 的后端重建、文档导入链路修复、运行态校验与 `贷款核算` 定点修复记录，状态切换为 wait_feedback | Codex |
 | v0.5 | 2026-04-08 | 记录 `CR-20260408-001` 业务复验通过结论，并将补丁收口状态切换为 wait_confirm | Codex |
+| v0.6 | 2026-04-10 | 追加后端容器时区修复、导入链路带时区时间戳、以及历史导入时间回填记录 | Codex |
+| v0.7 | 2026-04-10 | 追加发布画像同步 embedding 阻断修复、后端重建与 `贷款核算` 真实发布 200 验证记录 | Codex |

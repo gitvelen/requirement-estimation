@@ -5,6 +5,7 @@ Agent编排器
 """
 import logging
 import time
+import concurrent.futures
 from typing import Dict, List, Any, Callable, Optional
 from langgraph.graph import StateGraph, END
 from backend.agent.system_identification_agent import get_system_identification_agent
@@ -92,6 +93,16 @@ class AgentOrchestrator:
         """
         start_time = time.time()
         requirement_name = requirement_data.get("requirement_name", "未知需求")
+        identification_input_parts: List[str] = []
+        for value in (
+            requirement_name,
+            requirement_data.get("requirement_summary", ""),
+            requirement_data.get("requirement_content", ""),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and normalized not in identification_input_parts:
+                identification_input_parts.append(normalized)
+        identification_content = "\n".join(identification_input_parts)
 
         try:
             logger.info("")
@@ -113,7 +124,7 @@ class AgentOrchestrator:
             identification_result = None
             if settings.ENABLE_V27_RUNTIME:
                 identification_result = sys_agent.identify_with_verdict(
-                    requirement_data.get("requirement_content", ""),
+                    identification_content,
                     task_id=task_id,
                 )
                 systems = identification_result.get("selected_systems") or []
@@ -124,7 +135,7 @@ class AgentOrchestrator:
                     )
             else:
                 systems = sys_agent.identify(
-                    requirement_data.get("requirement_content", ""),
+                    identification_content,
                     task_id=task_id
                 )
 
@@ -180,14 +191,12 @@ class AgentOrchestrator:
             degraded_reasons = list((ai_system_analysis or {}).get("degraded_reasons") or [])
             applied_adjustments_summary: Dict[str, List[Dict[str, Any]]] = {}
 
-            for idx, system in enumerate(systems, 1):
+            # 并行化功能点拆分
+            def process_single_system(idx, system):
+                """处理单个系统的功能点拆分（可并行执行）"""
                 system_name = system["name"]
                 system_type = system["type"]
                 logger.info(f"[{idx}/{len(systems)}] 拆分系统: {system_name}")
-
-                # 更新进度
-                progress = 40 + int(20 * idx / len(systems))
-                self._update_progress(progress_callback, progress, f"拆分功能点：{system_name} ({idx}/{len(systems)})")
 
                 # 获取功能拆分Agent（注入knowledge_service）
                 feature_agent = get_feature_breakdown_agent(self.knowledge_service)
@@ -199,11 +208,9 @@ class AgentOrchestrator:
                         task_id=task_id,
                     )
                     features = feature_result["features"]
-                    if feature_result.get("context_degraded"):
-                        feature_context_degraded = True
-                        degraded_reasons.extend(feature_result.get("degraded_reasons") or [])
-                    if feature_result.get("applied_adjustments"):
-                        applied_adjustments_summary[system_name] = feature_result.get("applied_adjustments") or []
+                    context_degraded = feature_result.get("context_degraded", False)
+                    degraded_reasons_local = feature_result.get("degraded_reasons") or []
+                    applied_adjustments_local = feature_result.get("applied_adjustments") or []
                 else:
                     features = feature_agent.breakdown(
                         requirement_data.get("requirement_content", ""),
@@ -211,6 +218,9 @@ class AgentOrchestrator:
                         system_type,
                         task_id=task_id
                     )
+                    context_degraded = False
+                    degraded_reasons_local = []
+                    applied_adjustments_local = []
 
                 # 校验功能点中的系统名称
                 logger.info(f"  └─ 校验功能点系统名称...")
@@ -218,9 +228,45 @@ class AgentOrchestrator:
                     system_name, features
                 )
 
-                systems_data[system_name] = features
-                total_features += len(features)
                 logger.info(f"  └─ 完成: {len(features)} 个功能点")
+                return {
+                    "system_name": system_name,
+                    "features": features,
+                    "context_degraded": context_degraded,
+                    "degraded_reasons": degraded_reasons_local,
+                    "applied_adjustments": applied_adjustments_local,
+                }
+
+            # 使用线程池并行处理（最多4个并发）
+            max_workers = min(4, len(systems))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(process_single_system, idx, system): idx
+                    for idx, system in enumerate(systems, 1)
+                }
+
+                for future in concurrent.futures.as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        result = future.result()
+                        system_name = result["system_name"]
+                        features = result["features"]
+
+                        systems_data[system_name] = features
+                        total_features += len(features)
+
+                        if result["context_degraded"]:
+                            feature_context_degraded = True
+                            degraded_reasons.extend(result["degraded_reasons"])
+                        if result["applied_adjustments"]:
+                            applied_adjustments_summary[system_name] = result["applied_adjustments"]
+
+                        # 更新进度
+                        progress = 40 + int(20 * len(systems_data) / len(systems))
+                        self._update_progress(progress_callback, progress, f"拆分功能点：{system_name} ({len(systems_data)}/{len(systems)})")
+                    except Exception as e:
+                        logger.error(f"处理系统时出错: {e}", exc_info=True)
+                        raise
 
             step_time = time.time() - step_start
             logger.info(f"[完成] 共拆分 {total_features} 个功能点")
@@ -276,11 +322,30 @@ class AgentOrchestrator:
 
             logger.info(f"[处理中] 开始估算 {len(all_features)} 个功能点的工作量...")
 
+            # 并行化 build_estimation_context
             profile_service = get_system_profile_service()
-            system_context_map = {
-                system_name: profile_service.build_estimation_context(system_name)
-                for system_name in systems_data.keys()
-            }
+            system_context_map = {}
+
+            def build_context_for_system(system_name):
+                """为单个系统构建估算上下文（可并行执行）"""
+                return system_name, profile_service.build_estimation_context(system_name)
+
+            max_workers = min(4, len(systems_data))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                context_futures = {
+                    executor.submit(build_context_for_system, name): name
+                    for name in systems_data.keys()
+                }
+
+                for future in concurrent.futures.as_completed(context_futures):
+                    try:
+                        system_name, context = future.result()
+                        system_context_map[system_name] = context
+                    except Exception as e:
+                        logger.error(f"构建系统上下文时出错: {e}", exc_info=True)
+                        # 降级：使用空上下文
+                        system_name = context_futures[future]
+                        system_context_map[system_name] = {}
 
             # Delphi估算
             estimates = work_estimation_agent.estimate(

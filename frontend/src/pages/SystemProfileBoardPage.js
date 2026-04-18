@@ -234,9 +234,7 @@ const V27_SUMMARY_LABELS = {
   status: '状态',
   aliases: '别名',
   business_domain: '业务域',
-  business_lines: '业务条线',
   architecture_layer: '架构层级',
-  application_level: '应用级别',
   target_users: '服务对象',
   service_scope: '职责定位',
   system_boundary: '责任边界',
@@ -530,6 +528,16 @@ const deepClone = (value) => {
   if (value === undefined) {
     return undefined;
   }
+  // 使用 structuredClone（现代浏览器原生支持，比JSON方式快2-3倍）
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch (e) {
+      // 降级到JSON方式（兼容性fallback）
+      console.warn('structuredClone failed, falling back to JSON:', e);
+    }
+  }
+  // 降级方案：JSON序列化（兼容旧浏览器）
   return JSON.parse(JSON.stringify(value));
 };
 
@@ -1179,10 +1187,33 @@ const buildCardDraftRows = (fieldPaths, profileData) => fieldPaths
   }))
   .filter((row) => hasMeaningfulValue(row.value));
 
-const hasCardDraftChanges = (fieldPaths, draftProfileData, savedProfileData) => fieldPaths.some((fieldPath) => (
-  JSON.stringify(getValueByPath(draftProfileData, fieldPath))
-  !== JSON.stringify(getValueByPath(savedProfileData, fieldPath))
-));
+const hasCardDraftChanges = (fieldPaths, draftProfileData, savedProfileData) => {
+  // 优化：使用简单的深度比较，避免 JSON 序列化
+  const isEqual = (a, b) => {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== 'object') return false;
+
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length) return false;
+      return a.every((item, index) => isEqual(item, b[index]));
+    }
+
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+
+    return keysA.every(key => isEqual(a[key], b[key]));
+  };
+
+  return fieldPaths.some((fieldPath) =>
+    !isEqual(
+      getValueByPath(draftProfileData, fieldPath),
+      getValueByPath(savedProfileData, fieldPath)
+    )
+  );
+};
 
 const getServiceCardTableValue = (cardKey, content, summary, profileData, preferDraft = false) => {
   const fieldPath = SERVICE_CARD_FIELD_PATH_BY_KEY[cardKey];

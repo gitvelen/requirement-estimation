@@ -7,7 +7,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from backend.agent.system_identification_agent import SystemIdentificationAgent
+from backend.agent.system_identification_agent import DirectDecisionResolver, SystemIdentificationAgent
 from backend.api import system_routes
 from backend.config.config import settings
 from backend.service import memory_service, system_profile_service
@@ -60,6 +60,51 @@ def test_identify_with_verdict_uses_catalog_alias_direct_match(monkeypatch):
     records = memory_service.get_memory_service().query_records("SYS-001", memory_type="identification_decision")
     assert records["total"] == 1
     assert records["items"][0]["payload"]["final_verdict"] == "matched"
+
+
+def test_direct_resolver_prefers_stable_system_and_keeps_ambiguous_alias_as_maybe():
+    system_routes._write_systems(
+        [
+            {"id": "SYS-MAS", "name": "管理会计集市", "abbreviation": "MAS", "status": "运行中", "extra": {}},
+            {"id": "SYS-CRM", "name": "客户关系管理", "abbreviation": "CRM", "status": "运行中", "extra": {}},
+            {"id": "SYS-CRM2", "name": "公司经营数据分析", "abbreviation": "CRM", "status": "下线中", "extra": {}},
+        ]
+    )
+
+    resolver = DirectDecisionResolver()
+    result = resolver.resolve(
+        "\n".join(
+            [
+                "2026年管理会计集市系统中收模型优化等共计33个迭代优化需求",
+                "针对经营分析与绩效考核要求，管会集市进行系统优化",
+                "管会集市从取分润补录表改为接入CRM业绩分润数据",
+            ]
+        )
+    )
+
+    assert result["final_verdict"] == "matched"
+    assert [item["name"] for item in result["selected_systems"]] == ["管理会计集市"]
+    assert [item["name"] for item in result["maybe_systems"]] == ["客户关系管理", "公司经营数据分析"]
+    assert [item["name"] for item in result["candidate_systems"]] == ["客户关系管理", "公司经营数据分析"]
+    assert result["matched_aliases"] == ["管理会计集市"]
+    assert result["questions"] == ["别名“CRM”可对应多个系统，请补充标准系统名称。"]
+
+
+def test_direct_resolver_keeps_ambiguous_when_only_ambiguous_alias_is_present():
+    system_routes._write_systems(
+        [
+            {"id": "SYS-CRM", "name": "客户关系管理", "abbreviation": "CRM", "status": "运行中", "extra": {}},
+            {"id": "SYS-CRM2", "name": "公司经营数据分析", "abbreviation": "CRM", "status": "下线中", "extra": {}},
+        ]
+    )
+
+    resolver = DirectDecisionResolver()
+    result = resolver.resolve("本次需求需要接入CRM业绩分润数据")
+
+    assert result["final_verdict"] == "ambiguous"
+    assert result["selected_systems"] == []
+    assert [item["name"] for item in result["candidate_systems"]] == ["客户关系管理", "公司经营数据分析"]
+    assert result["questions"] == ["别名“CRM”可对应多个系统，请补充标准系统名称。"]
 
 
 def test_identify_with_verdict_marks_ambiguous_when_llm_keeps_maybe_systems(monkeypatch):

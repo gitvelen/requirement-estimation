@@ -12,6 +12,7 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -130,6 +131,13 @@ class SystemProfileService:
         self.legacy_extraction_task_store_path = os.path.join(legacy_store_dir, "extraction_tasks.json")
         self._mutex = threading.RLock()
         self._extraction_task_listeners: List[Callable[[Dict[str, Any]], None]] = []
+
+        # 性能优化：添加缓存
+        self._profile_list_cache = None
+        self._profile_list_cache_time = None
+        self._cache_ttl = 60  # 缓存有效期（秒）
+        self._projection_cache: Dict[str, tuple[Any, datetime]] = {}  # {system_id: (data, timestamp)}
+
         self._run_startup_migration()
 
     @contextmanager
@@ -148,13 +156,30 @@ class SystemProfileService:
 
     def _load_unlocked(self) -> List[Dict[str, Any]]:
         try:
-            return self.repository.list_profiles(state="working")
+            # 检查缓存
+            if self._profile_list_cache is not None and self._profile_list_cache_time is not None:
+                elapsed = (datetime.now() - self._profile_list_cache_time).total_seconds()
+                if elapsed < self._cache_ttl:
+                    return self._profile_list_cache
+
+            # 加载并缓存
+            profiles = self.repository.list_profiles(state="working")
+            self._profile_list_cache = profiles
+            self._profile_list_cache_time = datetime.now()
+            return profiles
         except Exception as exc:
             logger.warning(f"读取系统画像失败: {exc}")
             return []
 
+    def invalidate_profile_cache(self):
+        """在profile更新时调用，使缓存失效"""
+        self._profile_list_cache = None
+        self._profile_list_cache_time = None
+
     def _save_unlocked(self, items: List[Dict[str, Any]]) -> None:
         self.repository.save_working_profiles(items)
+        # 使缓存失效
+        self.invalidate_profile_cache()
 
     def _load_object_file_unlocked(self, path: str) -> Dict[str, Any]:
         if not os.path.exists(path):
@@ -1474,6 +1499,8 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
+            # 清除projection缓存以确保获取最新数据
+            self.invalidate_projection_cache(profile.get("system_id", ""))
             self._refresh_v27_card_views(profile)
             candidate_content = self._resolve_card_candidate_content(
                 profile,
@@ -1530,6 +1557,8 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
+            # 清除projection缓存以确保获取最新数据
+            self.invalidate_projection_cache(profile.get("system_id", ""))
             self._refresh_v27_card_views(profile)
             candidate_content = self._resolve_card_candidate_content(
                 profile,
@@ -1587,6 +1616,8 @@ class SystemProfileService:
             if not profile:
                 raise ValueError("系统画像不存在")
 
+            # 清除projection缓存以确保获取最新数据
+            self.invalidate_projection_cache(profile.get("system_id", ""))
             self._refresh_v27_card_views(profile)
             profile_cards = profile.get("profile_cards") if isinstance(profile.get("profile_cards"), dict) else {}
             profile_card = profile_cards.get(normalized_card_key) if isinstance(profile_cards.get(normalized_card_key), dict) else {}
@@ -3208,9 +3239,24 @@ class SystemProfileService:
         }
 
     def _load_projection_candidate_map(self, system_id: str) -> Dict[str, Dict[str, Any]]:
+        # 检查缓存
+        if system_id in self._projection_cache:
+            data, timestamp = self._projection_cache[system_id]
+            elapsed = (datetime.now() - timestamp).total_seconds()
+            if elapsed < self._cache_ttl:
+                return data
+
+        # 加载并缓存
         projection_bundle = self._load_latest_projection_bundle(system_id)
         merged_candidates = projection_bundle.get("merged_candidates") if isinstance(projection_bundle.get("merged_candidates"), dict) else {}
-        return self._normalize_projection_candidate_map(merged_candidates)
+        result = self._normalize_projection_candidate_map(merged_candidates)
+        self._projection_cache[system_id] = (result, datetime.now())
+        return result
+
+    def invalidate_projection_cache(self, system_id: str):
+        """在projection更新时调用，使特定系统的缓存失效"""
+        if system_id in self._projection_cache:
+            del self._projection_cache[system_id]
 
     def _get_latest_projection_record(self, system_id: str) -> Optional[Dict[str, Any]]:
         normalized_system_id = str(system_id or "").strip()
@@ -3287,7 +3333,7 @@ class SystemProfileService:
             "merged_candidates": merged_candidates,
             "card_render": card_render,
         }
-        return get_profile_artifact_service().append_candidate_record(
+        result = get_profile_artifact_service().append_candidate_record(
             system_id=normalized_system_id,
             category="projections",
             payload=projection_payload,
@@ -3300,6 +3346,9 @@ class SystemProfileService:
                 "candidate_profile.json": projection_payload,
             },
         )
+        # 使projection缓存失效
+        self.invalidate_projection_cache(normalized_system_id)
+        return result
 
     def record_authoritative_candidate(
         self,

@@ -179,6 +179,9 @@ def test_build_estimation_context_uses_projection_candidates_when_ai_suggestions
     with open(os.path.join(latest_dir, "system_projection.json"), "w", encoding="utf-8") as f:
         json.dump(system_projection, f, ensure_ascii=False, indent=2)
 
+    # 清除缓存以确保读取新写入的文件
+    profile_service.invalidate_projection_cache("sys_hop_proj")
+
     context = profile_service.build_estimation_context("HOP-PROJ")
     assert context["profile_context_used"] is True
     assert context["context_source"] == "projection_candidate"

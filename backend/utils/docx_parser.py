@@ -132,13 +132,31 @@ class DocxParser:
             for row in first_table:
                 if len(row) >= 2:
                     key = row[0]
-                    value = row[1] if len(row) > 1 else ""
+                    value = self._pick_basic_info_value(key, row)
                     if "需求名称" in key:
                         info["requirement_name"] = value
                     elif "需求简述" in key or "需求概述" in key:
                         info["requirement_summary"] = value
 
         return info
+
+    def _pick_basic_info_value(self, key: str, row: List[str]) -> str:
+        """
+        从基本信息表格行中选择真实值。
+
+        部分模板在合并单元格场景下会把表头文本重复写进多个单元格，
+        这里优先取第一个“非空且不等于表头”的单元格值。
+        """
+        normalized_key = str(key or "").strip()
+        if len(row) <= 1:
+            return ""
+
+        for cell in row[1:]:
+            value = str(cell or "").strip()
+            if value and value != normalized_key:
+                return value
+
+        return str(row[1] or "").strip()
 
     def _extract_content_section(self, paragraphs: List[str]) -> str:
         """
