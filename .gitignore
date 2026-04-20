@@ -73,6 +73,7 @@ frontend/build/
 docs/.claude/
 
 # aicoding local artifacts
+.aicoding/
 .aicoding/.history/
 .aicoding/docs/plans/
 

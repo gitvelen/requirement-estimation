@@ -192,3 +192,58 @@ def test_breakdown_with_context_uses_profile_context_without_system_profile_sear
     assert result["features"][0]["功能点"] == "开户注册"
     assert "系统画像参考" in prompts["user_prompt"]
     assert "账户开户、销户与账务处理" in prompts["user_prompt"]
+
+
+def test_breakdown_with_context_retries_with_higher_token_budget_when_json_is_truncated(monkeypatch):
+    responses = [
+        """{
+  "system": "核心账务",
+  "features": [
+    {
+      "序号": "1.1",
+      "功能模块": "账户服务",
+      "功能点": "开户注册",
+      "业务描述": "发起开户",
+      "输入": "申请信息",
+      "输出": "开户结果",
+      "依赖": "无",
+      "预估人天": 1,
+      "复杂度": "中",
+      "备注": "[归属依据] 属于账户服务""",
+        """{
+  "system": "核心账务",
+  "features": [
+    {
+      "序号": "1.1",
+      "功能模块": "账户服务",
+      "功能点": "开户注册",
+      "业务描述": "发起开户",
+      "输入": "申请信息",
+      "输出": "开户结果",
+      "依赖": "无",
+      "预估人天": 1,
+      "复杂度": "中",
+      "备注": "[归属依据] 属于账户服务\\n[系统约束] 复用既有开户主流程\\n[集成点] 无\\n[待确认] 无"
+    }
+  ]
+}""",
+    ]
+    seen_max_tokens = []
+
+    def fake_chat_with_system_prompt(**kwargs):
+        seen_max_tokens.append(kwargs.get("max_tokens"))
+        return responses[len(seen_max_tokens) - 1]
+
+    monkeypatch.setattr(llm_client, "chat_with_system_prompt", fake_chat_with_system_prompt)
+
+    agent = FeatureBreakdownAgent(knowledge_service=None)
+    result = agent.breakdown_with_context(
+        requirement_content="新增开户能力",
+        system_name="核心账务",
+        system_type="主系统",
+        task_id="task_retry",
+    )
+
+    assert seen_max_tokens[0] == 3000
+    assert seen_max_tokens[1] >= 8000
+    assert result["features"][0]["功能点"] == "开户注册"

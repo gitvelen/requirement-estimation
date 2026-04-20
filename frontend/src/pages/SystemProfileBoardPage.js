@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -831,6 +831,12 @@ const parseErrorMessage = (error, fallback) => (
   || fallback
 );
 
+const isRequestCanceled = (error) => (
+  error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+  || error?.name === 'AbortError'
+);
+
 const normalizeHealthReport = (value) => {
   if (!value || typeof value !== 'object') {
     return null;
@@ -1626,6 +1632,14 @@ const SystemProfileBoardPage = () => {
   const [completenessInfo, setCompletenessInfo] = useState(null);
   const [completenessUnknown, setCompletenessUnknown] = useState(false);
   const [profileHealth, setProfileHealth] = useState(null);
+  const mountedRef = useRef(false);
+  const requestControllersRef = useRef({
+    systems: null,
+    profileDetail: null,
+    completeness: null,
+    timeline: null,
+    profileHealth: null,
+  });
 
   const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedSystemName = useMemo(
@@ -1689,72 +1703,157 @@ const SystemProfileBoardPage = () => {
 
   const activeDomainConfig = DOMAIN_BY_KEY[activeDomain] || DOMAIN_CONFIG[0];
 
+  const abortRequest = useCallback((key) => {
+    const controller = requestControllersRef.current[key];
+    requestControllersRef.current[key] = null;
+    controller?.abort();
+  }, []);
+
+  const beginRequest = useCallback((key) => {
+    abortRequest(key);
+    const controller = new AbortController();
+    requestControllersRef.current[key] = controller;
+    return controller;
+  }, [abortRequest]);
+
+  const finishRequest = useCallback((key, controller) => {
+    if (requestControllersRef.current[key] !== controller) {
+      return false;
+    }
+    requestControllersRef.current[key] = null;
+    return true;
+  }, []);
+
+  const isActiveRequest = useCallback((key, controller) => (
+    mountedRef.current && requestControllersRef.current[key] === controller
+  ), []);
+
+  const abortAllRequests = useCallback(() => {
+    Object.keys(requestControllersRef.current).forEach((key) => {
+      abortRequest(key);
+    });
+  }, [abortRequest]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortAllRequests();
+    };
+  }, [abortAllRequests]);
+
   const loadSystems = useCallback(async () => {
+    const controller = beginRequest('systems');
     try {
-      const response = await axios.get('/api/v1/system/systems');
+      const response = await axios.get('/api/v1/system/systems', {
+        signal: controller.signal,
+      });
+      if (!isActiveRequest('systems', controller)) {
+        return;
+      }
       setSystems(Array.isArray(response.data?.data?.systems) ? response.data.data.systems : []);
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('systems', controller)) {
+        return;
+      }
       message.error(parseErrorMessage(error, '加载系统清单失败'));
+    } finally {
+      finishRequest('systems', controller);
     }
-  }, []);
+  }, [beginRequest, finishRequest, isActiveRequest]);
 
   const loadCompleteness = useCallback(async (systemName) => {
     if (!systemName) {
+      abortRequest('completeness');
       setCompletenessInfo(null);
       setCompletenessUnknown(false);
       return;
     }
 
+    const controller = beginRequest('completeness');
     try {
       setCompletenessUnknown(false);
       const response = await axios.get('/api/v1/system-profiles/completeness', {
         params: { system_name: systemName },
+        signal: controller.signal,
       });
+      if (!isActiveRequest('completeness', controller)) {
+        return;
+      }
       setCompletenessInfo(response.data || null);
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('completeness', controller)) {
+        return;
+      }
       setCompletenessUnknown(true);
       setCompletenessInfo(null);
+    } finally {
+      finishRequest('completeness', controller);
     }
-  }, []);
+  }, [abortRequest, beginRequest, finishRequest, isActiveRequest]);
 
   const loadTimelinePage = useCallback(async (systemId, offset) => {
     if (!systemId) {
+      abortRequest('timeline');
       return { total: 0, items: [] };
     }
 
+    const controller = beginRequest('timeline');
     try {
       const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/events`, {
         params: { limit: 20, offset: Math.max(0, Number(offset) || 0) },
+        signal: controller.signal,
       });
+      if (!isActiveRequest('timeline', controller)) {
+        return { total: 0, items: [] };
+      }
       const payload = response.data || {};
       return {
         total: Number(payload.total) || 0,
         items: Array.isArray(payload.items) ? payload.items : [],
       };
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('timeline', controller)) {
+        return { total: 0, items: [] };
+      }
       message.error(parseErrorMessage(error, '加载时间线失败'));
       return { total: 0, items: [] };
+    } finally {
+      finishRequest('timeline', controller);
     }
-  }, []);
+  }, [abortRequest, beginRequest, finishRequest, isActiveRequest]);
 
   const loadProfileHealth = useCallback(async (systemId) => {
     if (!systemId) {
+      abortRequest('profileHealth');
       setProfileHealth(null);
       return null;
     }
 
+    const controller = beginRequest('profileHealth');
     try {
       const response = await axios.get(
-        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/health-report`
+        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/health-report`,
+        {
+          signal: controller.signal,
+        }
       );
+      if (!isActiveRequest('profileHealth', controller)) {
+        return null;
+      }
       const normalized = normalizeHealthReport(response.data);
       setProfileHealth(normalized);
       return normalized;
     } catch (_error) {
+      if (!isActiveRequest('profileHealth', controller)) {
+        return null;
+      }
       setProfileHealth(null);
       return null;
+    } finally {
+      finishRequest('profileHealth', controller);
     }
-  }, []);
+  }, [abortRequest, beginRequest, finishRequest, isActiveRequest]);
 
   const applyProfilePayload = useCallback((payload, fallbackSystemId = '') => {
     const normalizedProfileData = normalizeProfileData(payload?.profile_data);
@@ -1792,9 +1891,19 @@ const SystemProfileBoardPage = () => {
       return;
     }
 
+    abortRequest('profileDetail');
+    abortRequest('timeline');
+    abortRequest('completeness');
+    abortRequest('profileHealth');
+    const controller = beginRequest('profileDetail');
     setLoadingProfile(true);
     try {
-      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemName)}`);
+      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemName)}`, {
+        signal: controller.signal,
+      });
+      if (!isActiveRequest('profileDetail', controller)) {
+        return;
+      }
       const payload = response.data?.data;
       const resolvedSystemId = normalizeString(payload?.system_id || systemIdHint);
 
@@ -1814,6 +1923,9 @@ const SystemProfileBoardPage = () => {
         resolvedSystemId
       );
 
+      if (!isActiveRequest('profileDetail', controller)) {
+        return;
+      }
       setLoadingProfile(false);
       setTimelineLoading(true);
       const [timeline] = await Promise.all([
@@ -1821,19 +1933,37 @@ const SystemProfileBoardPage = () => {
         loadCompleteness(systemName),
         loadProfileHealth(resolvedSystemId),
       ]);
+      if (!isActiveRequest('profileDetail', controller)) {
+        return;
+      }
       setTimelineItems(timeline.items);
       setTimelineTotal(timeline.total);
       setTimelineLoading(false);
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('profileDetail', controller)) {
+        return;
+      }
       message.error(parseErrorMessage(error, '加载系统画像详情失败'));
       setTimelineItems([]);
       setTimelineTotal(0);
       setTimelineLoading(false);
       setProfileHealth(null);
     } finally {
-      setLoadingProfile(false);
+      const isCurrent = finishRequest('profileDetail', controller);
+      if (isCurrent && mountedRef.current) {
+        setLoadingProfile(false);
+      }
     }
-  }, [applyProfilePayload, loadCompleteness, loadProfileHealth, loadTimelinePage]);
+  }, [
+    abortRequest,
+    applyProfilePayload,
+    beginRequest,
+    finishRequest,
+    isActiveRequest,
+    loadCompleteness,
+    loadProfileHealth,
+    loadTimelinePage,
+  ]);
 
   const syncSelectedSystemFromUrl = useCallback((items) => {
     if (!items.length) {
@@ -1881,10 +2011,14 @@ const SystemProfileBoardPage = () => {
 
   useEffect(() => {
     if (!selectedSystemName) {
+      abortRequest('profileDetail');
+      abortRequest('timeline');
+      abortRequest('completeness');
+      abortRequest('profileHealth');
       return;
     }
     loadProfileDetail(selectedSystemName, selectedSystem?.id || requestedSystemId);
-  }, [loadProfileDetail, requestedSystemId, selectedSystem?.id, selectedSystemName]);
+  }, [abortRequest, loadProfileDetail, requestedSystemId, selectedSystem?.id, selectedSystemName]);
 
   const setDraftFieldValue = useCallback((domainKey, fieldKey, nextValue) => {
     setDraftProfileData((previous) => {

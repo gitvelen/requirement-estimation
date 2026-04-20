@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -114,6 +114,12 @@ const getRepoSourceLabel = (repoSource) => {
   return repoSource || '-';
 };
 
+const isRequestCanceled = (error) => (
+  error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+  || error?.name === 'AbortError'
+);
+
 const SystemProfileImportPage = () => {
   const { user } = useAuth();
   const { isManager } = usePermission();
@@ -143,6 +149,52 @@ const SystemProfileImportPage = () => {
   const [scanIngesting, setScanIngesting] = useState(false);
   const [scanJob, setScanJob] = useState(null);
   const [scanIngestResult, setScanIngestResult] = useState(null);
+  const mountedRef = useRef(false);
+  const requestControllersRef = useRef({
+    systems: null,
+    importHistory: null,
+    executionStatus: null,
+    scanJob: null,
+  });
+
+  const abortRequest = useCallback((key) => {
+    const controller = requestControllersRef.current[key];
+    requestControllersRef.current[key] = null;
+    controller?.abort();
+  }, []);
+
+  const beginRequest = useCallback((key) => {
+    abortRequest(key);
+    const controller = new AbortController();
+    requestControllersRef.current[key] = controller;
+    return controller;
+  }, [abortRequest]);
+
+  const finishRequest = useCallback((key, controller) => {
+    if (requestControllersRef.current[key] !== controller) {
+      return false;
+    }
+    requestControllersRef.current[key] = null;
+    return true;
+  }, []);
+
+  const isActiveRequest = useCallback((key, controller) => (
+    mountedRef.current && requestControllersRef.current[key] === controller
+  ), []);
+
+  const abortAllRequests = useCallback(() => {
+    Object.keys(requestControllersRef.current).forEach((key) => {
+      abortRequest(key);
+    });
+  }, [abortRequest]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortAllRequests();
+    };
+  }, [abortAllRequests]);
 
   const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedSystemName = useMemo(() => String(queryParams.get('system_name') || '').trim(), [queryParams]);
@@ -191,17 +243,29 @@ const SystemProfileImportPage = () => {
   }, [importHistory, historyPage, historyPageSize]);
 
   const loadSystems = useCallback(async () => {
+    const controller = beginRequest('systems');
     try {
-      const response = await axios.get('/api/v1/system/systems');
+      const response = await axios.get('/api/v1/system/systems', {
+        signal: controller.signal,
+      });
+      if (!isActiveRequest('systems', controller)) {
+        return;
+      }
       const items = response.data?.data?.systems || [];
       setSystems(Array.isArray(items) ? items : []);
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('systems', controller)) {
+        return;
+      }
       message.error(extractErrorMessage(error, '加载系统清单失败'));
+    } finally {
+      finishRequest('systems', controller);
     }
-  }, []);
+  }, [beginRequest, finishRequest, isActiveRequest]);
 
   const loadImportHistory = useCallback(async (systemId) => {
     if (!systemId) {
+      abortRequest('importHistory');
       setImportHistory([]);
       return;
     }
@@ -213,8 +277,17 @@ const SystemProfileImportPage = () => {
       return;
     }
 
+    const controller = beginRequest('importHistory');
     try {
-      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/import-history`);
+      const response = await axios.get(
+        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/import-history`,
+        {
+          signal: controller.signal,
+        }
+      );
+      if (!isActiveRequest('importHistory', controller)) {
+        return;
+      }
       const data = Array.isArray(response.data?.items) ? response.data.items : [];
       setImportHistory(data);
 
@@ -224,12 +297,18 @@ const SystemProfileImportPage = () => {
         [systemId]: { data, timestamp: Date.now() }
       }));
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('importHistory', controller)) {
+        return;
+      }
       setImportHistory([]);
+    } finally {
+      finishRequest('importHistory', controller);
     }
-  }, [importHistoryCache]);
+  }, [abortRequest, beginRequest, finishRequest, importHistoryCache, isActiveRequest]);
 
   const loadExecutionStatus = useCallback(async (systemId) => {
     if (!systemId) {
+      abortRequest('executionStatus');
       setExecutionStatus(null);
       return;
     }
@@ -241,8 +320,17 @@ const SystemProfileImportPage = () => {
       return;
     }
 
+    const controller = beginRequest('executionStatus');
     try {
-      const response = await axios.get(`/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/execution-status`);
+      const response = await axios.get(
+        `/api/v1/system-profiles/${encodeURIComponent(systemId)}/profile/execution-status`,
+        {
+          signal: controller.signal,
+        }
+      );
+      if (!isActiveRequest('executionStatus', controller)) {
+        return;
+      }
       const data = response.data || null;
       setExecutionStatus(data);
 
@@ -252,28 +340,46 @@ const SystemProfileImportPage = () => {
         [systemId]: { data, timestamp: Date.now() }
       }));
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('executionStatus', controller)) {
+        return;
+      }
       setExecutionStatus(null);
+    } finally {
+      finishRequest('executionStatus', controller);
     }
-  }, [executionStatusCache]);
+  }, [abortRequest, beginRequest, executionStatusCache, finishRequest, isActiveRequest]);
 
   const loadScanJob = useCallback(async (jobId) => {
     const normalizedJobId = String(jobId || '').trim();
     if (!normalizedJobId) {
+      abortRequest('scanJob');
       setScanJob(null);
       return;
     }
 
+    const controller = beginRequest('scanJob');
     setScanRefreshing(true);
     try {
-      const response = await axios.get(`/api/v1/code-scan/jobs/${encodeURIComponent(normalizedJobId)}`);
+      const response = await axios.get(`/api/v1/code-scan/jobs/${encodeURIComponent(normalizedJobId)}`, {
+        signal: controller.signal,
+      });
+      if (!isActiveRequest('scanJob', controller)) {
+        return;
+      }
       setScanJob(response.data || null);
     } catch (error) {
+      if (isRequestCanceled(error) || !isActiveRequest('scanJob', controller)) {
+        return;
+      }
       message.error(extractErrorMessage(error, '加载扫描任务状态失败'));
       setScanJob(null);
     } finally {
-      setScanRefreshing(false);
+      const isCurrent = finishRequest('scanJob', controller);
+      if (isCurrent && mountedRef.current) {
+        setScanRefreshing(false);
+      }
     }
-  }, []);
+  }, [abortRequest, beginRequest, finishRequest, isActiveRequest]);
 
   useEffect(() => {
     loadSystems();
@@ -307,6 +413,8 @@ const SystemProfileImportPage = () => {
     setScanIngestResult(null);
 
     if (!selectedSystemId) {
+      abortRequest('importHistory');
+      abortRequest('executionStatus');
       setImportHistory([]);
       setExecutionStatus(null);
       return;
@@ -314,7 +422,7 @@ const SystemProfileImportPage = () => {
 
     loadImportHistory(selectedSystemId);
     loadExecutionStatus(selectedSystemId);
-  }, [loadExecutionStatus, loadImportHistory, selectedSystemId]);
+  }, [abortRequest, loadExecutionStatus, loadImportHistory, selectedSystemId]);
 
   const handleSystemChange = (systemName) => {
     const nextName = String(systemName || '').trim();

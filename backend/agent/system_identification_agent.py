@@ -404,12 +404,17 @@ class SystemIdentificationAgent:
         else:
             user_prompt += "请识别该需求涉及的所有系统，并给出置信度与理由。"
 
+        llm_timeout = max(float(getattr(settings, "PROFILE_IMPORT_LLM_TIMEOUT", 5) or 5), 1.0)
+        if candidate_systems or knowledge_context:
+            # 命中系统画像后，提示词会显著变长，5 秒预算对线上波动过于敏感。
+            llm_timeout = max(llm_timeout, 15.0)
+
         response = llm_client.chat_with_system_prompt(
             system_prompt=self.prompt_template,
             user_prompt=user_prompt,
             temperature=0.3,
             retry_times=max(int(getattr(settings, "PROFILE_IMPORT_LLM_RETRY_TIMES", 1) or 1), 1),
-            timeout=max(float(getattr(settings, "PROFILE_IMPORT_LLM_TIMEOUT", 5) or 5), 1.0),
+            timeout=llm_timeout,
         )
         result = llm_client.extract_json(response)
         if "systems" not in result:
@@ -476,11 +481,38 @@ class SystemIdentificationAgent:
         selected_systems: List[Dict[str, Any]],
         maybe_systems: List[Dict[str, Any]],
     ) -> str:
-        if selected_systems and not maybe_systems:
+        if selected_systems and (not maybe_systems or self._is_speculative_maybe_set(selected_systems, maybe_systems)):
             return "matched"
         if selected_systems or maybe_systems:
             return "ambiguous"
         return "unknown"
+
+    def _is_speculative_maybe_set(
+        self,
+        selected_systems: List[Dict[str, Any]],
+        maybe_systems: List[Dict[str, Any]],
+    ) -> bool:
+        if len(selected_systems) != 1 or not maybe_systems:
+            return False
+
+        selected_confidence = str(selected_systems[0].get("confidence") or "").strip().lower()
+        if selected_confidence not in {"高", "high"}:
+            return False
+
+        uncertainty_markers = ("未明确", "未提及", "可能", "待确认", "需进一步确认", "进一步确认")
+        for item in maybe_systems:
+            if not isinstance(item, dict):
+                return False
+
+            maybe_confidence = str(item.get("confidence") or "").strip().lower()
+            if maybe_confidence not in {"低", "low"}:
+                return False
+
+            maybe_reason = str(item.get("reason") or "").strip()
+            if not maybe_reason or not any(marker in maybe_reason for marker in uncertainty_markers):
+                return False
+
+        return True
 
     def _build_reason_summary(
         self,

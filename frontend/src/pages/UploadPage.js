@@ -1,18 +1,70 @@
-import React, { useState } from 'react';
-import { Upload, Button, message, Card, Space, Typography, Input, Divider } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Upload, Button, message, Card, Space, Typography, Input, Divider, Select } from 'antd';
 import { InboxOutlined, UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import useAuth from '../hooks/useAuth';
+import { filterResponsibleSystems } from '../utils/systemOwnership';
 
 const { Text } = Typography;
 const { TextArea } = Input;
+const UNLIMITED_OPTION_VALUE = '__UNLIMITED__';
 
 const UploadPage = () => {
   const [fileList, setFileList] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [taskName, setTaskName] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
+  const [targetSystemOptions, setTargetSystemOptions] = useState([]);
+  const [selectedTargetSystem, setSelectedTargetSystem] = useState('');
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadTargetSystems = async () => {
+      try {
+        const response = await axios.get('/api/v1/system/systems');
+        const systems = response.data?.data?.systems || [];
+        const responsibleSystems = filterResponsibleSystems(systems, user);
+        const responsibleNames = Array.from(
+          new Set(
+            responsibleSystems
+              .map((item) => String(item?.name || '').trim())
+              .filter(Boolean)
+          )
+        );
+        const options = responsibleNames.map((name) => ({
+          label: name,
+          value: name,
+          mode: 'specific',
+        }));
+        options.push({
+          label: '不限',
+          value: UNLIMITED_OPTION_VALUE,
+          mode: 'unlimited',
+        });
+
+        if (alive) {
+          setTargetSystemOptions(options);
+        }
+      } catch (error) {
+        if (alive) {
+          setTargetSystemOptions([]);
+        }
+        message.error(error.response?.data?.detail || '获取待评估系统失败');
+      }
+    };
+
+    if (user) {
+      loadTargetSystems();
+    }
+
+    return () => {
+      alive = false;
+    };
+  }, [user]);
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -20,8 +72,16 @@ const UploadPage = () => {
       return;
     }
 
+    const selectedOption = targetSystemOptions.find((item) => item.value === selectedTargetSystem);
+    if (!selectedOption) {
+      message.warning('请选择待评估系统');
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', fileList[0]);
+    formData.append('target_system_mode', selectedOption.mode);
+    formData.append('target_system_name', selectedOption.mode === 'specific' ? selectedOption.label : '');
     if (taskName.trim()) {
       formData.append('name', taskName.trim());
     }
@@ -76,6 +136,16 @@ const UploadPage = () => {
     <div>
       <Card title="发起评估任务" className="upload-card">
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <div>
+            <Text>待评估系统</Text>
+            <Select
+              value={selectedTargetSystem || undefined}
+              onChange={setSelectedTargetSystem}
+              options={targetSystemOptions}
+              placeholder="请选择待评估系统"
+              style={{ width: '100%', marginTop: 8 }}
+            />
+          </div>
           <div>
             <Text>任务名称（可选）</Text>
             <Input

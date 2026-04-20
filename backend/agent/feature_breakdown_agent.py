@@ -230,6 +230,55 @@ class FeatureBreakdownAgent:
 
         logger.info(f"{self.name}初始化完成（画像上下文：已启用）")
 
+    def _should_retry_json_parse(self, response_text: str) -> bool:
+        text = str(response_text or "").strip()
+        if not text:
+            return False
+        return text.startswith("{") or text.startswith("```json") or '"features"' in text
+
+    def _request_json_payload(
+        self,
+        user_prompt: str,
+        *,
+        operation_label: str,
+        temperature: float = 0.5,
+    ) -> Dict[str, Any]:
+        token_budgets = []
+        for candidate in (3000, max(int(getattr(settings, "LLM_MAX_TOKENS", 0) or 0), 8000)):
+            if candidate > 0 and candidate not in token_budgets:
+                token_budgets.append(candidate)
+
+        last_error: Optional[Exception] = None
+        for attempt, max_tokens in enumerate(token_budgets, start=1):
+            response = llm_client.chat_with_system_prompt(
+                system_prompt=self.prompt_template,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            try:
+                return llm_client.extract_json(response)
+            except ValueError as exc:
+                last_error = exc
+                should_retry = (
+                    attempt < len(token_budgets)
+                    and self._should_retry_json_parse(response)
+                )
+                if not should_retry:
+                    raise
+                logger.warning(
+                    "[功能拆分] %s 返回疑似截断JSON，放大输出预算后重试（attempt=%s/%s, max_tokens=%s, response_chars=%s）",
+                    operation_label,
+                    attempt,
+                    len(token_budgets),
+                    max_tokens,
+                    len(response or ""),
+                )
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"{operation_label} 未获得有效响应")
+
     def breakdown(
         self,
         requirement_content: str,
@@ -305,13 +354,10 @@ class FeatureBreakdownAgent:
 4. 评估复杂度（高/中/低）
 5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
 
-            response = llm_client.chat_with_system_prompt(
-                system_prompt=self.prompt_template,
+            result = self._request_json_payload(
                 user_prompt=user_prompt,
-                temperature=0.5,
-                max_tokens=3000,
+                operation_label=f"{system_name} 功能拆分",
             )
-            result = llm_client.extract_json(response)
 
             if "features" not in result:
                 raise ValueError("响应中缺少'features'字段")
@@ -534,13 +580,10 @@ class FeatureBreakdownAgent:
             user_prompt += f"""反馈意见：\n{feedback}\n\n"""
             user_prompt += """请根据反馈意见优化功能点拆分，保持相同的JSON格式。"""
 
-            response = llm_client.chat_with_system_prompt(
-                system_prompt=self.prompt_template,
+            result = self._request_json_payload(
                 user_prompt=user_prompt,
-                temperature=0.5,
-                max_tokens=3000,
+                operation_label="功能点优化",
             )
-            result = llm_client.extract_json(response)
 
             if "features" not in result:
                 raise ValueError("响应中缺少'features'字段")

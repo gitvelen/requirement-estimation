@@ -14,3 +14,9 @@ services:
     env_file:
       - .env.frontend
     restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

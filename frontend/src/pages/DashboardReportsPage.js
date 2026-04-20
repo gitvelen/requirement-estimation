@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -114,12 +114,29 @@ const renderMetricCard = ({ title, loading, items, columns, logicText }) => (
   </Card>
 );
 
+const isRequestCanceled = (error) => (
+  error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+  || error?.name === 'AbortError'
+);
+
 const DashboardReportsPage = () => {
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState('');
   const [widgetsByPage, setWidgetsByPage] = useState({});
+  const requestControllerRef = useRef(null);
+  const mountedRef = useRef(false);
+
+  const abortActiveRequest = useCallback(() => {
+    const controller = requestControllerRef.current;
+    requestControllerRef.current = null;
+    controller?.abort();
+  }, []);
 
   const fetchReports = useCallback(async () => {
+    abortActiveRequest();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setLoading(true);
     setErrorText('');
     try {
@@ -129,6 +146,8 @@ const DashboardReportsPage = () => {
           page,
           perspective: 'executive',
           filters: {},
+        }, {
+          signal: controller.signal,
         }))
       );
 
@@ -137,13 +156,35 @@ const DashboardReportsPage = () => {
         const payload = responses[index]?.data?.result || {};
         next[page] = Array.isArray(payload.widgets) ? payload.widgets : [];
       });
+      if (!mountedRef.current || requestControllerRef.current !== controller) {
+        return;
+      }
       setWidgetsByPage(next);
     } catch (error) {
+      if (isRequestCanceled(error)) {
+        return;
+      }
+      if (!mountedRef.current || requestControllerRef.current !== controller) {
+        return;
+      }
       setErrorText(extractErrorMessage(error, '多维报表加载失败'));
     } finally {
-      setLoading(false);
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+        if (mountedRef.current) {
+          setLoading(false);
+        }
+      }
     }
-  }, []);
+  }, [abortActiveRequest]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortActiveRequest();
+    };
+  }, [abortActiveRequest]);
 
   useEffect(() => {
     fetchReports();

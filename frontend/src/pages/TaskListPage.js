@@ -48,10 +48,18 @@ const parseErrorMessage = (error, fallback) => {
   return responseData?.message || responseData?.detail || fallback;
 };
 
+const isRequestCanceled = (error) => (
+  error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+  || error?.name === 'AbortError'
+);
+
 const TaskListPage = ({ defaultTab = 'ongoing' }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const intervalRef = useRef(null);
+  const requestControllerRef = useRef(null);
+  const mountedRef = useRef(false);
   const resolvedTab = defaultTab === 'completed' ? 'completed' : 'ongoing';
 
   const { activeRole, isAdmin, isManager, isExpert, isViewer } = usePermission();
@@ -81,7 +89,16 @@ const TaskListPage = ({ defaultTab = 'ongoing' }) => {
     return '';
   }, [activeRole]);
 
+  const abortActiveRequest = useCallback(() => {
+    const controller = requestControllerRef.current;
+    requestControllerRef.current = null;
+    controller?.abort();
+  }, []);
+
   const fetchTaskGroups = useCallback(async () => {
+    abortActiveRequest();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     try {
       setLoading(true);
 
@@ -99,7 +116,13 @@ const TaskListPage = ({ defaultTab = 'ongoing' }) => {
         params.end_at = toIsoEndOfDay(dateRange[1]);
       }
 
-      const response = await axios.get('/api/v1/tasks', { params });
+      const response = await axios.get('/api/v1/tasks', {
+        params,
+        signal: controller.signal,
+      });
+      if (!mountedRef.current || requestControllerRef.current !== controller) {
+        return false;
+      }
       const groups = response.data?.task_groups || {};
       setErrorMessage('');
       setTaskGroups({
@@ -109,21 +132,49 @@ const TaskListPage = ({ defaultTab = 'ongoing' }) => {
       });
       return true;
     } catch (error) {
+      if (isRequestCanceled(error)) {
+        return false;
+      }
+      if (!mountedRef.current || requestControllerRef.current !== controller) {
+        return false;
+      }
       setErrorMessage(parseErrorMessage(error, '获取任务列表失败'));
       return false;
     } finally {
-      setLoading(false);
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+        if (mountedRef.current) {
+          setLoading(false);
+        }
+      }
     }
-  }, [dateRange, page, pageSize, scope]);
+  }, [abortActiveRequest, dateRange, page, pageSize, scope]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortActiveRequest();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [abortActiveRequest]);
 
   useEffect(() => {
     fetchTaskGroups();
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     if (autoRefresh) {
       intervalRef.current = setInterval(fetchTaskGroups, 3000);
     }
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
     };
   }, [autoRefresh, fetchTaskGroups]);

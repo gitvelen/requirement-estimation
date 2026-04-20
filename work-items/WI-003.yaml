@@ -1,0 +1,72 @@
+wi_id: WI-003
+goal: "展示待评估系统结果，并对具体系统任务施加编辑期单系统锁定"
+scope:
+  - "在详情页展示待评估系统结果"
+  - "在编辑页按 target system 元数据隐藏或禁用系统级操作"
+  - "在后端系统级编辑接口上阻断锁定任务的新增/重命名/删除/重新拆分"
+out_of_scope:
+  - "不把待评估系统展示扩展到任务列表"
+  - "不移除功能点级编辑和任务级重估能力"
+allowed_paths:
+  - frontend/src/pages/ReportPage.js
+  - frontend/src/pages/EditPage.js
+  - frontend/src/__tests__/reportPage.targetSystem.test.js
+  - frontend/src/__tests__/editPage.targetSystemLock.test.js
+  - backend/api/routes.py
+  - backend/tests/test_target_system_locking.py
+  - testing.md
+  - meta.yaml
+forbidden_paths:
+  - versions/**
+  - spec.md
+  - design.md
+  - work-items/**
+  - contracts/**
+  - deployment.md
+
+branch_execution:
+  execution_group: null
+  execution_branch: null
+  owned_paths: []
+  shared_paths: []
+  shared_file_owner: parent-feature
+  merge_order: 3
+  conflict_policy: stop and update design before expanding shared scope
+
+phase_scope: Implementation
+
+input_refs:
+  - docs/inputs/2026-04-19-target-system-scope.md#visibility
+  - docs/inputs/2026-04-19-target-system-scope.md#edit-constraints
+requirement_refs:
+  - REQ-002
+  - REQ-005
+acceptance_refs:
+  - ACC-002
+  - ACC-005
+verification_refs:
+  - VO-002
+  - VO-005
+derived_from: design.md#work-item-derivation
+dependency_refs:
+  - WI-001
+  - WI-002
+dependency_type: strong
+contract_refs: []
+
+evidence_refs: []
+
+verification_profile: focused
+required_verification:
+  - "详情页测试覆盖具体系统与 unlimited 两种待评估系统展示"
+  - "锁定测试覆盖系统级操作入口隐藏和后端接口拒绝，同时保留功能点级编辑"
+
+stop_conditions:
+  - "如果锁定策略需要禁止功能点级编辑或任务级重估"
+  - "如果系统级 scope-change 操作面不止当前四类接口"
+reopen_triggers:
+  - "详情页展示需求扩展到任务列表或其他看板"
+  - "锁定任务仍需支持改选另一个具体系统"
+hard_constraints:
+  - "具体系统任务的系统级新增、重命名、删除、重新拆分必须全部被阻断"
+  - "功能点级增删改和随之触发的重估能力必须保留"

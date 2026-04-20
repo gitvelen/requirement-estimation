@@ -29,6 +29,8 @@ const EditPage = () => {
   const [editingFeature, setEditingFeature] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
   const [aiSystemAnalysis, setAiSystemAnalysis] = useState(null);
+  const [targetSystemMode, setTargetSystemMode] = useState('unlimited');
+  const [targetSystemDisplay, setTargetSystemDisplay] = useState('不限');
   const [addSystemVisible, setAddSystemVisible] = useState(false);
   const [addingSystem, setAddingSystem] = useState(false);
   const [mainSystemNames, setMainSystemNames] = useState([]);
@@ -49,12 +51,27 @@ const EditPage = () => {
     try {
       setLoading(true);
       const response = await axios.get(`/api/v1/requirement/result/${taskId}`);
-      const { systems_data, modifications, confirmed, ai_system_analysis } = response.data.data;
+      const {
+        systems_data,
+        modifications,
+        confirmed,
+        ai_system_analysis,
+        target_system_mode,
+        target_system_name,
+        target_system_display,
+      } = response.data.data;
 
       setSystemsData(systems_data);
       setModifications(modifications || []);
       setConfirmed(confirmed);
       setAiSystemAnalysis(ai_system_analysis || null);
+      const normalizedTargetMode = String(target_system_mode || 'unlimited').trim().toLowerCase() || 'unlimited';
+      setTargetSystemMode(normalizedTargetMode);
+      setTargetSystemDisplay(
+        target_system_display
+        || (normalizedTargetMode === 'specific' ? (target_system_name || '') : '不限')
+        || '不限'
+      );
 
       // 设置默认选中系统（优先：preferredSystem > 原先选中 > 第一个系统）
       const systemNames = Object.keys(systems_data);
@@ -135,6 +152,16 @@ const EditPage = () => {
   const hasSubstantiveChanges = (changes) => (
     Object.keys(changes || {}).some((field) => isSubstantiveField(field))
   );
+
+  const singleSystemLocked = targetSystemMode === 'specific';
+
+  const blockSystemScopeMutation = useCallback(() => {
+    if (!singleSystemLocked) {
+      return false;
+    }
+    message.warning('具体系统任务已锁定，不允许修改系统范围');
+    return true;
+  }, [singleSystemLocked]);
 
   const triggerReevaluate = useCallback(async () => {
     await axios.post(`/api/v1/tasks/${taskId}/reevaluate`, { force: false });
@@ -388,6 +415,9 @@ const EditPage = () => {
   };
 
   const handleRenameSystem = async () => {
+    if (blockSystemScopeMutation()) {
+      return;
+    }
     const nextName = newSystemName.trim();
     if (!nextName) {
       message.warning('请输入新的系统名称');
@@ -417,6 +447,9 @@ const EditPage = () => {
   };
 
   const handleDeleteSystem = async () => {
+    if (blockSystemScopeMutation()) {
+      return;
+    }
     try {
       setSaving(true);
       await axios.delete(`/api/v1/requirement/systems/${taskId}/${encodeURIComponent(currentSystem)}?confirm=true`);
@@ -432,6 +465,9 @@ const EditPage = () => {
   };
 
   const handleRebreakdownSystem = async () => {
+    if (blockSystemScopeMutation()) {
+      return;
+    }
     if (!currentSystem) {
       message.warning('请先选择系统');
       return;
@@ -459,6 +495,9 @@ const EditPage = () => {
   };
 
   const submitAddSystem = async (payload) => {
+    if (blockSystemScopeMutation()) {
+      return;
+    }
     try {
       const name = (payload?.name || '').trim();
       if (!name) {
@@ -507,7 +546,7 @@ const EditPage = () => {
   };
 
   const openRebreakdownConfirm = () => {
-    if (confirmed || !currentSystem) {
+    if (confirmed || !currentSystem || singleSystemLocked) {
       return;
     }
     Modal.confirm({
@@ -520,7 +559,7 @@ const EditPage = () => {
   };
 
   const openDeleteSystemConfirm = () => {
-    if (confirmed || !currentSystem) {
+    if (confirmed || !currentSystem || singleSystemLocked) {
       return;
     }
     Modal.confirm({
@@ -694,17 +733,19 @@ const EditPage = () => {
           >
             <Button>列设置</Button>
           </Popover>
-          <Dropdown
-            menu={{
-              items: systemActionMenuItems,
-              onClick: handleSystemActionMenuClick,
-            }}
-            trigger={['click']}
-          >
-            <Button>
-              系统操作 <DownOutlined />
-            </Button>
-          </Dropdown>
+          {!singleSystemLocked && (
+            <Dropdown
+              menu={{
+                items: systemActionMenuItems,
+                onClick: handleSystemActionMenuClick,
+              }}
+              trigger={['click']}
+            >
+              <Button>
+                系统操作 <DownOutlined />
+              </Button>
+            </Dropdown>
+          )}
           <Button
             icon={<HistoryOutlined />}
             onClick={() => setHistoryVisible(true)}
@@ -730,6 +771,17 @@ const EditPage = () => {
           )}
         </Space>
       </div>
+
+      {singleSystemLocked && (
+        <div style={{ marginBottom: 16 }}>
+          <Space wrap>
+            <Tag color="blue">单系统锁定</Tag>
+            <Text type="secondary">
+              {`待评估系统：${targetSystemDisplay || '-'}。系统级新增、重命名、删除和重新拆分已禁用；功能点级编辑和重估仍可使用。`}
+            </Text>
+          </Space>
+        </div>
+      )}
 
       {/* 系统Tab页 */}
       <Tabs
