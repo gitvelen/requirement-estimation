@@ -6,6 +6,7 @@ Agent编排器
 import logging
 import time
 import concurrent.futures
+from datetime import datetime
 from typing import Dict, List, Any, Callable, Optional
 from langgraph.graph import StateGraph, END
 from backend.agent.system_identification_agent import get_system_identification_agent
@@ -70,6 +71,76 @@ class AgentOrchestrator:
             except Exception as e:
                 logger.warning(f"进度回调失败: {e}")
 
+    def _resolve_target_system_selection(self, requirement_data: Dict[str, Any]) -> tuple[str, str]:
+        selection_mode = str(requirement_data.get("target_system_mode") or "unlimited").strip().lower()
+        if selection_mode not in {"specific", "unlimited"}:
+            selection_mode = "unlimited"
+        target_system_name = str(requirement_data.get("target_system_name") or "").strip()
+        return selection_mode, target_system_name
+
+    def _build_specific_system_payload(self, target_system_name: str) -> List[Dict[str, Any]]:
+        profile_service = get_system_profile_service()
+        system_id = ""
+        try:
+            profile = profile_service.get_profile(target_system_name)
+            if isinstance(profile, dict):
+                system_id = str(profile.get("system_id") or "").strip()
+        except Exception as exc:
+            logger.debug("[待评估系统] 读取系统画像失败（忽略）: %s", exc)
+
+        return [
+            {
+                "name": target_system_name,
+                "type": "主系统",
+                "is_standard": True,
+                "system_id": system_id,
+            }
+        ]
+
+    def _build_specific_ai_system_analysis(
+        self,
+        systems: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        selected_systems: List[Dict[str, Any]] = []
+        missing_profiles: List[str] = []
+
+        for system in systems or []:
+            if not isinstance(system, dict):
+                continue
+            system_name = str(system.get("name") or "").strip()
+            if not system_name:
+                continue
+            system_id = str(system.get("system_id") or "").strip()
+            if not system_id:
+                missing_profiles.append(system_name)
+            selected_systems.append(
+                {
+                    "name": system_name,
+                    "type": system.get("type") or "主系统",
+                    "description": "创建时已指定待评估系统",
+                    "confidence": "高",
+                    "reasons": ["项目经理在创建阶段明确选择该待评估系统"],
+                    "kb_hits": [],
+                    "system_id": system_id,
+                }
+            )
+
+        return {
+            "generated_at": datetime.now().isoformat(),
+            "knowledge_enabled": bool(self.knowledge_enabled),
+            "candidate_systems": [],
+            "selected_systems": selected_systems,
+            "maybe_systems": [],
+            "questions": [],
+            "missing_system_profiles": missing_profiles,
+            "final_verdict": "skipped",
+            "reason_summary": "已按待评估系统跳过自动系统识别",
+            "matched_aliases": [],
+            "context_degraded": False,
+            "degraded_reasons": [],
+            "result_status": "success",
+        }
+
     def process_requirement(
         self,
         task_id: str,
@@ -93,6 +164,7 @@ class AgentOrchestrator:
         """
         start_time = time.time()
         requirement_name = requirement_data.get("requirement_name", "未知需求")
+        selection_mode, target_system_name = self._resolve_target_system_selection(requirement_data)
         identification_input_parts: List[str] = []
         for value in (
             requirement_name,
@@ -109,6 +181,7 @@ class AgentOrchestrator:
             logger.info("=" * 80)
             logger.info(f"[任务开始] 任务ID: {task_id}")
             logger.info(f"[需求信息] 名称: {requirement_name}")
+            logger.info(f"[评估范围] selection_mode={selection_mode}, target_system={target_system_name or '不限'}")
             logger.info("=" * 80)
 
             # 步骤1：系统识别
@@ -117,43 +190,65 @@ class AgentOrchestrator:
             logger.info("[步骤 1/4] 系统识别")
             logger.info("-" * 80)
 
-            self._update_progress(progress_callback, 20, "正在识别系统...")
-
-            # 获取系统识别Agent（注入knowledge_service）
-            sys_agent = get_system_identification_agent(self.knowledge_service)
             identification_result = None
-            if settings.ENABLE_V27_RUNTIME:
-                identification_result = sys_agent.identify_with_verdict(
-                    identification_content,
-                    task_id=task_id,
-                )
-                systems = identification_result.get("selected_systems") or []
-                if identification_result.get("final_verdict") != "matched":
-                    raise ValueError(
-                        f"系统识别结果为{identification_result.get('final_verdict')}，"
-                        f"{identification_result.get('reason_summary') or '无法继续自动拆分'}"
-                    )
-            else:
-                systems = sys_agent.identify(
-                    identification_content,
-                    task_id=task_id
-                )
-
-                # 验证和标准化系统名称
-                logger.info("[处理中] 验证和标准化系统名称...")
-                systems = sys_agent.validate_and_filter_systems(systems)
-
-                if not systems:
-                    raise ValueError("未识别到任何系统")
-
-                sys_agent.validate_systems(systems)
-
-            # 【新增】构建系统校准分析（供编辑页展示与纠偏：候选系统/置信度/疑问清单）
             ai_system_analysis = None
-            try:
-                ai_system_analysis = sys_agent.build_ai_system_analysis(systems)
-            except Exception as e:
-                logger.debug(f"[系统识别] 构建系统校准分析失败（忽略）: {e}")
+            sys_agent = None
+
+            if selection_mode == "specific":
+                if not target_system_name:
+                    raise ValueError("具体系统模式缺少待评估系统名称")
+
+                self._update_progress(progress_callback, 20, "正在锁定待评估系统...")
+                systems = self._build_specific_system_payload(target_system_name)
+                ai_system_analysis = self._build_specific_ai_system_analysis(systems)
+                identification_result = {
+                    "final_verdict": "skipped",
+                    "reason_summary": "已按待评估系统跳过自动系统识别",
+                    "selected_systems": systems,
+                    "candidate_systems": [],
+                    "maybe_systems": [],
+                    "questions": [],
+                    "matched_aliases": [],
+                    "context_degraded": False,
+                    "degraded_reasons": [],
+                    "result_status": "success",
+                }
+            else:
+                self._update_progress(progress_callback, 20, "正在识别系统...")
+
+                # 获取系统识别Agent（注入knowledge_service）
+                sys_agent = get_system_identification_agent(self.knowledge_service)
+                if settings.ENABLE_V27_RUNTIME:
+                    identification_result = sys_agent.identify_with_verdict(
+                        identification_content,
+                        task_id=task_id,
+                    )
+                    systems = identification_result.get("selected_systems") or []
+                    if identification_result.get("final_verdict") != "matched":
+                        raise ValueError(
+                            f"系统识别结果为{identification_result.get('final_verdict')}，"
+                            f"{identification_result.get('reason_summary') or '无法继续自动拆分'}"
+                        )
+                else:
+                    systems = sys_agent.identify(
+                        identification_content,
+                        task_id=task_id
+                    )
+
+                    # 验证和标准化系统名称
+                    logger.info("[处理中] 验证和标准化系统名称...")
+                    systems = sys_agent.validate_and_filter_systems(systems)
+
+                    if not systems:
+                        raise ValueError("未识别到任何系统")
+
+                    sys_agent.validate_systems(systems)
+
+                # 【新增】构建系统校准分析（供编辑页展示与纠偏：候选系统/置信度/疑问清单）
+                try:
+                    ai_system_analysis = sys_agent.build_ai_system_analysis(systems)
+                except Exception as e:
+                    logger.debug(f"[系统识别] 构建系统校准分析失败（忽略）: {e}")
 
             # 统计系统信息
             system_names = [s["name"] for s in systems]
@@ -171,6 +266,8 @@ class AgentOrchestrator:
                 "system_count": len(systems),
                 "timestamp": time.time(),
                 "final_verdict": (identification_result or {}).get("final_verdict") if identification_result else "matched",
+                "selection_mode": selection_mode,
+                "reason_summary": (identification_result or {}).get("reason_summary") or "",
                 "context_degraded": bool((ai_system_analysis or {}).get("context_degraded")),
                 "result_status": (ai_system_analysis or {}).get("result_status") or "success",
             }
@@ -200,7 +297,7 @@ class AgentOrchestrator:
 
                 # 获取功能拆分Agent（注入knowledge_service）
                 feature_agent = get_feature_breakdown_agent(self.knowledge_service)
-                if settings.ENABLE_V27_RUNTIME:
+                if settings.ENABLE_V27_RUNTIME or selection_mode == "specific":
                     feature_result = feature_agent.breakdown_with_context(
                         requirement_data.get("requirement_content", ""),
                         system_name,
@@ -224,9 +321,13 @@ class AgentOrchestrator:
 
                 # 校验功能点中的系统名称
                 logger.info(f"  └─ 校验功能点系统名称...")
-                features = sys_agent.validate_system_names_in_features(
-                    system_name, features
-                )
+                for feature in features:
+                    if isinstance(feature, dict):
+                        feature["系统"] = system_name
+                if sys_agent is not None:
+                    features = sys_agent.validate_system_names_in_features(
+                        system_name, features
+                    )
 
                 logger.info(f"  └─ 完成: {len(features)} 个功能点")
                 return {
@@ -267,6 +368,9 @@ class AgentOrchestrator:
                     except Exception as e:
                         logger.error(f"处理系统时出错: {e}", exc_info=True)
                         raise
+
+            if selection_mode == "specific" and total_features == 0:
+                raise ValueError(f"待评估系统【{target_system_name}】未拆分出相关功能点")
 
             step_time = time.time() - step_start
             logger.info(f"[完成] 共拆分 {total_features} 个功能点")

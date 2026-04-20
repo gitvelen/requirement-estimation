@@ -555,6 +555,7 @@ const ReportPage = () => {
           <Descriptions.Item label="任务状态">{renderStatus(task.status)}</Descriptions.Item>
           <Descriptions.Item label="创建时间">{formatDateTime(task.createdAt)}</Descriptions.Item>
           <Descriptions.Item label="提交人">{task.creatorName || '-'}</Descriptions.Item>
+          <Descriptions.Item label="待评估系统">{task.targetSystemDisplay || task.targetSystemName || '不限'}</Descriptions.Item>
           <Descriptions.Item label="系统名称">{(task.systems || []).join('、') || '-'}</Descriptions.Item>
           <Descriptions.Item label="功能点数量">{task.featureCount ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="专家评估状态（已评/待评/总数）">{expertProgress}</Descriptions.Item>

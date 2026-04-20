@@ -25,8 +25,14 @@ services:
       - PYTHONUNBUFFERED=1
       - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
+    networks:
+      - app-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+networks:
+  app-network:
+    driver: bridge

@@ -103,6 +103,20 @@ echo ""
 echo "环境变量配置："
 grep -E "^(KNOWLEDGE_|DEBUG|PORT|HOST|ALLOWED_)" .env.backend || true
 echo "DASHSCOPE_API_KEY=$(grep DASHSCOPE_API_KEY .env.backend | cut -d= -f1 | cut -c1-20)..."
+
+api_base="$(grep '^DASHSCOPE_API_BASE=' .env.backend | tail -n 1 | cut -d= -f2- | tr -d '\r')"
+api_key="$(grep '^DASHSCOPE_API_KEY=' .env.backend | tail -n 1 | cut -d= -f2- | tr -d '\r')"
+
+if echo "$api_base" | grep -q "dashscope.aliyuncs.com"; then
+    case "$api_key" in
+        ""|not-needed|your_dashscope_api_key_here)
+            echo ""
+            echo "错误：当前 .env.backend 使用公网 DashScope，DASHSCOPE_API_KEY 不能为占位值。"
+            echo "请在 .env.backend 中配置真实 key 后再继续部署。"
+            exit 1
+            ;;
+    esac
+fi
 EOF
 
 print_warning "请确认已在后端服务器上正确配置 .env.backend 文件"

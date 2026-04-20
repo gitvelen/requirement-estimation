@@ -146,6 +146,54 @@ def test_identify_with_verdict_marks_ambiguous_when_llm_keeps_maybe_systems(monk
     assert records["items"][0]["payload"]["final_verdict"] == "ambiguous"
 
 
+def test_identify_with_verdict_keeps_matched_when_maybe_systems_are_only_speculative(monkeypatch):
+    system_routes._write_systems(
+        [
+            {"id": "SYS-001", "name": "贷款核算", "abbreviation": "LNC", "status": "运行中", "extra": {}},
+            {"id": "SYS-002", "name": "移动信贷", "abbreviation": "MOB", "status": "运行中", "extra": {}},
+            {"id": "SYS-003", "name": "客户关系管理", "abbreviation": "CRM", "status": "运行中", "extra": {}},
+        ]
+    )
+
+    monkeypatch.setattr(llm_client, "chat_with_system_prompt", lambda **kwargs: "{}")
+    monkeypatch.setattr(
+        llm_client,
+        "extract_json",
+        lambda response: {
+            "systems": [
+                {
+                    "name": "贷款核算",
+                    "type": "主系统",
+                    "description": "账务处理",
+                    "confidence": "高",
+                    "reasons": ["命中核算逻辑"],
+                }
+            ],
+            "maybe_systems": [
+                {
+                    "name": "移动信贷",
+                    "confidence": "低",
+                    "reason": "需求中未明确提及贷前或贷中业务，但可能涉及移动信贷对接，需进一步确认。",
+                },
+                {
+                    "name": "客户关系管理",
+                    "confidence": "低",
+                    "reason": "需求中未提及客户营销链路，但可能涉及客户关联校验，需进一步确认。",
+                },
+            ],
+            "questions": ["是否还涉及移动信贷或客户营销联动？"],
+        },
+    )
+
+    agent = SystemIdentificationAgent(knowledge_service=None)
+    monkeypatch.setattr(agent.direct_resolver, "resolve", lambda requirement_content: None)
+    result = agent.identify_with_verdict("自营免息券按金额优惠优化，核算需要调整逻辑", task_id="task_speculative_maybe")
+
+    assert result["final_verdict"] == "matched"
+    assert [item["name"] for item in result["selected_systems"]] == ["贷款核算"]
+    assert [item["name"] for item in result["maybe_systems"]] == ["移动信贷", "客户关系管理"]
+
+
 def test_identify_with_verdict_marks_unknown_when_nothing_is_selected(monkeypatch):
     system_routes._write_systems(
         [
@@ -305,4 +353,62 @@ def test_identify_with_verdict_uses_budgeted_llm_timeout(monkeypatch):
 
     assert result["final_verdict"] == "matched"
     assert captured["timeout"] == 7
+    assert captured["retry_times"] == 1
+
+
+def test_identify_with_verdict_raises_timeout_floor_when_profile_context_present(monkeypatch):
+    system_routes._write_systems(
+        [
+            {"id": "SYS-001", "name": "核心账务", "abbreviation": "HOP", "status": "运行中", "extra": {}},
+        ]
+    )
+
+    monkeypatch.setattr(settings, "PROFILE_IMPORT_LLM_TIMEOUT", 7)
+    monkeypatch.setattr(settings, "PROFILE_IMPORT_LLM_RETRY_TIMES", 1)
+
+    captured = {}
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_system_prompt",
+        lambda **kwargs: captured.update(kwargs) or "{}",
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "extract_json",
+        lambda response: {
+            "systems": [
+                {
+                    "name": "核心账务",
+                    "type": "主系统",
+                    "description": "账务处理",
+                    "confidence": "高",
+                    "reasons": ["画像上下文充足"],
+                }
+            ],
+            "maybe_systems": [],
+            "questions": [],
+        },
+    )
+
+    agent = SystemIdentificationAgent(knowledge_service=None)
+    monkeypatch.setattr(
+        agent.profile_service,
+        "search_relevant_profile_contexts",
+        lambda requirement_content, limit=8: [{"system_name": "核心账务"}],
+    )
+    monkeypatch.setattr(
+        agent,
+        "_build_candidate_systems",
+        lambda system_profiles, limit=8: [{"name": "核心账务", "score": 0.9}],
+    )
+    monkeypatch.setattr(
+        agent,
+        "_build_knowledge_context",
+        lambda system_profiles: "核心账务画像摘要",
+    )
+
+    result = agent.identify_with_verdict("新增开户校验并同步账务处理", task_id="task_budget_with_context")
+
+    assert result["final_verdict"] == "matched"
+    assert captured["timeout"] == 15
     assert captured["retry_times"] == 1

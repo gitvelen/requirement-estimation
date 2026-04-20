@@ -1,0 +1,70 @@
+wi_id: WI-001
+goal: "实现待评估系统的创建入口、候选项解析与任务元数据持久化"
+scope:
+  - "在创建页新增待评估系统单选并提交 target system 参数"
+  - "在后端创建接口校验 specific/unlimited 选择并持久化任务字段"
+  - "在任务详情与编辑结果基础响应中回传 target system 元数据"
+out_of_scope:
+  - "不改 AI 编排分支和功能点拆分逻辑"
+  - "不实现编辑期系统级锁定"
+allowed_paths:
+  - frontend/src/pages/UploadPage.js
+  - frontend/src/utils/systemOwnership.js
+  - frontend/src/__tests__/uploadPage.targetSystem.test.js
+  - backend/api/routes.py
+  - backend/api/system_routes.py
+  - testing.md
+  - meta.yaml
+forbidden_paths:
+  - versions/**
+  - spec.md
+  - design.md
+  - work-items/**
+  - contracts/**
+  - deployment.md
+
+branch_execution:
+  execution_group: null
+  execution_branch: null
+  owned_paths: []
+  shared_paths: []
+  shared_file_owner: parent-feature
+  merge_order: 1
+  conflict_policy: stop and update design before expanding shared scope
+
+phase_scope: Implementation
+
+input_refs:
+  - docs/inputs/2026-04-19-target-system-scope.md#intent
+  - docs/inputs/2026-04-19-target-system-scope.md#system-scope-rule
+  - docs/inputs/2026-04-19-target-system-scope.md#empty-owned-systems
+requirement_refs:
+  - REQ-001
+  - REQ-002
+acceptance_refs:
+  - ACC-001
+  - ACC-002
+verification_refs:
+  - VO-001
+  - VO-002
+derived_from: design.md#work-item-derivation
+dependency_refs: []
+dependency_type: none
+contract_refs: []
+
+evidence_refs: []
+
+verification_profile: focused
+required_verification:
+  - "创建页渲染测试覆盖字段顺序、候选项顺序和 only-不限 场景"
+  - "创建接口与详情/结果接口测试覆盖合法 specific、非法 specific 和持久化字段回传"
+
+stop_conditions:
+  - "如果候选项来源无法仅通过现有系统清单和主责/B角解析确定"
+  - "如果实现需要修改任务列表展示范围"
+reopen_triggers:
+  - "task 元数据字段命名与 design.md 不一致"
+  - "历史任务兼容默认值不是 unlimited"
+hard_constraints:
+  - "服务端必须重新校验 specific 系统归属，不能只信任前端"
+  - "无相关系统时创建页必须仍允许选择并提交 unlimited"

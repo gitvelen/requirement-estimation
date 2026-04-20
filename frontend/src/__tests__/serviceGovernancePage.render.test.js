@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { message } from 'antd';
 import ServiceGovernancePage from '../pages/ServiceGovernancePage';
@@ -67,6 +67,7 @@ describe('ServiceGovernancePage', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.useRealTimers();
     useAuth.mockImplementation(() => ({
       user: { username: 'admin', roles: ['admin'] },
     }));
@@ -211,5 +212,67 @@ describe('ServiceGovernancePage', () => {
     await waitFor(() => {
       expect(message.error).toHaveBeenCalledWith('ESB文件缺少必填字段：system_id：未启用服务治理全局导入');
     });
+  });
+
+  it('stops metadata governance polling after unmount', async () => {
+    jest.useFakeTimers();
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/esb/metadata-governance/config') {
+        return Promise.resolve({
+          data: {
+            similarity_threshold: 0.8,
+            execution_time: 'now',
+            match_scope: 'new',
+          },
+        });
+      }
+      if (url === '/api/v1/esb/metadata-governance/jobs/latest') {
+        return Promise.resolve({
+          data: {
+            job_id: null,
+            status: null,
+          },
+        });
+      }
+      if (url === '/api/v1/esb/metadata-governance/jobs/job-001') {
+        return Promise.resolve({
+          data: {
+            status: 'running',
+          },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    axios.post.mockResolvedValueOnce({
+      data: {
+        scheduled: false,
+        job_id: 'job-001',
+      },
+    });
+
+    const { unmount } = renderAsAdmin('admin', 'esb');
+
+    fireEvent.click(await screen.findByRole('button', { name: '元数据治理' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/esb/metadata-governance/run',
+        {
+          similarity_threshold: 0.8,
+          execution_time: 'now',
+          match_scope: 'new',
+        },
+      );
+    });
+
+    const callCountBeforeUnmount = axios.get.mock.calls.length;
+    unmount();
+
+    await act(async () => {
+      jest.advanceTimersByTime(9000);
+      await Promise.resolve();
+    });
+
+    expect(axios.get.mock.calls.length).toBe(callCountBeforeUnmount);
   });
 });

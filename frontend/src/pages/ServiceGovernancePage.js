@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, InputNumber, Select, Space, Typography, message } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import axios from 'axios';
@@ -75,13 +75,57 @@ const MetadataGovernanceToolbar = () => {
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null); // null | 'running' | 'completed' | 'failed'
+  const mountedRef = useRef(false);
+  const pollIntervalRef = useRef(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback((currentJobId) => {
+    stopPolling();
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const statusResp = await axios.get(
+          `/api/v1/esb/metadata-governance/jobs/${currentJobId}`,
+        );
+        if (!mountedRef.current) {
+          stopPolling();
+          return;
+        }
+
+        const { status, error } = statusResp.data;
+        if (status === 'completed') {
+          stopPolling();
+          setJobStatus('completed');
+          setRunning(false);
+          message.success('元数据治理执行完成，点击下载按钮获取结果');
+        } else if (status === 'failed') {
+          stopPolling();
+          setJobStatus('failed');
+          setRunning(false);
+          message.error(error || '元数据治理执行失败');
+        }
+      } catch (pollErr) {
+        stopPolling();
+        if (!mountedRef.current) {
+          return;
+        }
+        setJobStatus(null);
+        setRunning(false);
+      }
+    }, 3000);
+  }, [stopPolling]);
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
     const loadConfig = async () => {
       try {
         const response = await axios.get('/api/v1/esb/metadata-governance/config');
-        if (!mounted) {
+        if (!mountedRef.current) {
           return;
         }
         setThreshold(Number(response.data?.similarity_threshold ?? 0.8));
@@ -94,7 +138,7 @@ const MetadataGovernanceToolbar = () => {
     const loadLatestJob = async () => {
       try {
         const response = await axios.get('/api/v1/esb/metadata-governance/jobs/latest');
-        if (!mounted || !response.data?.job_id) {
+        if (!mountedRef.current || !response.data?.job_id) {
           return;
         }
         const { job_id, status } = response.data;
@@ -106,34 +150,7 @@ const MetadataGovernanceToolbar = () => {
         } else if (status === 'running' || status === 'pending') {
           setJobStatus('running');
           setRunning(true);
-          // Resume polling for in-progress job
-          const poll = setInterval(async () => {
-            try {
-              const statusResp = await axios.get(
-                `/api/v1/esb/metadata-governance/jobs/${job_id}`,
-              );
-              if (!mounted) {
-                clearInterval(poll);
-                return;
-              }
-              const { status: s, error } = statusResp.data;
-              if (s === 'completed') {
-                clearInterval(poll);
-                setJobStatus('completed');
-                setRunning(false);
-                message.success('元数据治理执行完成，点击下载按钮获取结果');
-              } else if (s === 'failed') {
-                clearInterval(poll);
-                setJobStatus('failed');
-                setRunning(false);
-                message.error(error || '元数据治理执行失败');
-              }
-            } catch (pollErr) {
-              clearInterval(poll);
-              setJobStatus(null);
-              setRunning(false);
-            }
-          }, 3000);
+          startPolling(job_id);
         }
       } catch (error) {
         // 没有历史任务时静默忽略
@@ -142,12 +159,14 @@ const MetadataGovernanceToolbar = () => {
     loadConfig();
     loadLatestJob();
     return () => {
-      mounted = false;
+      mountedRef.current = false;
+      stopPolling();
     };
-  }, []);
+  }, [startPolling, stopPolling]);
 
-  const handleRun = async () => {
+  const handleRun = useCallback(async () => {
     try {
+      stopPolling();
       setRunning(true);
       setJobStatus(null);
       setJobId(null);
@@ -160,6 +179,10 @@ const MetadataGovernanceToolbar = () => {
         },
       );
 
+      if (!mountedRef.current) {
+        return;
+      }
+
       if (response.data.scheduled) {
         message.success('元数据治理配置已保存，并已启用每天23:00定时执行');
         setRunning(false);
@@ -171,37 +194,16 @@ const MetadataGovernanceToolbar = () => {
       setJobId(newJobId);
       setJobStatus('running');
       message.info('元数据治理任务已提交，正在后台执行...');
-
-      const poll = setInterval(async () => {
-        try {
-          const statusResp = await axios.get(
-            `/api/v1/esb/metadata-governance/jobs/${newJobId}`,
-          );
-          const { status, error } = statusResp.data;
-
-          if (status === 'completed') {
-            clearInterval(poll);
-            setJobStatus('completed');
-            setRunning(false);
-            message.success('元数据治理执行完成，点击下载按钮获取结果');
-          } else if (status === 'failed') {
-            clearInterval(poll);
-            setJobStatus('failed');
-            setRunning(false);
-            message.error(error || '元数据治理执行失败');
-          }
-        } catch (pollErr) {
-          clearInterval(poll);
-          setJobStatus(null);
-          setRunning(false);
-          message.error(await getErrorMessage(pollErr, '查询任务状态失败'));
-        }
-      }, 3000);
+      startPolling(newJobId);
     } catch (error) {
+      stopPolling();
+      if (!mountedRef.current) {
+        return;
+      }
       message.error(await getErrorMessage(error, '元数据治理执行失败'));
       setRunning(false);
     }
-  };
+  }, [executionTime, matchScope, startPolling, stopPolling, threshold]);
 
   const handleDownload = async () => {
     try {

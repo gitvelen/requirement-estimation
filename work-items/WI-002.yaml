@@ -1,0 +1,68 @@
+wi_id: WI-002
+goal: "实现具体系统模式的编排分支，并保持 unlimited 模式兼容"
+scope:
+  - "在后台任务处理和 agent orchestrator 中增加 specific/unlimited 分支"
+  - "让具体系统模式跳过系统识别，直接对指定系统做拆分和估算"
+  - "在零功能点场景返回明确失败，不产出空结果"
+out_of_scope:
+  - "不改系统识别算法本身"
+  - "不新增前端交互或详情页展示字段"
+allowed_paths:
+  - backend/agent/agent_orchestrator.py
+  - backend/api/routes.py
+  - backend/tests/test_target_system_orchestrator.py
+  - testing.md
+  - meta.yaml
+forbidden_paths:
+  - versions/**
+  - spec.md
+  - design.md
+  - work-items/**
+  - contracts/**
+  - deployment.md
+
+branch_execution:
+  execution_group: null
+  execution_branch: null
+  owned_paths: []
+  shared_paths: []
+  shared_file_owner: parent-feature
+  merge_order: 2
+  conflict_policy: stop and update design before expanding shared scope
+
+phase_scope: Implementation
+
+input_refs:
+  - docs/inputs/2026-04-19-target-system-scope.md#single-system-scope
+  - docs/inputs/2026-04-19-target-system-scope.md#no-match
+requirement_refs:
+  - REQ-003
+  - REQ-004
+acceptance_refs:
+  - ACC-003
+  - ACC-004
+verification_refs:
+  - VO-003
+  - VO-004
+derived_from: design.md#work-item-derivation
+dependency_refs:
+  - WI-001
+dependency_type: strong
+contract_refs: []
+
+evidence_refs: []
+
+verification_profile: focused
+required_verification:
+  - "编排测试覆盖 specific 模式跳过系统识别、单系统输出和零功能点失败"
+  - "回归测试覆盖 unlimited 模式仍先做系统识别并保留多系统结果"
+
+stop_conditions:
+  - "如果 specific 分支必须改动系统识别或功能拆分 agent 的算法语义"
+  - "如果 unlimited 兼容需要改变 REQ-004 约定的行为顺序"
+reopen_triggers:
+  - "单系统模式无法复用现有全文 requirement_content 和系统画像输入"
+  - "zero-feature 失败语义需要升级为非失败状态"
+hard_constraints:
+  - "specific 模式必须跳过系统识别，不能只是忽略其结果"
+  - "不限模式的编排顺序和多系统结果结构不能回归"

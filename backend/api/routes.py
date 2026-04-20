@@ -173,6 +173,8 @@ def _ensure_task_schema(task: Dict[str, Any]) -> None:
     task.setdefault("ai_status", task.get("status"))
     task.setdefault("requirement_content", task.get("requirement_content") or "")
     task.setdefault("ai_system_analysis", task.get("ai_system_analysis"))
+    task.setdefault("target_system_mode", "unlimited")
+    task.setdefault("target_system_name", "")
 
     if "systems_data" in task and "systems" not in task:
         task["systems"] = list(task["systems_data"].keys())
@@ -214,6 +216,66 @@ def _ensure_list(value: Any) -> List[str]:
         parts = re.split(r"[,\n;/，、]+", value)
         return [item.strip() for item in parts if item.strip()]
     return [str(value).strip()]
+
+
+def _list_manager_responsible_system_names(current_user: Optional[Dict[str, Any]]) -> List[str]:
+    result: List[str] = []
+    try:
+        systems = system_routes._read_systems()
+    except Exception:
+        systems = []
+
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        system_name = str(system.get("name") or "").strip()
+        if not system_name:
+            continue
+        ownership = system_routes.resolve_system_ownership(
+            current_user,
+            system_id=system.get("id"),
+            system_name=system_name,
+        )
+        if ownership.get("allowed_draft_write") and system_name not in result:
+            result.append(system_name)
+    return result
+
+
+def _normalize_target_system_selection(
+    target_system_mode: Optional[str],
+    target_system_name: Optional[str],
+    current_user: Optional[Dict[str, Any]],
+) -> Tuple[str, str]:
+    normalized_mode = str(target_system_mode or "").strip().lower()
+    normalized_name = str(target_system_name or "").strip()
+
+    if normalized_mode not in {"specific", "unlimited"}:
+        raise HTTPException(status_code=400, detail="待评估系统不能为空")
+
+    if normalized_mode == "unlimited":
+        return "unlimited", ""
+
+    allowed_system_names = _list_manager_responsible_system_names(current_user)
+    if normalized_name not in allowed_system_names:
+        raise HTTPException(status_code=400, detail="待评估系统不在当前项目经理可选范围内")
+    return "specific", normalized_name
+
+
+def _target_system_display(task: Dict[str, Any]) -> str:
+    mode = str(task.get("target_system_mode") or "unlimited").strip().lower()
+    if mode == "specific":
+        return str(task.get("target_system_name") or "").strip()
+    return "不限"
+
+
+def _is_single_system_locked(task: Optional[Dict[str, Any]]) -> bool:
+    mode = str((task or {}).get("target_system_mode") or "unlimited").strip().lower()
+    return mode == "specific"
+
+
+def _ensure_system_scope_mutation_allowed(task: Optional[Dict[str, Any]]) -> None:
+    if _is_single_system_locked(task):
+        raise HTTPException(status_code=409, detail="具体系统任务的系统范围已锁定，不允许修改系统范围")
 
 
 def _get_ai_estimate(feature: Dict[str, Any]) -> float:
@@ -1295,6 +1357,8 @@ def process_task_sync(task_id: str, file_path: str):
             requirement_name = parsed_requirement_name
 
         requirement_data["requirement_name"] = requirement_name
+        requirement_data["target_system_mode"] = str(task_snapshot.get("target_system_mode") or "unlimited").strip().lower() or "unlimited"
+        requirement_data["target_system_name"] = str(task_snapshot.get("target_system_name") or "").strip()
         logger.info(f"本次评估使用的需求名称: {requirement_name}")
 
         update_progress(15, "文档解析完成")
@@ -1795,7 +1859,10 @@ async def get_evaluation_result(task_id: str):
             "ai_system_analysis": task.get("ai_system_analysis"),
             "modifications": task.get("modifications", []),
             "confirmed": confirmed,
-            "workflow_status": task.get("workflow_status")
+            "workflow_status": task.get("workflow_status"),
+            "target_system_mode": task.get("target_system_mode"),
+            "target_system_name": task.get("target_system_name"),
+            "target_system_display": _target_system_display(task),
         }
     }
 
@@ -2048,6 +2115,7 @@ async def delete_system(task_id: str, system_name: str, confirm: bool = Query(Fa
                 raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
             if not confirm:
                 raise HTTPException(status_code=400, detail="实质性修改需要确认")
+            _ensure_system_scope_mutation_allowed(task)
 
             systems_data = task.get("systems_data", {})
             modifications = task.get("modifications", [])
@@ -2115,6 +2183,7 @@ async def rename_system(task_id: str, system_name: str, request: SystemRenameReq
                 raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
             if not request.confirm:
                 raise HTTPException(status_code=400, detail="实质性修改需要确认")
+            _ensure_system_scope_mutation_allowed(task)
 
             systems_data = task.get("systems_data", {})
             modifications = task.get("modifications", [])
@@ -2203,6 +2272,7 @@ async def add_system(task_id: str, request: AddSystemRequest):
                 raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
             if not request.confirm:
                 raise HTTPException(status_code=400, detail="实质性修改需要确认")
+            _ensure_system_scope_mutation_allowed(task)
 
             systems_data = task.get("systems_data", {})
             modifications = task.get("modifications", [])
@@ -2343,6 +2413,7 @@ async def rebreakdown_system(task_id: str, system_name: str, request: Rebreakdow
 
             if task.get("confirmed", False):
                 raise HTTPException(status_code=400, detail="该任务已确认，不能修改")
+            _ensure_system_scope_mutation_allowed(task)
 
             systems_data = task.get("systems_data", {})
             if normalized_system not in systems_data:
@@ -2637,6 +2708,8 @@ async def create_task_v2(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(""),
+    target_system_mode: Optional[str] = Form(None),
+    target_system_name: Optional[str] = Form(""),
     background_tasks: BackgroundTasks = None,
     current_user: Dict[str, Any] = Depends(require_roles(["manager"]))
 ):
@@ -2693,6 +2766,12 @@ async def create_task_v2(
             except Exception as e:
                 logger.warning(f"MIME类型检测失败: {e}，继续处理")
 
+        normalized_target_system_mode, normalized_target_system_name = _normalize_target_system_selection(
+            target_system_mode,
+            target_system_name,
+            current_user,
+        )
+
         task_id = str(uuid.uuid4())
         upload_dir = settings.UPLOAD_DIR
         os.makedirs(upload_dir, exist_ok=True)
@@ -2712,6 +2791,8 @@ async def create_task_v2(
             "creator_name": creator_name,
             "filename": safe_filename,
             "file_path": file_path,
+            "target_system_mode": normalized_target_system_mode,
+            "target_system_name": normalized_target_system_name,
             "status": "pending",
             "ai_status": "pending",
             "progress": 0,
@@ -4275,6 +4356,9 @@ async def get_task_detail_v2(
             "systems": task.get("systems", []),
             "featureCount": feature_count,
             "remark": task_remark,
+            "targetSystemMode": task.get("target_system_mode"),
+            "targetSystemName": task.get("target_system_name"),
+            "targetSystemDisplay": _target_system_display(task),
             "expertAssignments": assignments_payload,
             "evaluationProgress": {
                 "submitted": submitted,
