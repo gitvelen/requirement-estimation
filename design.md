@@ -26,42 +26,46 @@
 - spec_alignment_check:
   - spec_ref: REQ-001
     aligned: true
-    notes: 创建页新增必填单选，但不把该字段外溢到任务列表。
+    notes: 通用附件提取器负责识别并抽取 DOCX/XLSX/PPTX/PDF 附件正文。
+  - spec_ref: REQ-002
+    aligned: true
+    notes: 递归深度、附件大小、附件数量、循环检测都在解析层集中控制。
   - spec_ref: REQ-003
     aligned: true
-    notes: 具体系统模式通过 orchestrator 分支跳过系统识别，仍保留全文需求和系统画像上下文。
+    notes: 主文档入口继续输出单一 `requirement_content`，附件正文在解析阶段合并。
+  - spec_ref: REQ-004
+    aligned: true
+    notes: 单个附件失败只记录错误并继续处理剩余附件。
   - spec_ref: REQ-005
     aligned: true
-    notes: 单系统锁定同时落在编辑页入口和后端系统级接口拒绝逻辑。
+    notes: 不改现有 API/Agent 契约，不带附件的文档保持现有行为。
 
 ### Architecture Boundary
 - impacted_capabilities:
-  - 任务创建页输入收集与提交校验
-  - 任务创建接口校验与任务元数据持久化
-  - AI 编排器的具体系统/不限分支
-  - 任务详情展示与编辑页单系统锁定
+  - DOCX 主文档解析入口与 `requirement_content` 组装
+  - 通用多格式正文解析与文本扁平化复用
+  - OOXML 附件扫描、递归控制与错误隔离
 - not_impacted_capabilities:
-  - 任务列表展示列与筛选
-  - 专家分配、多轮评估与报告导出
-  - 系统识别算法本身与主系统配置后台
+  - `backend/agent/**` 系统识别、功能点拆分、工作量评估逻辑
+  - `backend/api/routes.py` 任务 API 契约与任务存储结构
+  - `frontend/**` 页面、报告与编辑页展示
 - impacted_shared_surfaces:
-  - backend/api/routes.py
-  - backend/agent/agent_orchestrator.py
-  - frontend/src/pages/UploadPage.js
-  - frontend/src/pages/ReportPage.js
-  - frontend/src/pages/EditPage.js
+  - `backend/utils/docx_parser.py`
+  - `backend/service/document_parser.py`
+  - `backend/utils/embedded_attachment_extractor.py`
 - not_impacted_shared_surfaces:
-  - frontend/src/pages/TaskListPage.js
-  - backend/api/report_routes.py
-  - backend/agent/system_identification_agent.py
+  - `backend/agent/**`
+  - `backend/api/**`
+  - `frontend/**`
 - major_constraints:
-  - 项目经理相关系统口径复用主责+B角规则，不新增权限模型
-  - 具体系统模式禁止做 alias-only 段落裁剪
-  - 单系统锁定以后端拒绝为准，前端隐藏仅作辅助
+  - 默认递归深度 3、单附件 10MB、附件总数 20、总解析预算 5 分钟。
+  - 必须支持循环检测，禁止同一内容无限递归。
+  - 失败降级只能影响当前附件，不能让整个任务解析失败。
 - contract_required: false
 - compatibility_constraints:
-  - unlimited 模式保持现有系统识别优先顺序
-  - 任务列表和专家侧交互不新增字段依赖
+  - 主文档仍通过现有 `DocxParser.parse(file_path)` 和 `DocumentParser.parse(file_content, filename)` 入口消费。
+  - Agent 侧继续只接收合并后的纯文本 `requirement_content`，不新增来源标签字段。
+  - 不新增外部服务依赖，不修改任务 API、报告格式或前端交互。
 
 ### Work Item Execution Strategy
 
@@ -69,212 +73,158 @@
 dependency_graph:
   WI-001:
     depends_on: []
-    blocks: [WI-002, WI-003]
-    confidence: high
-  WI-002:
-    depends_on: [WI-001]
-    blocks: [WI-003]
-    confidence: high
-  WI-003:
-    depends_on: [WI-001, WI-002]
     blocks: []
     confidence: high
 
 #### Parallel Recommendation
 parallel_groups:
   - group: G1
-    work_items: [WI-001, WI-002, WI-003]
+    work_items: [WI-001]
     can_parallel: false
-    rationale: `backend/api/routes.py` 是创建、详情、编辑和后台处理的共享面，单分支串行能避免协议和字段名漂移。
+    rationale: 附件提取、正文合并和回归测试都围绕同一组解析入口，拆分后只会增加冲突面。
 
 #### Branch Strategy Recommendation
 recommended_branch_count: 1
 rationale: |
-  当前改动的共享事实来源是 task record 与 routes.py。
-  在禁止使用 worktree 的前提下，单分支顺序推进最能避免前后端协议不一致与冲突性回滚。
+  本次改动集中在文档解析层，核心文件只有 `docx_parser.py`、`document_parser.py` 和新增附件提取工具。
+  单分支串行推进可以保证解析行为、限制策略和测试样例同步收敛，避免多个 WI 在同一文本输出口径上互相覆盖。
 
 alternative_if_parallel_needed: |
-  如果后续必须并行，只能让 parent feature 分支统一集成 backend/api/routes.py；
-  前端执行线仅独占 UploadPage.js / ReportPage.js / EditPage.js，后端执行线独占 agent_orchestrator.py。
+  若后续发现需要拆分，可把“附件提取器/解析器实现”和“测试样例补齐”拆成两个 WI，
+  但前提是先冻结统一的附件正文合并格式并明确共享文件 owner；当前没有必要。
 
 **Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
 are suggestions only, not enforced by gates. User decides the actual execution strategy.
 
 #### Shared Surface Analysis
 potentially_conflicting_files:
-  - path: backend/api/routes.py
-    reason: 创建接口、任务详情、编辑接口和后台任务处理流程全部集中在此文件
-    recommendation: 所有 WI 顺序执行，routes.py 由当前 feature 分支串行集成
-  - path: frontend/src/pages/EditPage.js
-    reason: 同时受目标系统元数据和系统级锁定策略影响
-    recommendation: 在 WI-003 中一次完成数据消费、入口隐藏和错误反馈
-  - path: backend/api/system_routes.py
-    reason: 需要补可复用的主责/B角解析 helper，供创建接口服务端校验复用
-    recommendation: helper 只处理系统候选解析，不把 task 逻辑回灌到 system_routes
+  - path: backend/utils/docx_parser.py
+    reason: 主文档入口在这里组装 `requirement_content`，正文拼接规则只能有一套。
+    recommendation: 所有正文合并逻辑都收口到同一 helper，避免在入口里散落分支判断。
+  - path: backend/service/document_parser.py
+    reason: 通用多格式解析器负责把附件文件转成结构化正文，递归路径会直接复用它。
+    recommendation: 只增加附件复用接口和扁平化适配，不改现有知识提取协议。
 
 conflict_risk_assessment:
   high_risk:
-    - backend/api/routes.py
+    - backend/utils/docx_parser.py
   medium_risk:
-    - frontend/src/pages/EditPage.js
-    - backend/agent/agent_orchestrator.py
+    - backend/service/document_parser.py
   low_risk:
-    - frontend/src/pages/UploadPage.js
-    - frontend/src/pages/ReportPage.js
+    - tests/test_docx_parser.py
+    - tests/test_document_parser.py
+    - tests/test_attachment_extraction.py
 
 #### Pre-work for Parent Feature Branch
 tasks:
-  - task: 统一任务字段命名
+  - task: 初始化测试账本
     content: |
-      task record 持久化字段采用：
-      - target_system_mode: "specific" | "unlimited"
-      - target_system_name: 具体系统名或空字符串
-      详情接口返回 targetSystemMode / targetSystemName / targetSystemDisplay；
-      编辑结果接口返回 target_system_mode / target_system_name。
-    rationale: 降低前后端和测试在命名上的额外转换成本
-  - task: 明确单系统锁定判定
+      新建 `testing.md`，为后续 Implementation 阶段记录 branch-local 测试结果预留载体。
+    rationale: `start-implementation` gate 要求 `testing.md` 已存在。
+  - task: 冻结单 WI 边界
     content: |
-      single_system_locked := target_system_mode == "specific"
-    rationale: 让 UI 隐藏、接口拒绝和测试断言共享同一规则
-  - task: 保留 ai_system_analysis 的现有数据形状
-    content: |
-      具体系统模式依然生成 selected_systems / candidate_systems / result_status 等结构，
-      仅在 system_recognition 快照中标记 skipped。
-    rationale: 避免 EditPage 现有读取逻辑额外分叉
+      把实现范围限制在解析器和测试文件，不改 API、Agent、前端与报告展示。
+    rationale: 满足 Spec 中“禁止修改已有 Agent 核心逻辑”的硬约束。
 
 #### Notes
-- 当前 feature 分支只做顺序执行，不规划并行执行组。
-- Design 阶段不新增 contract 文件。
-- `不限` 与 `具体系统` 的差异只允许发生在创建参数校验、编排入口和编辑锁定，不外溢到任务列表。
+- 当前设计刻意把“附件来源展示”“附件清单持久化”“任务 UI 展示”排除在本次 WI 之外。
+- 允许新增一个解析工具文件，但不允许横向扩散到 `backend/api/**` 或 `backend/agent/**`。
 
 ### Design Slice Index
-- DS-001 -> 创建页输入、候选项来源与任务元数据通路
-- DS-002 -> 具体系统编排分支与 unlimited 兼容路径
-- DS-003 -> 详情展示与编辑期单系统锁定
+- DS-001:
+  - appendix_ref: none
+  - scope: 在解析层补齐 OOXML 附件扫描、支持格式识别、递归控制、错误隔离与正文合并。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
 
 ### Work Item Derivation
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#intent
-    - docs/inputs/2026-04-19-target-system-scope.md#system-scope-rule
-    - docs/inputs/2026-04-19-target-system-scope.md#empty-owned-systems
+    - docs/inputs/attachment-parsing-requirement.md
   requirement_refs:
     - REQ-001
     - REQ-002
-  goal: 打通创建页待评估系统输入、候选项来源、后端创建校验与任务详情/结果基础字段
-  covered_acceptance_refs: [ACC-001, ACC-002]
+    - REQ-003
+    - REQ-004
+    - REQ-005
+  goal: 在不改 Agent 和 API 契约的前提下，为主文档及其嵌套附件补齐递归正文解析和 `requirement_content` 合并。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
   verification_refs:
     - VO-001
     - VO-002
-  dependency_refs: []
-  contract_needed: false
-  notes_on_boundary: 创建入口与基础元数据优先落地，但不进入 AI 编排分支改造
-- wi_id: WI-002
-  input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#single-system-scope
-    - docs/inputs/2026-04-19-target-system-scope.md#no-match
-  requirement_refs:
-    - REQ-003
-    - REQ-004
-  goal: 在后台任务处理与 agent orchestrator 中增加 specific/unlimited 分支，并保证零功能点失败语义
-  covered_acceptance_refs: [ACC-003, ACC-004]
-  verification_refs:
     - VO-003
     - VO-004
-  dependency_refs:
-    - WI-001
-  contract_needed: false
-  notes_on_boundary: 保持 system_identification_agent 和 feature_breakdown_agent 内部算法不改，只在 orchestrator 与 task flow 处分支
-- wi_id: WI-003
-  input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#visibility
-    - docs/inputs/2026-04-19-target-system-scope.md#edit-constraints
-  requirement_refs:
-    - REQ-002
-    - REQ-005
-  goal: 在详情页和编辑页展示待评估系统结果，并对具体系统任务施加前后端双重锁定
-  covered_acceptance_refs: [ACC-002, ACC-005]
-  verification_refs:
-    - VO-002
     - VO-005
-  dependency_refs:
-    - WI-001
-    - WI-002
+  dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 功能点级编辑与任务级重估保留，系统级新增/重命名/删除/重新拆分一律封禁
+  notes_on_boundary: 实现仅允许修改解析器和测试文件；任何对 Agent、API、前端、报告格式的需求都必须回到 design 重新开边界。
+  work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
 
 ### Contract Needs
-- none: 当前变更不新增 shared contract；任务元数据与接口字段可直接在现有 FastAPI 响应中扩展
+- no additional contract required; the change stays within parser internals and existing return shapes.
 
 ### Failure Paths / Reopen Triggers
-- 如果发现“项目经理相关系统”并不能稳定复用当前主责+B角解析结果，需要 reopen spec 与 design 对齐数据来源。
-- 如果单系统模式必须修改系统识别算法或系统画像算法本身，需 reopen design 评估是否越过 NG1。
-- 如果编辑阶段后续还要支持“改选另一个具体系统”，需 reopen spec，因为这直接冲突 REQ-002 / P2。
-- 如果 `backend/api/routes.py` 的共享改动导致当前 WI 切分无法顺序落地，需要 reopen design 重新拆分 work item。
+- 如果附件真实载荷无法通过当前已锁定的 `olefile` + 现有解析依赖稳定解出，需要重新评估是否继续引入新的解析依赖或缩小支持边界。
+- 如果正文合并后会破坏现有无附件文档的解析结果或任务编辑页语义，需要先回写 spec/design 再继续。
+- 如果为了暴露附件来源、附件清单或 UI 展示必须修改 API/前端契约，需要重新开 WI，不在本次实现中追加。
 
 ### Appendix Map
-- No appendices.
+- none
 
 ## Goal / Scope Link
 
 ### Scope Summary
-- 本次设计只覆盖项目经理发起任务、AI 处理编排、任务详情展示与编辑期边界控制四段链路。
-- 设计目标是把“待评估系统”从创建期显式输入一路传到任务记录、编排分支和后续页面，而不是在前端临时态上做一次性分流。
-- `不限` 作为兼容模式保持原链路不变；具体系统作为新链路在 orchestrator 入口处分叉，并保持全文需求 + 系统画像的拆分上下文。
+- 主文档入口仍由 `backend/utils/docx_parser.py` 负责提取需求名称、摘要与正文，但正文来源不再只看主文档段落/表格，而是合并“主文档正文 + 支持格式附件正文”。
+- 通用正文解析继续由 `backend/service/document_parser.py` 负责：`docx/xlsx/pptx/pdf` 附件都先转成已有结构化形态，再复用 `parsed_to_text` 风格扁平化为纯文本。
+- 附件递归控制、大小限制、数量限制、循环检测、失败降级全部放在解析层统一处理，不让 Agent、API 或任务编排层感知附件细节。
+- 本次实现不新增新的对外数据结构；最终交付物仍然是更完整的 `requirement_content` 字符串和与现有兼容的解析结果。
 
 ### spec_alignment_check
 - spec_ref: REQ-001
   aligned: true
-  notes: 创建页以单选方式承载必填选择，无相关系统时仅保留“不限”。
+  notes: 设计以通用 OOXML 附件扫描器覆盖 DOCX/XLSX/PPTX 嵌入对象，并对 PDF 载荷复用现有 `PyPDF2` 解析链路。
 - spec_ref: REQ-002
   aligned: true
-  notes: 任务记录持久化 mode/name，详情页与编辑结果接口都返回该元数据。
+  notes: 所有递归参数都通过统一配置对象管理，默认值与 spec 约束一致。
 - spec_ref: REQ-003
   aligned: true
-  notes: 单系统模式在 orchestrator 层跳过系统识别，直接进入指定系统拆分与估算。
+  notes: 附件文本在解析阶段直接拼接进 `requirement_content`，因此功能点拆分无需改协议。
 - spec_ref: REQ-004
   aligned: true
-  notes: unlimited 模式继续复用现有 process_requirement 主链路，不改系统识别顺序。
+  notes: 附件解析错误只产生日志/元信息，不抛出中断主流程的异常。
 - spec_ref: REQ-005
   aligned: true
-  notes: 锁定同时体现在系统级接口拒绝和编辑页不暴露系统操作入口。
+  notes: 不带附件的路径保持原逻辑，回归测试验证文本结果不退化。
 
 ## Architecture Boundary
-- system_context: FastAPI + in-memory/json task storage + React 单页前端；任务创建、处理和编辑都围绕 `backend/api/routes.py` 维护的 task 记录展开。
+- system_context: 需求评估主链路在 `process_task_sync -> DocxParser.parse -> AgentOrchestrator.process_requirement` 上串联；本次只允许变更 `DocxParser` 与其复用的通用 `DocumentParser`。
 - impacted_capabilities:
-  - UploadPage 创建表单与 multipart 提交协议
-  - 主系统清单按主责/B角过滤后的候选项生成
-  - create_task_v2 的表单校验、任务元数据持久化与详情返回
-  - process_task_sync / AgentOrchestrator 的 single-system 分支
-  - ReportPage / EditPage 的目标系统展示和锁定判定
-  - requirement 系统级编辑接口的锁定保护
+  - 主文档附件扫描与递归抽取
+  - 多格式附件正文解析与文本扁平化
+  - `requirement_content` 完整性提升
 - not_impacted_capabilities:
-  - TaskListPage 列定义与列表筛选
-  - 专家分配、邀请、专家评估提交、偏差计算与报告导出
-  - 系统识别 agent 的识别算法、系统画像摘要算法、主系统配置 CRUD
+  - 系统识别 Prompt、功能点拆分 Prompt 与估算逻辑
+  - 任务详情 API、编辑页修改接口与报表导出
+  - 知识库导入、服务治理导入、系统画像导入链路
 - impacted_shared_surfaces:
-  - backend/api/routes.py
-  - backend/agent/agent_orchestrator.py
-  - frontend/src/pages/UploadPage.js
-  - frontend/src/pages/ReportPage.js
-  - frontend/src/pages/EditPage.js
-  - frontend/src/utils/systemOwnership.js
-  - backend/api/system_routes.py
+  - `backend/utils/docx_parser.py`
+  - `backend/service/document_parser.py`
+  - `backend/utils/embedded_attachment_extractor.py`
 - not_impacted_shared_surfaces:
-  - frontend/src/pages/TaskListPage.js
-  - backend/api/report_routes.py
-  - backend/agent/system_identification_agent.py
-  - backend/agent/work_estimation_agent.py
+  - `backend/api/routes.py`
+  - `backend/agent/agent_orchestrator.py`
+  - `frontend/src/**`
 - major_constraints:
-  - 候选项口径必须与系统清单里的主责/B角解析一致，前端展示不能成为权限真相。
-  - 具体系统模式必须把全文 requirement_content 直接交给功能点拆分 agent，不允许先做名称命中裁剪。
-  - 无功能点场景必须失败，不能以空 `systems_data` 成功落盘。
-  - 编辑期锁定必须以服务端接口拒绝为准，前端隐藏仅作为辅助手段。
+  - 附件提取器必须优先通过文件扩展名和文件签名识别支持格式，不能对不明格式做冒进解析。
+  - 对 OOXML 里的 `.bin` 包装对象，需要先尝试 OLE 解包；无法识别时记为失败并继续，不允许阻断主文档。
+  - 递归链路必须对已见内容做哈希去重，避免 A -> B -> A 环路。
+  - 最终合并文本不能暴露内部实现噪声（如 zip entry 路径、OLE stream 名称）。
 - contract_required: false
 - compatibility_constraints:
-  - `POST /api/v1/tasks` 继续使用 multipart/form-data，只新增两个 form 字段，不改文件上传方式。
-  - `GET /api/v1/tasks/{task_id}` 与 `GET /api/v1/requirement/result/{task_id}` 在原 payload 上增字段，不移除既有字段。
-  - `不限` 模式继续产出 `systems` / `systems_data` 多系统结构，确保 ReportPage、EditPage、专家侧无额外适配成本。
+  - `DocxParser.parse()` 返回字段名保持不变：`requirement_name`、`requirement_summary`、`requirement_content`、`basic_info`、`all_paragraphs`。
+  - `DocumentParser.parse()` 对无附件输入保持原输出结构；附件能力以附加字段或内部 helper 复用方式接入，不破坏现有调用方。
+  - 不对 API、任务表单、报告导出、前端页面新增字段。
 
 ## Work Item Execution Strategy
 
@@ -282,215 +232,149 @@ tasks:
 dependency_graph:
   WI-001:
     depends_on: []
-    blocks: [WI-002, WI-003]
-    confidence: high
-  WI-002:
-    depends_on: [WI-001]
-    blocks: [WI-003]
-    confidence: high
-  WI-003:
-    depends_on: [WI-001, WI-002]
     blocks: []
     confidence: high
 
 ### Parallel Recommendation
 parallel_groups:
   - group: G1
-    work_items: [WI-001, WI-002, WI-003]
+    work_items: [WI-001]
     can_parallel: false
-    rationale: task 元数据、详情响应和系统级锁定都依赖 `backend/api/routes.py` 的同一批字段，串行更安全。
+    rationale: 解析输出口径只有一份，拆成多个 WI 容易在正文合并规则和测试样本上互相踩踏。
 
 ### Branch Strategy Recommendation
 recommended_branch_count: 1
 rationale: |
-  该变更虽然同时涉及前后端，但真正的共享事实来源是 task record 和 routes.py。
-  在不使用 worktree 的约束下，单分支顺序推进最能避免字段名漂移、前后端协议不一致和冲突性回滚。
+  实现范围小而耦合度高：主文档解析、通用附件解析和测试样例需要一起收敛。
+  单分支推进更适合持续验证“无附件不回归 + 有附件能递归 + 单附件失败不影响整体”这三类核心行为。
 
 alternative_if_parallel_needed: |
-  如果后续必须并行，只能让 parent feature 分支统一集成 backend/api/routes.py；
-  前端执行线仅独占 UploadPage.js / ReportPage.js / EditPage.js，后端执行线独占 agent_orchestrator.py。
+  若后续要继续扩展附件来源展示或非 DOCX 主文档入口，可在下一轮把“解析器实现”和“展示/任务链路扩展”拆成独立 WI。
+  当前不建议提前拆分。
 
 **Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
 are suggestions only, not enforced by gates. User decides the actual execution strategy.
 
 ### Shared Surface Analysis
 potentially_conflicting_files:
-  - path: backend/api/routes.py
-    reason: 创建接口、任务详情、编辑接口和后台任务处理流程全部集中在此文件
-    recommendation: 作为单分支串行集成文件，禁止把它拆成并行 WI 的共享写面
-  - path: frontend/src/pages/EditPage.js
-    reason: 既要消费新的 target system 元数据，又要调整系统操作入口
-    recommendation: 在 WI-003 中一次完成结果加载、操作入口隐藏和错误反馈
-  - path: backend/api/system_routes.py
-    reason: 需要补可复用的主责/B角解析 helper，供创建接口复用
-    recommendation: helper 只做候选解析，不把 task 逻辑反向塞回 system_routes
+  - path: backend/utils/docx_parser.py
+    reason: 该文件直接决定任务主链路消费的 `requirement_content` 内容。
+    recommendation: 只在这里做入口编排，把复杂解析细节下沉到独立 helper。
+  - path: backend/service/document_parser.py
+    reason: 这是所有附件正文解析的通用入口，任何 return shape 变化都会影响其他调用方。
+    recommendation: 复用现有 parse 结果结构，不随意重命名字段或改变无附件输出。
+  - path: tests/test_document_parser.py
+    reason: 这里已有 XLSX/PDF/PPTX 解析行为回归，新增附件能力后必须同步守住原断言。
+    recommendation: 在原测试旁边补新增场景，不覆盖已有回归用例。
 
 conflict_risk_assessment:
   high_risk:
-    - backend/api/routes.py
+    - backend/utils/docx_parser.py
   medium_risk:
-    - frontend/src/pages/EditPage.js
-    - backend/agent/agent_orchestrator.py
+    - backend/service/document_parser.py
+    - backend/utils/embedded_attachment_extractor.py
   low_risk:
-    - frontend/src/pages/UploadPage.js
-    - frontend/src/pages/ReportPage.js
-    - frontend/src/utils/systemOwnership.js
+    - tests/test_docx_parser.py
+    - tests/test_document_parser.py
+    - tests/test_attachment_extraction.py
 
 ### Pre-work for Parent Feature Branch
 tasks:
-  - task: 统一任务字段命名
+  - task: 落地 branch-local 测试账本载体
     content: |
-      task record 持久化字段采用：
-      - target_system_mode: "specific" | "unlimited"
-      - target_system_name: 具体系统名或空字符串
-      详情接口返回 targetSystemMode / targetSystemName / targetSystemDisplay；
-      编辑结果接口返回 target_system_mode / target_system_name。
-    rationale: 降低前后端和测试在命名上的额外转换成本
-  - task: 明确单系统锁定判定
+      在仓库根目录创建 `testing.md`，后续 Implementation 直接往 WI-001 下面追加测试记录。
+    rationale: `implementation-start` gate 硬要求 `testing.md` 存在。
+  - task: 确认实现边界不触碰 Agent/API
     content: |
-      single_system_locked := target_system_mode == "specific"
-    rationale: 让 UI 隐藏、接口拒绝和测试断言共享同一规则
-  - task: 保留 ai_system_analysis 的现有数据形状
-    content: |
-      具体系统模式依然生成 selected_systems / candidate_systems / result_status 等结构，
-      仅在 system_recognition 快照中标记 skipped。
-    rationale: 避免 EditPage 现有读取逻辑额外分叉
+      通过 `work-items/WI-001.yaml` 的 `allowed_paths` 和 `out_of_scope` 把实现固定在解析器与测试文件。
+    rationale: 避免设计阶段 scope 漂移。
 
 ### Notes
-- 当前 feature 分支只做顺序执行，不规划并行执行组。
-- Design 阶段不新增 contract 文件。
-- `不限` 与 `具体系统` 的差异只允许发生在创建参数校验、编排入口和编辑锁定，不外溢到任务列表。
+- 本设计推荐新增 `backend/utils/embedded_attachment_extractor.py` 作为唯一附件递归入口，避免把 zip/OLE 细节散落到多个解析器中。
+- 附件正文合并顺序采用“主文档正文在前，附件正文按发现顺序追加”，保证当前系统识别与拆分仍然优先看到主文档上下文。
+- 对于无法识别的附件，只记录错误并继续，不把文件名或二进制摘要写进最终正文。
 
 ## Design Slice Index
 - DS-001:
   - appendix_ref: none
-  - scope: 创建页待评估系统单选、候选项来源和任务元数据持久化
-  - requirement_refs: [REQ-001, REQ-002]
-  - acceptance_refs: [ACC-001, ACC-002]
-  - verification_refs: [VO-001, VO-002]
-- DS-002:
-  - appendix_ref: none
-  - scope: AI 编排器 specific/unlimited 分支与单系统失败语义
-  - requirement_refs: [REQ-003, REQ-004]
-  - acceptance_refs: [ACC-003, ACC-004]
-  - verification_refs: [VO-003, VO-004]
-- DS-003:
-  - appendix_ref: none
-  - scope: 详情展示与编辑期单系统锁定
-  - requirement_refs: [REQ-002, REQ-005]
-  - acceptance_refs: [ACC-002, ACC-005]
-  - verification_refs: [VO-002, VO-005]
+  - scope: 在文档解析层增加通用附件扫描、O​​OXML/OLE 解包、递归控制、文本扁平化与正文合并。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
 
 ## Work Item Derivation
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#intent
-    - docs/inputs/2026-04-19-target-system-scope.md#system-scope-rule
-    - docs/inputs/2026-04-19-target-system-scope.md#empty-owned-systems
+    - docs/inputs/attachment-parsing-requirement.md
   requirement_refs:
     - REQ-001
     - REQ-002
-  goal: 打通创建页待评估系统输入、候选项来源、后端创建校验与任务详情/结果基础字段
-  covered_acceptance_refs: [ACC-001, ACC-002]
+    - REQ-003
+    - REQ-004
+    - REQ-005
+  goal: 在解析器内部补齐附件递归解析与正文合并，使现有任务主链路自动获得更完整的 `requirement_content`。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
   verification_refs:
     - VO-001
     - VO-002
-  dependency_refs: []
-  contract_needed: false
-  notes_on_boundary: 创建入口与基础元数据优先落地，但不进入 AI 编排分支改造
-- wi_id: WI-002
-  input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#single-system-scope
-    - docs/inputs/2026-04-19-target-system-scope.md#no-match
-  requirement_refs:
-    - REQ-003
-    - REQ-004
-  goal: 在后台任务处理与 agent orchestrator 中增加 specific/unlimited 分支，并保证零功能点失败语义
-  covered_acceptance_refs: [ACC-003, ACC-004]
-  verification_refs:
     - VO-003
     - VO-004
-  dependency_refs:
-    - WI-001
-  contract_needed: false
-  notes_on_boundary: 保持 system_identification_agent 和 feature_breakdown_agent 内部算法不改，只在 orchestrator 与 task flow 处分支
-- wi_id: WI-003
-  input_refs:
-    - docs/inputs/2026-04-19-target-system-scope.md#visibility
-    - docs/inputs/2026-04-19-target-system-scope.md#edit-constraints
-  requirement_refs:
-    - REQ-002
-    - REQ-005
-  goal: 在详情页和编辑页展示待评估系统结果，并对具体系统任务施加前后端双重锁定
-  covered_acceptance_refs: [ACC-002, ACC-005]
-  verification_refs:
-    - VO-002
     - VO-005
-  dependency_refs:
-    - WI-001
-    - WI-002
+  dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 功能点级编辑与任务级重估保留，系统级新增/重命名/删除/重新拆分一律封禁
+  notes_on_boundary: 仅允许修改 `docx_parser`、`document_parser`、新增附件提取 helper 和相关测试；任何 Agent/API/UI 变化都必须停下并回到 design 对齐。
+  work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
 
 ## Contract Needs
-- contract_id: none
-  required: false
-  reason: 当前变更只扩展现有 task payload 和接口字段，不引入跨 WI 独立冻结合约
-  consumers: []
+- no additional contract required; implementation stays inside parser internals and existing return structures.
 
 ## Implementation Readiness Baseline
 
 ### Environment Configuration Matrix
-- 前端继续使用现有 `axios` 和登录态；无需新增环境变量或新路由前缀。
-- 后端继续沿用当前 FastAPI 应用、任务线程池和 `settings.UPLOAD_DIR` / `settings.REPORT_DIR`，本次不新增部署配置。
-- `POST /api/v1/tasks` 仍由 manager 角色调用，新增 form 字段不会影响现有 multipart 解析链路。
+- 运行时沿用当前 Python 后端环境；附件递归解析新增并显式锁定 `olefile` 运行依赖，其余继续复用仓库已存在的 `python-docx`、`openpyxl`、`PyPDF2`、`xlrd` 能力。
+- 主文档入口仍在 `backend/api/routes.py` 的 `process_task_sync()` 中调用 `DocxParser.parse(file_path)`，不新增环境变量或部署参数。
+- 测试执行使用现有 `pytest` 环境；新增样例优先通过内存构造 zip/OLE fixture，避免依赖真实上传文件。
 
 ### Security Baseline
-- 创建接口必须以当前登录 manager 身份在服务端重新计算可选系统集合，不能信任前端提交的 system name。
-- 任务详情和编辑系统级接口必须继续走现有任务访问控制，只在此基础上叠加 single-system lock。
-- 文件上传白名单、大小校验、路径校验和报告下载的现有安全逻辑保持不变。
+- 附件解析只处理内嵌二进制内容，不落盘外部可执行文件，不调用 shell，不扩展上传文件权限。
+- 附件类型识别以扩展名和文件签名双重校验为主，对未知/伪装格式直接降级失败，不做不受控解析。
+- 递归限制、数量限制、大小限制和总预算是默认开启的资源保护措施，不能在实现中绕开。
 
 ### Data / Migration Strategy
-- 旧任务缺少 `target_system_mode` 时按兼容默认值 `unlimited` 解释，避免历史任务无法打开详情/编辑页。
-- `_ensure_task_schema()` 负责为历史 task 补齐 `target_system_mode=unlimited` 与 `target_system_name=""`。
-- 不做数据迁移脚本；兼容逻辑在读路径和 task 创建路径内完成。
+- 本次不引入新的持久化 schema，不需要数据迁移或回填脚本。
+- 已有任务数据结构保持不变；改善只体现在新解析出的 `requirement_content` 更完整。
+- 对历史无附件或未重新评估的任务不做离线重算，保持按需重新上传/重新评估的现有流程。
 
 ### Operability / Health Checks
-- 具体系统模式失败时直接复用 task failure 状态，`message` 必须可定位为“未拆出该系统相关功能点”而不是泛化异常。
-- 编排日志需能区分 `selection_mode=specific` 与 `selection_mode=unlimited`，便于排查是否误走旧分支。
-- 如果后端返回 `targetSystemMode/Name` 缺失，ReportPage 和 EditPage 应按 unlimited 兼容显示，而不是白屏。
+- 关键健康信号是“无附件文档回归通过”“递归附件样例解析通过”“损坏附件样例不会中断主流程”。
+- 解析失败必须通过日志带出附件文件名和失败原因，便于排查具体嵌入对象，但不污染最终正文。
+- 若附件总量或单附件过大触发限制，应输出明确日志而不是静默丢失。
 
 ### Backup / Restore
-- 任务数据仍使用现有 task storage 与 report 文件路径；本次不新增持久化副本或额外恢复步骤。
-- 若上线后需要快速回滚，只需忽略新字段并恢复创建页旧交互即可，不影响旧任务读取。
-
-### UX / Experience Readiness
-- 创建页在系统列表尚未加载完成时需要禁用提交或给出加载态，避免无候选项时误提交。
-- 当候选项只有“不限”时，页面仍需允许直接提交，且不把“暂无主责/B角系统”解释为错误。
-- 具体系统锁定任务在 EditPage 需要给出清晰说明，只保留功能点级编辑和重估能力。
+- 代码级改动没有持久化迁移，回滚只需恢复解析器和测试文件变更即可。
+- 若上线后发现正文合并影响现有拆分结果，可直接回退本 WI 对解析器的修改，不涉及数据恢复。
 
 ## Verification Design
 - ACC-001:
-  - approach: 为 UploadPage 增加渲染测试，并通过 mock `/api/v1/system/systems` + AuthContext 覆盖“有主责/B角系统”和“无主责/B角系统”两种候选项来源。
-  - evidence: `frontend/src/__tests__/uploadPage.targetSystem.test.js` 断言字段顺序、必填、候选项顺序以及 only-不限 场景。
+  - approach: 为通用附件提取器和 `DocumentParser` 增加 `docx/xlsx/pptx/pdf` 嵌入载荷解析测试，覆盖原生嵌入 entry 与 OLE 包装 entry。
+  - evidence: `pytest tests/test_attachment_extraction.py tests/test_document_parser.py -q`
 - ACC-002:
-  - approach: 为 `POST /api/v1/tasks`、`GET /api/v1/tasks/{task_id}` 和 `GET /api/v1/requirement/result/{task_id}` 增加后端测试，覆盖合法 specific、非法 specific、详情回传和创建后不可修改语义。
-  - evidence: 后端 API 测试证明任务记录持久化 `target_system_mode/name`，并对外返回一致字段。
+  - approach: 构造三层嵌套、循环引用、超大附件和超过数量上限的样例，验证深度/去重/保护策略都生效。
+  - evidence: `pytest tests/test_attachment_extraction.py -q`
 - ACC-003:
-  - approach: 对 orchestrator 或 `process_task_sync` 做分支测试，使用 stub 断言 specific 模式不会调用系统识别，且零功能点直接失败。
-  - evidence: 后端编排测试能观察 specific 分支、单系统输出以及 clear failure message。
+  - approach: 在 `DocxParser` 测试中验证最终 `requirement_content` 同时包含主文档正文和附件正文，且顺序稳定。
+  - evidence: `pytest tests/test_docx_parser.py -q`
 - ACC-004:
-  - approach: 保留 unlimited 路径回归测试，断言系统识别仍先于拆分执行，且多系统输出结构不变。
-  - evidence: 回归测试可观测系统识别调用顺序和多系统 `systems_data` 形态。
+  - approach: 注入损坏附件和无法识别的伪装格式，验证其被记录并跳过，其他附件正文仍可进入结果。
+  - evidence: `pytest tests/test_attachment_extraction.py tests/test_docx_parser.py -q`
 - ACC-005:
-  - approach: 后端测试覆盖 add/rename/delete/rebreakdown 在锁定任务上的拒绝；前端 EditPage 测试覆盖系统操作入口隐藏或禁用，同时保留功能点级编辑。
-  - evidence: `frontend/src/__tests__/editPage.targetSystemLock.test.js` 与后端锁定测试共同证明“前端不暴露 + 后端强拒绝”。
+  - approach: 保留现有 `tests/test_docx_parser.py`、`tests/test_document_parser.py` 回归，并新增无附件样例断言确保结果不变。
+  - evidence: `pytest tests/test_docx_parser.py tests/test_document_parser.py -q`
 
 ## Failure Paths / Reopen Triggers
-- 如果发现具体系统模式必须依赖 prompt/template 级识别改造才能可用，需要 reopen design，并确认是否触碰 NG1。
-- 如果创建页无法通过现有系统清单稳定推导主责+B角候选，需要 reopen spec，确认是否要新增专用后端候选接口。
-- 如果旧 task 的兼容默认值 `unlimited` 会误导历史详情展示，需要 reopen design，决定是否补一次数据修复。
-- 如果 EditPage 还存在其他未枚举的系统级 scope-change 操作，需要 reopen design 补完整锁定矩阵。
+- 如果真实样例表明主流附件都以当前无法稳定解包的专有容器存在，需要重新评估支持边界或依赖策略。
+- 如果为了表达附件来源、层级或错误详情必须修改任务返回结构或前端 UI，需要 reopen design，而不是在当前 WI 内偷偷扩 scope。
+- 如果附件正文拼接显著降低现有系统识别/拆分质量，需要先回到 spec/design 重新定义合并规则和过滤策略。
 
 ## Appendix Map
-- No appendices.
+- none

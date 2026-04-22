@@ -6,6 +6,7 @@ import logging
 from typing import Optional, Dict, List
 from docx import Document
 from backend.config.config import settings
+from backend.service.document_parser import DocumentParser
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class DocxParser:
     def __init__(self):
         """初始化解析器"""
         self.target_section = "需求内容说明"
+        self.document_parser = DocumentParser()
         logger.info("DocxParser初始化完成")
 
     def parse(self, file_path: str) -> Dict[str, str]:
@@ -51,17 +53,19 @@ class DocxParser:
             if not content_section or len(content_section) < 10:
                 content_section = self._extract_content_from_tables(tables_data)
 
+            merged_content = self._merge_attachment_content(file_path, content_section)
+
             result = {
                 "requirement_name": requirement_info.get("requirement_name", ""),
                 "requirement_summary": requirement_info.get("requirement_summary", ""),
-                "requirement_content": content_section,
+                "requirement_content": merged_content,
                 "basic_info": requirement_info,
                 "all_paragraphs": paragraphs
             }
 
             logger.info(f"文档解析完成: {file_path}")
             logger.info(f"提取段落数: {len(paragraphs)}")
-            logger.info(f"需求内容说明长度: {len(content_section)}")
+            logger.info(f"需求内容说明长度: {len(merged_content)}")
 
             return result
 
@@ -223,6 +227,41 @@ class DocxParser:
         content = "\n".join(content_parts)
         logger.info(f"从表格提取需求内容，长度: {len(content)}")
         return content
+
+    def _merge_attachment_content(self, file_path: str, base_content: str) -> str:
+        try:
+            with open(file_path, "rb") as fh:
+                parsed = self.document_parser.parse(fh.read(), filename=file_path, file_type="docx")
+        except Exception as exc:
+            logger.warning("读取嵌入附件失败，回退主文档正文: %s", exc)
+            return base_content
+
+        parts: List[str] = []
+        seen = set()
+
+        def append_block(text: str) -> None:
+            normalized = str(text or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            parts.append(normalized)
+
+        for line in str(base_content or "").splitlines():
+            append_block(line)
+
+        for item in parsed.get("attachments") or []:
+            if not isinstance(item, dict):
+                continue
+            attachment_name = str(item.get("name") or "").strip()
+            attachment_text = str(item.get("text") or "").strip()
+            if not attachment_text:
+                continue
+            if attachment_name:
+                append_block(f"【附件: {attachment_name}】")
+            for line in attachment_text.splitlines():
+                append_block(line)
+
+        return "\n".join(parts)
 
     def validate_file(self, file_path: str) -> bool:
         """

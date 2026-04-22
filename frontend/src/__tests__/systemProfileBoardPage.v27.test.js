@@ -1070,26 +1070,26 @@ describe('SystemProfileBoardPage v2.7', () => {
     renderPage();
 
     expect(await screen.findByRole('tab', { name: '支付系统' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'D1 系统定位' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'D2 业务能力' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'D3 系统交互' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'D1 系统定位与边界' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'D2 业务能力与流程' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'D3 集成与接口' })).toBeInTheDocument();
     expect(screen.getByText('变更时间线')).toBeInTheDocument();
     expect(screen.getByText('暂无变更记录')).toBeInTheDocument();
 
-    expect(screen.getByText('核心职责')).toBeInTheDocument();
+    expect(screen.getByText('系统描述')).toBeInTheDocument();
     expect(screen.getByText('统一支付受理')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '编辑核心职责' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑系统描述' })).toBeInTheDocument();
     expect(screen.queryByLabelText('system_positioning.canonical.core_responsibility')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'D3 系统交互' }));
+    fireEvent.click(screen.getByRole('button', { name: 'D3 集成与接口' }));
 
-    expect(await screen.findByText('作为服务方')).toBeInTheDocument();
+    expect(await screen.findByText('对外提供能力')).toBeInTheDocument();
     expect(screen.getAllByText('支付路由服务')).toHaveLength(1);
     expect(screen.getByText('支付查询交易')).toBeInTheDocument();
     expect(screen.getByText('核心账务、清算平台')).toBeInTheDocument();
     expect(screen.getByText('客户中心服务')).toBeInTheDocument();
     expect(screen.getByText('客户查询交易')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '编辑作为服务方' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑对外提供能力' })).toBeInTheDocument();
     expect(screen.queryByLabelText('integration_interfaces.canonical.provided_services')).not.toBeInTheDocument();
     expect(screen.queryByText(/来源：/)).not.toBeInTheDocument();
     expect(screen.queryByText('扩展信息')).not.toBeInTheDocument();
@@ -1113,9 +1113,9 @@ describe('SystemProfileBoardPage v2.7', () => {
   it('saves canonical edits through preview-first editor', async () => {
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '编辑核心职责' }));
+    fireEvent.click(await screen.findByRole('button', { name: '编辑系统描述' }));
 
-    const input = await screen.findByPlaceholderText('请输入核心职责');
+    const input = await screen.findByPlaceholderText('请输入系统描述');
     fireEvent.change(input, { target: { value: '统一支付受理与渠道接入' } });
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
 
@@ -1223,7 +1223,7 @@ describe('SystemProfileBoardPage v2.7', () => {
 
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: /D5 风险约束/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /D5 约束与风险/ }));
 
     expect(await screen.findByText('检测到 AI 建议变更')).toBeInTheDocument();
     expect(screen.getByText('缓存击穿导致交易超时')).toBeInTheDocument();
@@ -1275,7 +1275,7 @@ describe('SystemProfileBoardPage v2.7', () => {
 
     renderPage();
 
-    const d3Button = await screen.findByRole('button', { name: /D3 系统交互/ });
+    const d3Button = await screen.findByRole('button', { name: /D3 集成与接口/ });
     expect(within(d3Button).getByText('有建议')).toBeInTheDocument();
 
     fireEvent.click(d3Button);
@@ -1292,7 +1292,7 @@ describe('SystemProfileBoardPage v2.7', () => {
     await waitFor(() => {
       expect(screen.queryByText('检测到 AI 建议变更')).not.toBeInTheDocument();
     });
-    expect(within(screen.getByRole('button', { name: /D3 系统交互/ })).queryByText('有建议')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /D3 集成与接口/ })).queryByText('有建议')).not.toBeInTheDocument();
   });
 
   it('renders the cards_v1 board with current content above candidate content for v2.8 payloads', async () => {

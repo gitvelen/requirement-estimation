@@ -247,3 +247,61 @@ def test_breakdown_with_context_retries_with_higher_token_budget_when_json_is_tr
     assert seen_max_tokens[0] == 3000
     assert seen_max_tokens[1] >= 8000
     assert result["features"][0]["功能点"] == "开户注册"
+
+
+def test_breakdown_with_context_chunks_long_content_and_deduplicates_exact_matches(monkeypatch):
+    prompts = []
+
+    def fake_request_json_payload(*, user_prompt, operation_label, temperature=0.5):
+        prompts.append(user_prompt)
+        if "片段B" in user_prompt:
+            return {
+                "features": [
+                    {
+                        "序号": "1.1",
+                        "功能模块": "数据模型优化",
+                        "功能点": "新增FTP分类字段",
+                        "业务描述": "来自片段B",
+                        "预估人天": 1.0,
+                        "复杂度": "中",
+                        "备注": "B",
+                    },
+                    {
+                        "序号": "1.2",
+                        "功能模块": "数据模型优化",
+                        "功能点": "新增FTP分类字段",
+                        "业务描述": "来自片段B-重复",
+                        "预估人天": 1.0,
+                        "复杂度": "中",
+                        "备注": "B-重复",
+                    },
+                ]
+            }
+        return {
+            "features": [
+                {
+                    "序号": "1.1",
+                    "功能模块": "数据模型优化",
+                    "功能点": "新增同业往来新核心记账账号字段",
+                    "业务描述": "来自片段A",
+                    "预估人天": 1.0,
+                    "复杂度": "中",
+                    "备注": "A",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(FeatureBreakdownAgent, "_request_json_payload", staticmethod(fake_request_json_payload))
+
+    agent = FeatureBreakdownAgent(knowledge_service=None)
+    result = agent.breakdown_with_context(
+        requirement_content="片段A\n" + ("A" * 6200) + "\n【附件: attachment.docx】\n片段B\n" + ("B" * 6200),
+        system_name="核心账务",
+        system_type="主系统",
+        task_id="task_chunk",
+    )
+
+    assert len(prompts) >= 2
+    feature_names = [item["功能点"] for item in result["features"]]
+    assert feature_names.count("新增FTP分类字段") == 1
+    assert "新增同业往来新核心记账账号字段" in feature_names

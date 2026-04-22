@@ -975,8 +975,12 @@ async def upload_requirement(
         logger.info(f"接收到文件上传请求: {file.filename}")
 
         # 验证文件名后缀
-        if not file.filename or not file.filename.lower().endswith(".docx"):
-            raise HTTPException(status_code=400, detail="仅支持.docx格式文件")
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+        ext = os.path.splitext(file.filename.lower())[1]
+        allowed_exts = {".docx", ".doc", ".xls"}
+        if ext not in allowed_exts:
+            raise HTTPException(status_code=400, detail="仅支持.docx/.doc/.xls格式文件")
 
         # 读取文件内容
         content = await file.read()
@@ -992,10 +996,15 @@ async def upload_requirement(
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                if mime_type != "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                allowed_mimes = {
+                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                    ".doc": {"application/msword", "application/vnd.ms-word"},
+                    ".xls": {"application/vnd.ms-excel"},
+                }
+                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"无效的文件类型: {mime_type}，仅支持.docx文件"
+                        detail=f"无效的文件类型: {mime_type}，仅支持.docx/.doc/.xls文件"
                     )
             except Exception as e:
                 logger.warning(f"MIME类型检测失败: {e}，继续处理")
@@ -1063,6 +1072,8 @@ async def upload_requirement(
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"文件上传失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
@@ -1096,8 +1107,12 @@ async def evaluate_requirement(
             raise HTTPException(status_code=400, detail="回调地址必须为内网或本机地址")
 
         # 验证文件名后缀
-        if not file.filename or not file.filename.lower().endswith(".docx"):
-            raise HTTPException(status_code=400, detail="仅支持.docx格式文件")
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+        ext = os.path.splitext(file.filename.lower())[1]
+        allowed_exts = {".docx", ".doc", ".xls"}
+        if ext not in allowed_exts:
+            raise HTTPException(status_code=400, detail="仅支持.docx/.doc/.xls格式文件")
 
         # 读取文件内容
         content = await file.read()
@@ -1113,10 +1128,15 @@ async def evaluate_requirement(
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                if mime_type != "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                allowed_mimes = {
+                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                    ".doc": {"application/msword", "application/vnd.ms-word"},
+                    ".xls": {"application/vnd.ms-excel"},
+                }
+                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"无效的文件类型: {mime_type}，仅支持.docx文件"
+                        detail=f"无效的文件类型: {mime_type}，仅支持.docx/.doc/.xls文件"
                     )
             except Exception as e:
                 logger.warning(f"MIME类型检测失败: {e}，继续处理")
@@ -1182,6 +1202,8 @@ async def evaluate_requirement(
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"创建评估任务失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"创建评估任务失败: {str(e)}")

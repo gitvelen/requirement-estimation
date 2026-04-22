@@ -48,6 +48,8 @@
 - `focus_work_item` 为 null 时跳过 work-items 读取
 - `contract_refs` 为空时跳过 contracts 读取
 - appendices 按需深入，不是每次必读
+- 项目文档（`../project-docs/<base_version>/`）不在 readset 中，只在用户明确要求时读取
+- 第一个版本（v1.0）的 base_version 为 null，无项目文档可读
 
 ---
 
@@ -95,18 +97,18 @@
 ## 四、阶段切换前检查
 
 **命令与 gate 映射**（runtime 会自动检查）：
-- `codespec start-requirements` → 检查 `proposal-maturity`
-- `codespec start-design` → 检查 `requirements-approval`
-- `codespec start-implementation <WI-ID>` → 检查 `implementation-ready`
-- `codespec start-testing` → 检查 `metadata-consistency` + `scope` + `contract-boundary` + `verification`
-- `codespec start-deployment` → 检查 `trace-consistency` + `verification`
-- `codespec complete-change` → 检查 `promotion-criteria`
-- `codespec promote-version` → 检查 `promotion`
+- `../.codespec/codespec start-requirements` → 检查 `proposal-maturity`
+- `../.codespec/codespec start-design` → 检查 `requirements-approval`
+- `../.codespec/codespec start-implementation <WI-ID>` → 检查 `implementation-ready`
+- `../.codespec/codespec start-testing` → 检查 `metadata-consistency` + `scope` + `contract-boundary` + `verification`
+- `../.codespec/codespec start-deployment` → 检查 `trace-consistency` + `verification`
+- `../.codespec/codespec complete-change` → 检查 `promotion-criteria`
+- `../.codespec/codespec promote-version` → 检查 `promotion`
 
 **说明**：
 - gate 检查由 runtime 自动执行，失败会阻止阶段切换
-- 手动检查：`codespec check-gate <gate-name>`
-- 详细检查项：`codespec check-gate <gate-name> --verbose`
+- 手动检查：`../.codespec/codespec check-gate <gate-name>`
+- 详细检查项：`../.codespec/codespec check-gate <gate-name> --verbose`
 
 ---
 

@@ -431,7 +431,7 @@ def _extract_table_tail_value(line: str) -> str:
 
 
 class DocumentSkillAdapter:
-    ALLOWED_EXTENSIONS = {".docx", ".pdf", ".pptx"}
+    ALLOWED_EXTENSIONS = {".doc", ".docx", ".pdf", ".pptx"}
 
     def __init__(self) -> None:
         self.document_parser = get_document_parser()

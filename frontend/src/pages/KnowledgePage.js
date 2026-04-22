@@ -163,7 +163,7 @@ const KnowledgePage = () => {
       name: 'file',
       disabled: !canUpload || !selectedSystem,
       action: '/api/v1/knowledge/imports',
-      accept: '.docx,.pptx',
+      accept: '.docx,.doc,.pptx',
       data: {
         knowledge_type: 'system_profile',
         level: 'normal',
@@ -181,9 +181,9 @@ const KnowledgePage = () => {
         }
 
         const name = (file?.name || '').toLowerCase();
-        const isValidType = name.endsWith('.docx') || name.endsWith('.pptx');
+        const isValidType = name.endsWith('.docx') || name.endsWith('.doc') || name.endsWith('.pptx');
         if (!isValidType) {
-          message.error('系统知识仅支持 DOCX / PPTX');
+          message.error('系统知识仅支持 DOCX / DOC / PPTX');
           return Upload.LIST_IGNORE;
         }
 

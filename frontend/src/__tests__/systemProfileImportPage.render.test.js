@@ -149,4 +149,25 @@ describe('SystemProfileImportPage batch import', () => {
       );
     });
   });
+
+  it('allows legacy doc files in batch import selection', async () => {
+    renderPage();
+
+    const importCard = screen.getByText('文档导入').closest('.ant-card');
+    const input = importCard.querySelector('input[type="file"]');
+    const legacyFile = new File(['legacy'], 'requirements.doc', { type: 'application/msword' });
+    fireEvent.change(input, { target: { files: [legacyFile] } });
+
+    fireEvent.click(await screen.findByRole('button', { name: '批量导入文档' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith(
+        '/api/v1/system-profiles/sys_pay/profile/import-batch',
+        expect.any(FormData),
+        expect.objectContaining({
+          headers: { 'Content-Type': 'multipart/form-data' },
+        }),
+      );
+    });
+  });
 });

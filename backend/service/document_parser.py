@@ -8,8 +8,10 @@ import json
 import re
 import zipfile
 from io import StringIO, BytesIO
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from pathlib import Path
+
+from backend.utils.embedded_attachment_extractor import EmbeddedAttachmentExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,46 @@ class DocumentParser:
 
     def __init__(self):
         """初始化解析器"""
+        self._attachment_extractor = EmbeddedAttachmentExtractor(self._parse_with_context)
         logger.info("文档解析服务初始化完成")
+
+    def _parse_with_context(
+        self,
+        file_content: bytes,
+        filename: str,
+        file_type: Optional[str] = None,
+        depth: int = 0,
+        seen_hashes: Optional[Set[str]] = None,
+    ) -> Any:
+        if seen_hashes is None:
+            seen_hashes = set()
+
+        if file_type is None:
+            file_type = Path(filename).suffix.lower().lstrip('.')
+
+        if file_type not in self.SUPPORTED_TYPES:
+            raise ValueError(
+                f"不支持的文件类型: {file_type}，"
+                f"支持的类型: {', '.join(self.SUPPORTED_TYPES.keys())}"
+            )
+
+        logger.info(f"开始解析文档: {filename} (类型: {file_type}, depth={depth})")
+
+        if file_type == "csv":
+            return self._parse_csv(file_content)
+        if file_type == "doc":
+            return self._parse_doc(file_content, filename)
+        if file_type == "docx":
+            return self._parse_docx(file_content, depth=depth, seen_hashes=seen_hashes, filename=filename)
+        if file_type == "xls":
+            return self._parse_xls(file_content, filename)
+        if file_type == "xlsx":
+            return self._parse_xlsx(file_content)
+        if file_type == "pdf":
+            return self._parse_pdf(file_content)
+        if file_type == "pptx":
+            return self._parse_pptx(file_content)
+        raise ValueError(f"未实现的文件类型: {file_type}")
 
     def parse(
         self,
@@ -77,37 +118,7 @@ class DocumentParser:
             ValueError: 不支持的文件类型
             Exception: 解析失败
         """
-        # 推断文件类型
-        if file_type is None:
-            file_ext = Path(filename).suffix.lower().lstrip('.')
-            file_type = file_ext
-
-        # 验证文件类型
-        if file_type not in self.SUPPORTED_TYPES:
-            raise ValueError(
-                f"不支持的文件类型: {file_type}，"
-                f"支持的类型: {', '.join(self.SUPPORTED_TYPES.keys())}"
-            )
-
-        logger.info(f"开始解析文档: {filename} (类型: {file_type})")
-
-        # 根据类型解析
-        if file_type == "csv":
-            return self._parse_csv(file_content)
-        elif file_type == "doc":
-            return self._parse_doc(file_content, filename)
-        elif file_type == "docx":
-            return self._parse_docx(file_content)
-        elif file_type == "xls":
-            return self._parse_xls(file_content, filename)
-        elif file_type == "xlsx":
-            return self._parse_xlsx(file_content)
-        elif file_type == "pdf":
-            return self._parse_pdf(file_content)
-        elif file_type == "pptx":
-            return self._parse_pptx(file_content)
-        else:
-            raise ValueError(f"未实现的文件类型: {file_type}")
+        return self._parse_with_context(file_content, filename, file_type=file_type, depth=0, seen_hashes=set())
 
     def _parse_csv(self, file_content: bytes) -> List[Dict[str, Any]]:
         """
@@ -149,7 +160,13 @@ class DocumentParser:
             logger.error(f"CSV解析失败: {str(e)}")
             raise
 
-    def _parse_docx(self, file_content: bytes) -> List[Dict[str, Any]]:
+    def _parse_docx(
+        self,
+        file_content: bytes,
+        depth: int = 0,
+        seen_hashes: Optional[Set[str]] = None,
+        filename: str = "embedded.docx",
+    ) -> List[Dict[str, Any]]:
         """
         解析DOCX文件
 
@@ -189,15 +206,33 @@ class DocumentParser:
                     "data": table_data
                 })
 
-            logger.info(f"DOCX解析成功: {len(paragraphs)}个段落, {len(tables)}个表格")
+            attachments = []
+            attachment_errors = []
+            if seen_hashes is None:
+                seen_hashes = set()
+            extracted_attachments, extracted_errors = self._attachment_extractor.extract_from_ooxml(
+                file_content,
+                host_filename=filename,
+                depth=depth,
+                seen_hashes=seen_hashes,
+            )
+            attachments.extend(extracted_attachments)
+            attachment_errors.extend(extracted_errors)
+
+            logger.info(
+                f"DOCX解析成功: {len(paragraphs)}个段落, {len(tables)}个表格, {len(attachments)}个附件正文"
+            )
 
             # 返回结构化数据
             return {
                 "paragraphs": paragraphs,
                 "tables": tables,
+                "attachments": attachments,
+                "attachment_errors": attachment_errors,
                 "metadata": {
                     "total_paragraphs": len(paragraphs),
-                    "total_tables": len(tables)
+                    "total_tables": len(tables),
+                    "total_attachments": len(attachments),
                 }
             }
 

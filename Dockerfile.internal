@@ -29,8 +29,8 @@ RUN chown -R appuser:appuser /app
 # 设置 PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# 验证关键依赖
-RUN python -c "import fastapi, uvicorn; print('Dependencies OK')"
+# 验证Python依赖是否完整（构建时检查）
+RUN python -c "import sys; sys.path.insert(0, './'); import backend.app; print('Dependencies OK')" || (echo "依赖检查失败，请检查 pyproject.toml / uv.lock" && exit 1)
 
 # 复制 entrypoint.sh
 COPY --chown=appuser:appuser entrypoint.sh /app/

@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import tempfile
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,8 +60,13 @@ def _run_soffice_convert(*, input_path: str, outdir: str, convert_to: str, timeo
       - "txt:Text"
       - "xlsx"
     """
+    profile_dir = os.path.join(outdir, "lo_profile")
+    os.makedirs(profile_dir, exist_ok=True)
+    profile_uri = f"file://{quote(profile_dir)}"
+
     cmd = [
         "soffice",
+        f"-env:UserInstallation={profile_uri}",
         "--headless",
         "--nologo",
         "--nofirststartwizard",
@@ -74,7 +80,6 @@ def _run_soffice_convert(*, input_path: str, outdir: str, convert_to: str, timeo
     ]
 
     env = os.environ.copy()
-    env["HOME"] = outdir
     env["TMPDIR"] = outdir
 
     try:

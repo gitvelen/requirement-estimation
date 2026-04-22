@@ -370,6 +370,44 @@ def test_v27_profile_import_uses_runtime_and_execution_status_aliases(client, mo
     assert history_item["execution_id"] == payload["execution_id"]
 
 
+def test_v27_profile_import_accepts_legacy_doc(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
+    monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
+    monkeypatch.setattr(settings, "KNOWLEDGE_ENABLED", False)
+
+    manager = _seed_user("import_v27_doc_owner", "pwd123", ["manager"])
+    token = _login(client, "import_v27_doc_owner", "pwd123")
+    _seed_system("PAY", "sys_pay_doc", owner_id=manager["id"])
+
+    adapter = document_skill_adapter.get_document_skill_adapter()
+    called = {}
+
+    def fake_ingest_document(**kwargs):
+        called.update(kwargs)
+        return {
+            "execution": {
+                "execution_id": "exec_doc_001",
+                "status": "completed",
+                "error": None,
+            },
+            "resolved_doc_type": "requirements",
+            "artifact_refs": {},
+        }
+
+    monkeypatch.setattr(adapter, "ingest_document", fake_ingest_document)
+
+    response = client.post(
+        "/api/v1/system-profiles/sys_pay_doc/profile/import",
+        data={"doc_type": "requirements"},
+        files={"file": ("requirements.doc", b"fake-doc-content", "application/msword")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert called["file_name"] == "requirements.doc"
+    assert called["file_content"] == b"fake-doc-content"
+
+
 def test_v27_profile_import_writes_document_candidate_bundle_and_latest_projection_under_system_workspace(client, monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_V27_PROFILE_SCHEMA", True)
     monkeypatch.setattr(settings, "ENABLE_V27_RUNTIME", True)
