@@ -1,9 +1,9 @@
 # codespec 元数据文件
 # 记录当前变更的状态和执行上下文
 
-change_id: baseline # 变更唯一标识
-base_version: null # 基线版本
-created_at: 2026-04-19 # 创建时间
+change_id: v2.8-next # 变更唯一标识
+base_version: v2.8 # 基线版本
+created_at: 2026-04-21 # 创建时间
 phase: Deployment # 当前阶段：Proposal | Requirements | Design | Implementation | Testing | Deployment
 status: completed # 当前状态：active | blocked | completed
 # status 语义：
@@ -21,14 +21,15 @@ active_work_items: []
 # active_work_items 语义：
 # - Implementation 阶段：正在执行的 WI（单分支串行时累积，多分支并行时各分支独立）
 # - Testing 阶段：保留 Implementation 阶段的值，用于 verification gate 聚合所有需要验证的 work items
-# - Deployment 阶段：清空（所有 WI 已完成最终验收）
+# - Deployment 阶段（status=active）：保留 Testing 阶段的值，用于最终 verification / promotion gate
+# - Completed 状态（phase=Deployment, status=completed）：清空，表示当前已无活跃验证集合
 # 累积规则：
 # - 单分支串行：每开始一个新 WI，添加到列表（如 [WI-001] -> [WI-001, WI-002]）
 # - 多分支并行：执行分支只包含自己的 WI，parent feature 分支包含所有并行 WI
 
-feature_branch: main # parent feature 分支名（如 "feature/add-auth"）
+feature_branch: feature-v2.10 # parent feature 分支名（如 "feature/add-auth"）
 # 阻塞信息（仅当 status=blocked 时填写）
 blocked_reason: null # 阻塞原因描述
 blocked_by: null # 阻塞依赖（如 "WI-001" 或外部因素）
-updated_at: 2026-04-20 # 最后更新时间
+updated_at: 2026-04-21 # 最后更新时间
 updated_by: codespec-cli # 最后更新人

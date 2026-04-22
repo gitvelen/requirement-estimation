@@ -74,6 +74,15 @@ const createProfilePayload = (overrides = {}) => ({
 
 const setupAxiosMock = (profileOverrides) => {
   const profile = createProfilePayload(profileOverrides);
+  const suggestionAliasMap = {
+    system_positioning: {
+      core_responsibility: 'system_description',
+    },
+    constraints_risks: {
+      prerequisites: 'key_constraints',
+      risk_items: 'known_risks',
+    },
+  };
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -126,11 +135,12 @@ const setupAxiosMock = (profileOverrides) => {
     if (String(url).includes('/profile/suggestions/ignore')) {
       const domain = String(payload?.domain || '').trim();
       const subField = String(payload?.sub_field || '').trim();
-      const suggestion = profile.ai_suggestions?.[domain]?.[subField];
+      const aliasedSubField = suggestionAliasMap?.[domain]?.[subField] || subField;
+      const suggestion = profile.ai_suggestions?.[domain]?.[aliasedSubField];
       if (domain && subField && suggestion !== undefined) {
         profile.ai_suggestion_ignored = {
           ...(profile.ai_suggestion_ignored || {}),
-          [`${domain}.${subField}`]: clone(suggestion),
+          [`${domain}.${aliasedSubField}`]: clone(suggestion),
         };
       }
       return Promise.resolve({
@@ -212,10 +222,8 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
 
     expect(await screen.findByText('系统描述')).toBeInTheDocument();
     expect(await screen.findByText('企业用户')).toBeInTheDocument();
-    expect(screen.getByText('仅覆盖开户流程')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '编辑系统描述' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '编辑目标用户' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '编辑边界说明' })).toBeInTheDocument();
     expect(screen.queryAllByPlaceholderText('请输入系统描述')).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('button', { name: '编辑系统描述' }));
@@ -320,15 +328,12 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
     expect(await screen.findByText('性能画像')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '编辑性能画像' })).toBeInTheDocument();
     expect(screen.queryByText('当前性能画像')).not.toBeInTheDocument();
-    expect(screen.getByText('并发量')).toBeInTheDocument();
-    expect(screen.getByText('20并发下，平均20TPS')).toBeInTheDocument();
-    expect(screen.queryAllByPlaceholderText('指标名称')).toHaveLength(0);
+    expect(screen.queryAllByPlaceholderText('指标值')).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('button', { name: '编辑性能画像' }));
 
-    expect(screen.getAllByPlaceholderText('指标名称')).toHaveLength(2);
-    expect(screen.getByDisplayValue('并发量')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('20并发下，平均20TPS')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('请输入处理模式')).toBeInTheDocument();
+    expect(screen.getAllByPlaceholderText('指标值').length).toBeGreaterThan(0);
   }, 120000);
 
   it('applies the preview-first flow to D2 fields and shows header actions', async () => {
@@ -399,7 +404,7 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith(
         '/api/v1/system-profiles/sys_alpha/profile/suggestions/ignore',
-        { domain: 'system_positioning', sub_field: 'system_description' }
+        { domain: 'system_positioning', sub_field: 'core_responsibility' }
       );
     });
     expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
@@ -444,7 +449,7 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
     await waitFor(() => {
       expect(axios.post).toHaveBeenCalledWith(
         '/api/v1/system-profiles/sys_alpha/profile/suggestions/ignore',
-        { domain: 'constraints_risks', sub_field: 'key_constraints' }
+        { domain: 'constraints_risks', sub_field: 'prerequisites' }
       );
     });
     expect(screen.queryByRole('button', { name: '采纳新建议' })).not.toBeInTheDocument();
@@ -467,11 +472,12 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'D3 集成与接口' }));
     expect(await screen.findByText('集成点')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '编辑集成点' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '编辑外部依赖' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑对外提供能力' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑对外依赖能力' })).toBeInTheDocument();
     expect(screen.queryByText('当前集成点')).not.toBeInTheDocument();
-    expect(screen.queryAllByPlaceholderText('集成说明')).toHaveLength(0);
+    expect(screen.queryAllByPlaceholderText('说明')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '编辑集成点' }));
-    expect(screen.getAllByPlaceholderText('集成说明').length).toBeGreaterThan(0);
+    expect(screen.getAllByPlaceholderText('说明').length).toBeGreaterThan(0);
   }, 20000);
 
   it('applies the preview-first flow to D5 fields and shows header actions', async () => {
@@ -484,11 +490,11 @@ describe('SystemProfileBoardPage v2.4 baseline', () => {
     expect(screen.queryByText('当前关键约束')).not.toBeInTheDocument();
     expect(screen.queryByText('当前已知风险')).not.toBeInTheDocument();
     expect(screen.queryAllByPlaceholderText('约束类别')).toHaveLength(0);
-    expect(screen.queryAllByPlaceholderText('请输入已知风险')).toHaveLength(0);
+    expect(screen.queryAllByPlaceholderText('风险事项')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '编辑关键约束' }));
     expect(screen.getByPlaceholderText('约束类别')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '编辑已知风险' }));
-    expect(screen.getByPlaceholderText('请输入已知风险')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('风险事项')).toBeInTheDocument();
   }, 20000);
 
   it('renders mixed diff previews for text list table and tree fields', () => {

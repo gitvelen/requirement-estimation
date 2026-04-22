@@ -52,6 +52,7 @@ dependencies = [
     "dashscope>=1.14.0",
     "PyMySQL>=1.0.0",
     "xlrd",
+    "olefile",
 ]
 
 [project.optional-dependencies]

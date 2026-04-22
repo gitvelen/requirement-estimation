@@ -9,6 +9,7 @@ import copy
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from backend.api import system_routes
@@ -24,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 def _normalize_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _dedupe_key_for_feature(feature: Dict[str, Any]) -> tuple[str, str]:
+    return (
+        _normalize_text(feature.get("功能模块")),
+        _normalize_text(feature.get("功能点")),
+    )
 
 
 class FeatureAdjustmentMemoryAdapter:
@@ -230,6 +238,111 @@ class FeatureBreakdownAgent:
 
         logger.info(f"{self.name}初始化完成（画像上下文：已启用）")
 
+    def _split_requirement_content(self, requirement_content: str, *, max_chunk_chars: int = 6000) -> List[str]:
+        text = str(requirement_content or "").strip()
+        if not text:
+            return [""]
+
+        segments: List[str] = []
+        current: List[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if current and self._is_chunk_boundary(stripped):
+                segments.append("\n".join(current))
+                current = [stripped]
+                continue
+            current.append(stripped)
+        if current:
+            segments.append("\n".join(current))
+
+        packed: List[str] = []
+        current_chunk = ""
+        for segment in segments:
+            if not current_chunk:
+                current_chunk = segment
+                continue
+            if len(current_chunk) + 2 + len(segment) <= max_chunk_chars:
+                current_chunk = f"{current_chunk}\n\n{segment}"
+                continue
+            packed.append(current_chunk)
+            current_chunk = segment
+        if current_chunk:
+            packed.append(current_chunk)
+
+        return packed or [text]
+
+    def _is_chunk_boundary(self, line: str) -> bool:
+        if line.startswith("【附件:"):
+            return True
+        if line.startswith("（") and line.endswith("）"):
+            return True
+        if re.match(r"^\d+[.、].+", line):
+            return True
+        if re.match(r"^\d+\.\d+.+", line):
+            return True
+        if re.match(r"^[一二三四五六七八九十]+[、，].+", line):
+            return True
+        return False
+
+    def _build_breakdown_prompt(
+        self,
+        *,
+        requirement_content: str,
+        system_name: str,
+        system_type: str,
+        memory_context: Dict[str, Any],
+        knowledge_context: str,
+    ) -> str:
+        user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
+        user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
+
+        prompt_context = _normalize_text(memory_context.get("prompt_context"))
+        if prompt_context:
+            user_prompt += f"""【画像与Memory约束】\n{prompt_context}\n\n"""
+            user_prompt += "请优先复用已确认的命名、模块归属和系统边界，避免与历史稳定模式冲突。\n\n"
+
+        if knowledge_context:
+            user_prompt += f"""【系统画像参考】\n{knowledge_context}\n\n"""
+            user_prompt += "请参考上述系统画像（边界、核心能力、交互关系、技术约束等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
+
+        user_prompt += """拆分要求：
+1. 只拆分属于该系统的功能点
+2. 功能点粒度控制在0.5-5人天
+3. 明确标注依赖关系
+4. 评估复杂度（高/中/低）
+5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
+        return user_prompt
+
+    def _merge_chunk_features(self, feature_groups: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        index_by_key: Dict[tuple[str, str], int] = {}
+
+        for group in feature_groups:
+            for feature in group:
+                key = _dedupe_key_for_feature(feature)
+                if key not in index_by_key:
+                    index_by_key[key] = len(merged)
+                    merged.append(copy.deepcopy(feature))
+                    continue
+
+                existing = merged[index_by_key[key]]
+                current_score = sum(1 for item in feature.values() if _normalize_text(item))
+                existing_score = sum(1 for item in existing.values() if _normalize_text(item))
+                if current_score > existing_score:
+                    merged[index_by_key[key]] = copy.deepcopy(feature)
+                    existing = merged[index_by_key[key]]
+
+                merged_remark = _normalize_text(existing.get("备注"))
+                new_remark = _normalize_text(feature.get("备注"))
+                if new_remark and new_remark not in merged_remark:
+                    existing["备注"] = f"{merged_remark}\n{new_remark}".strip() if merged_remark else new_remark
+
+        for idx, feature in enumerate(merged, start=1):
+            feature["序号"] = f"1.{idx}"
+        return merged
+
     def _should_retry_json_parse(self, response_text: str) -> bool:
         text = str(response_text or "").strip()
         if not text:
@@ -335,40 +448,36 @@ class FeatureBreakdownAgent:
             except Exception as e:
                 logger.warning(f"[功能拆分] 画像上下文组装失败: {e}，继续使用传统方式")
 
-            user_prompt = f"""需求内容：\n\n{requirement_content}\n\n"""
-            user_prompt += f"""请针对【{system_name}】（类型：{system_type}）进行功能点拆分。\n\n"""
+            chunk_results: List[List[Dict[str, Any]]] = []
+            chunks = self._split_requirement_content(requirement_content)
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                user_prompt = self._build_breakdown_prompt(
+                    requirement_content=chunk,
+                    system_name=system_name,
+                    system_type=system_type,
+                    memory_context=memory_context,
+                    knowledge_context=knowledge_context,
+                )
 
-            prompt_context = _normalize_text(memory_context.get("prompt_context"))
-            if prompt_context:
-                user_prompt += f"""【画像与Memory约束】\n{prompt_context}\n\n"""
-                user_prompt += "请优先复用已确认的命名、模块归属和系统边界，避免与历史稳定模式冲突。\n\n"
+                result = self._request_json_payload(
+                    user_prompt=user_prompt,
+                    operation_label=f"{system_name} 功能拆分 chunk {chunk_index}/{len(chunks)}",
+                )
 
-            if knowledge_context:
-                user_prompt += f"""【系统画像参考】\n{knowledge_context}\n\n"""
-                user_prompt += "请参考上述系统画像（边界、核心能力、交互关系、技术约束等）进行拆分，避免将其他系统的功能误拆入本系统。\n\n"
+                if "features" not in result:
+                    raise ValueError("响应中缺少'features'字段")
 
-            user_prompt += """拆分要求：
-1. 只拆分属于该系统的功能点
-2. 功能点粒度控制在0.5-5人天
-3. 明确标注依赖关系
-4. 评估复杂度（高/中/低）
-5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
+                features = result["features"]
+                for idx, feature in enumerate(features, start=1):
+                    if "序号" not in feature:
+                        feature["序号"] = f"1.{idx}"
 
-            result = self._request_json_payload(
-                user_prompt=user_prompt,
-                operation_label=f"{system_name} 功能拆分",
-            )
+                for feature in features:
+                    self._validate_feature(feature)
 
-            if "features" not in result:
-                raise ValueError("响应中缺少'features'字段")
+                chunk_results.append(features)
 
-            features = result["features"]
-            for idx, feature in enumerate(features, start=1):
-                if "序号" not in feature:
-                    feature["序号"] = f"1.{idx}"
-
-            for feature in features:
-                self._validate_feature(feature)
+            features = self._merge_chunk_features(chunk_results)
 
             try:
                 self._apply_kb_calibration_to_features(

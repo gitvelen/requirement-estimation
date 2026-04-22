@@ -323,6 +323,30 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client, monkey
     assert "soffice未安装" in str(payload.get("message") or "")
 
 
+def test_knowledge_import_accepts_legacy_doc(client, monkeypatch):
+    manager = _seed_user("kmgr_doc_import", "pwd123", ["manager"])
+    token = _login(client, "kmgr_doc_import", "pwd123")
+    _seed_system("HOP", "sys_hop", owner_id=manager["id"])
+
+    service = ks.get_knowledge_service()
+    monkeypatch.setattr(service.document_parser, "parse", lambda **_kwargs: {"text": "老式Word系统说明正文"})
+
+    response = client.post(
+        "/api/v1/knowledge/imports",
+        data={
+            "knowledge_type": "document",
+            "level": "normal",
+            "system_id": "sys_hop",
+        },
+        files={"file": ("legacy.doc", b"fake-doc-content", "application/msword")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported"] >= 1
+
+
 def test_knowledge_import_passes_cleaned_document_text_to_summary_job(client, monkeypatch):
     manager = _seed_user("kmgr_full_text", "pwd123", ["manager"])
     token = _login(client, "kmgr_full_text", "pwd123")

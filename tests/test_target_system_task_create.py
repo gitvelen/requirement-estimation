@@ -74,6 +74,14 @@ def _build_docx_upload():
     )
 
 
+def _build_doc_upload():
+    return (
+        "requirements.doc",
+        b"fake-doc-content",
+        "application/msword",
+    )
+
+
 def test_create_task_persists_specific_target_system(client):
     manager = _seed_user("pm_target_1", "pwd123", ["manager"])
     _seed_systems(
@@ -115,6 +123,40 @@ def test_create_task_persists_specific_target_system(client):
     assert task["name"] == "目标系统任务"
     assert task["target_system_mode"] == "specific"
     assert task["target_system_name"] == "支付系统"
+
+
+def test_create_task_accepts_legacy_doc_upload(client):
+    manager = _seed_user("pm_target_doc", "pwd123", ["manager"])
+    _seed_systems(
+        [
+            {
+                "id": "sys_pay",
+                "name": "支付系统",
+                "abbreviation": "PAY",
+                "status": "运行中",
+                "extra": {"owner_id": manager["id"], "owner_username": "pm_target_doc"},
+            }
+        ]
+    )
+    token = _login(client, "pm_target_doc", "pwd123")
+
+    response = client.post(
+        "/api/v1/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": _build_doc_upload()},
+        data={
+            "name": "老式文档任务",
+            "target_system_mode": "specific",
+            "target_system_name": "支付系统",
+        },
+    )
+
+    assert response.status_code == 200
+
+    with task_routes._task_storage_context() as data:
+        task = next(iter(data.values()))
+
+    assert task["filename"] == "requirements.doc"
 
 
 def test_create_task_rejects_specific_system_outside_manager_scope(client):

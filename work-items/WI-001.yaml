@@ -1,18 +1,21 @@
 wi_id: WI-001
-goal: "实现待评估系统的创建入口、候选项解析与任务元数据持久化"
+goal: "在解析器内部补齐附件递归解析与正文合并，使现有任务主链路自动获得更完整的 requirement_content"
 scope:
-  - "在创建页新增待评估系统单选并提交 target system 参数"
-  - "在后端创建接口校验 specific/unlimited 选择并持久化任务字段"
-  - "在任务详情与编辑结果基础响应中回传 target system 元数据"
+  - "新增通用附件提取器，扫描 DOCX/XLSX/PPTX 宿主中的嵌入附件并识别支持格式正文"
+  - "在 DocxParser 主入口合并主文档正文与附件正文，保持现有返回字段不变"
+  - "为递归深度、循环检测、大小/数量/超时保护和错误隔离补齐自动化测试"
 out_of_scope:
-  - "不改 AI 编排分支和功能点拆分逻辑"
-  - "不实现编辑期系统级锁定"
+  - "不修改 backend/agent/** 的系统识别、功能点拆分或估算逻辑"
+  - "不修改 backend/api/** 的任务接口、任务存储或返回结构"
+  - "不新增前端附件展示、来源标注或报告格式变更"
+
 allowed_paths:
-  - frontend/src/pages/UploadPage.js
-  - frontend/src/utils/systemOwnership.js
-  - frontend/src/__tests__/uploadPage.targetSystem.test.js
-  - backend/api/routes.py
-  - backend/api/system_routes.py
+  - backend/utils/docx_parser.py
+  - backend/service/document_parser.py
+  - backend/utils/embedded_attachment_extractor.py
+  - tests/test_docx_parser.py
+  - tests/test_document_parser.py
+  - tests/test_attachment_extraction.py
   - testing.md
   - meta.yaml
 forbidden_paths:
@@ -22,6 +25,9 @@ forbidden_paths:
   - work-items/**
   - contracts/**
   - deployment.md
+  - backend/agent/**
+  - backend/api/**
+  - frontend/**
 
 branch_execution:
   execution_group: null
@@ -29,25 +35,32 @@ branch_execution:
   owned_paths: []
   shared_paths: []
   shared_file_owner: parent-feature
-  merge_order: 1
+  merge_order: single-branch-only
   conflict_policy: stop and update design before expanding shared scope
 
 phase_scope: Implementation
 
 input_refs:
-  - docs/inputs/2026-04-19-target-system-scope.md#intent
-  - docs/inputs/2026-04-19-target-system-scope.md#system-scope-rule
-  - docs/inputs/2026-04-19-target-system-scope.md#empty-owned-systems
+  - docs/inputs/attachment-parsing-requirement.md
 requirement_refs:
   - REQ-001
   - REQ-002
+  - REQ-003
+  - REQ-004
+  - REQ-005
 acceptance_refs:
   - ACC-001
   - ACC-002
+  - ACC-003
+  - ACC-004
+  - ACC-005
 verification_refs:
   - VO-001
   - VO-002
-derived_from: design.md#work-item-derivation
+  - VO-003
+  - VO-004
+  - VO-005
+derived_from: DS-001
 dependency_refs: []
 dependency_type: none
 contract_refs: []
@@ -56,15 +69,19 @@ evidence_refs: []
 
 verification_profile: focused
 required_verification:
-  - "创建页渲染测试覆盖字段顺序、候选项顺序和 only-不限 场景"
-  - "创建接口与详情/结果接口测试覆盖合法 specific、非法 specific 和持久化字段回传"
+  - "pytest tests/test_attachment_extraction.py -q"
+  - "pytest tests/test_docx_parser.py tests/test_document_parser.py -q"
+  - "验证无附件文档结果不回归，且损坏附件不会中断整体解析"
 
 stop_conditions:
-  - "如果候选项来源无法仅通过现有系统清单和主责/B角解析确定"
-  - "如果实现需要修改任务列表展示范围"
+  - "如果实现需要修改 backend/agent/**、backend/api/** 或 frontend/**，立即停止并回到 design 对齐"
+  - "如果真实附件样例无法通过现有依赖稳定解包，需要先确认是否允许新增依赖或缩小支持边界"
+  - "如果正文合并策略会改变现有无附件文档的任务结果语义，需要先回写 spec/design"
 reopen_triggers:
-  - "task 元数据字段命名与 design.md 不一致"
-  - "历史任务兼容默认值不是 unlimited"
+  - "发现必须新增 API/UI 字段来表达附件来源、层级或错误详情"
+  - "发现支持边界需要从 DOCX/XLSX/PPTX/PDF 缩减或扩大"
+  - "发现资源保护默认值无法满足现有样例，需要调整 spec 约束"
 hard_constraints:
-  - "服务端必须重新校验 specific 系统归属，不能只信任前端"
-  - "无相关系统时创建页必须仍允许选择并提交 unlimited"
+  - "禁止修改已有 Agent 核心逻辑"
+  - "递归深度默认不超过 3 层，单附件默认不超过 10MB，附件总数默认不超过 20 个"
+  - "单个附件解析失败只能记录并跳过，不能中断整个主文档处理流程"

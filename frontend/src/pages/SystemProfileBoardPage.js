@@ -29,7 +29,7 @@ const { Text } = Typography;
 const DOMAIN_CONFIG = [
   {
     key: 'system_positioning',
-    label: 'D1 系统定位',
+    label: 'D1 系统定位与边界',
     fields: [
       { key: 'system_type', label: '系统类型', type: 'text' },
       { key: 'system_aliases', label: '系统别名', type: 'list' },
@@ -44,21 +44,21 @@ const DOMAIN_CONFIG = [
   },
   {
     key: 'business_capabilities',
-    label: 'D2 业务能力',
+    label: 'D2 业务能力与流程',
     fields: [
-      { key: 'functional_modules', label: '功能模块', type: 'named_list' },
+      { key: 'functional_modules', label: '模块结构', type: 'named_list' },
       { key: 'business_scenarios', label: '典型场景', type: 'named_list' },
-      { key: 'business_flows', label: '业务流程', type: 'named_list' },
+      { key: 'business_flows', label: '核心流程', type: 'named_list' },
       { key: 'data_reports', label: '数据报表', type: 'data_report_list' },
     ],
   },
   {
     key: 'integration_interfaces',
-    label: 'D3 系统交互',
+    label: 'D3 集成与接口',
     fields: [
-      { key: 'provided_services', label: '作为服务方', type: 'service_list' },
-      { key: 'consumed_services', label: '作为消费方', type: 'service_list' },
-      { key: 'other_integrations', label: '其他集成', type: 'integration_list' },
+      { key: 'provided_services', label: '对外提供能力', type: 'service_list' },
+      { key: 'consumed_services', label: '对外依赖能力', type: 'service_list' },
+      { key: 'other_integrations', label: '集成点', type: 'integration_list' },
     ],
   },
   {
@@ -73,12 +73,12 @@ const DOMAIN_CONFIG = [
   },
   {
     key: 'constraints_risks',
-    label: 'D5 风险约束',
+    label: 'D5 约束与风险',
     fields: [
-      { key: 'business_constraints', label: '业务约束', type: 'named_list' },
+      { key: 'business_constraints', label: '关键约束', type: 'named_list' },
       { key: 'prerequisites', label: '前提条件', type: 'named_list' },
       { key: 'sensitive_points', label: '敏感环节', type: 'named_list' },
-      { key: 'risk_items', label: '风险事项', type: 'risk_list' },
+      { key: 'risk_items', label: '已知风险', type: 'risk_list' },
     ],
   },
 ];
@@ -424,6 +424,64 @@ const LEGACY_SUGGESTION_FIELD_ALIASES = {
   },
 };
 
+const LEGACY_PROFILE_FIELD_ALIASES = {
+  system_positioning: {
+    target_users: ['target_users'],
+    core_responsibility: ['core_responsibility', 'system_description'],
+  },
+  business_capabilities: {
+    functional_modules: ['functional_modules', 'module_structure'],
+    business_flows: ['business_flows', 'core_processes'],
+  },
+  integration_interfaces: {
+    other_integrations: ['other_integrations', 'integration_points', 'external_dependencies'],
+  },
+  technical_architecture: {
+    architecture_style: ['architecture_style', 'architecture_positioning'],
+    tech_stack: ['tech_stack'],
+    performance_baseline: ['performance_baseline', 'performance_profile'],
+  },
+  constraints_risks: {
+    business_constraints: ['business_constraints', 'key_constraints'],
+    risk_items: ['risk_items', 'known_risks'],
+  },
+};
+
+const LEGACY_FIELD_LABELS = {
+  'system_positioning.target_users': '目标用户',
+  'system_positioning.core_responsibility': '系统描述',
+  'business_capabilities.functional_modules': '模块结构',
+  'business_capabilities.business_flows': '核心流程',
+  'integration_interfaces.other_integrations': '集成点',
+  'constraints_risks.business_constraints': '关键约束',
+  'constraints_risks.risk_items': '已知风险',
+  'technical_architecture.performance_baseline': '性能画像',
+};
+
+const LEGACY_EDITOR_LABELS = {
+  'system_positioning.core_responsibility': '系统描述',
+  'system_positioning.target_users': '目标用户',
+  'business_capabilities.functional_modules': '模块结构',
+  'business_capabilities.business_flows': '核心流程',
+  'integration_interfaces.other_integrations': '集成点',
+  'constraints_risks.business_constraints': '关键约束',
+  'constraints_risks.risk_items': '已知风险',
+  'technical_architecture.performance_baseline': '性能画像',
+};
+
+const getLegacyFieldLabel = (domainKey, field) => (
+  LEGACY_FIELD_LABELS[`${domainKey}.${field.key}`] || field.label
+);
+
+const getLegacyEditorLabel = (domainKey, field) => (
+  LEGACY_EDITOR_LABELS[`${domainKey}.${field.key}`] || getLegacyFieldLabel(domainKey, field)
+);
+
+const getLegacyProfileFieldCandidates = (domainKey, fieldKey) => {
+  const aliasFields = LEGACY_PROFILE_FIELD_ALIASES[domainKey]?.[fieldKey] || [];
+  return [fieldKey, ...aliasFields].filter((item, index, array) => item && array.indexOf(item) === index);
+};
+
 const EMPTY_SERVICE_ROW = {
   service_name: '',
   transaction_name: '',
@@ -734,6 +792,16 @@ const normalizePerformanceBaseline = (value) => {
   const source = value && typeof value === 'object' ? value : {};
   const next = deepClone(template);
 
+  const legacyEntries = Object.entries(source)
+    .filter(([key]) => !['online', 'batch', 'processing_model'].includes(key))
+    .map(([metric, metricValue]) => [normalizeString(metric), normalizeString(metricValue)])
+    .filter(([, metricValue]) => metricValue);
+
+  if (legacyEntries.length > 0) {
+    next.online = Object.fromEntries(legacyEntries);
+    return next;
+  }
+
   PERFORMANCE_SECTIONS.forEach((section) => {
     const sectionSource = source[section.key] && typeof source[section.key] === 'object' ? source[section.key] : {};
     section.fields.forEach((field) => {
@@ -768,52 +836,57 @@ const normalizeProfileData = (value) => {
         : {};
 
     domain.fields.forEach((field) => {
-      if (!Object.prototype.hasOwnProperty.call(source, field.key)) {
+      const sourceKey = getLegacyProfileFieldCandidates(domain.key, field.key)
+        .find((candidate) => Object.prototype.hasOwnProperty.call(source, candidate));
+
+      if (!sourceKey) {
         return;
       }
 
+      const rawValue = source[sourceKey];
+
       if (field.type === 'text') {
-        template[domain.key].canonical[field.key] = normalizeString(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeString(rawValue);
         return;
       }
 
       if (field.type === 'list') {
-        template[domain.key].canonical[field.key] = normalizeStringList(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeStringList(rawValue);
         return;
       }
 
       if (field.type === 'named_list') {
-        template[domain.key].canonical[field.key] = normalizeNamedEntries(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeNamedEntries(rawValue);
         return;
       }
 
       if (field.type === 'data_report_list') {
-        template[domain.key].canonical[field.key] = normalizeDataReportEntries(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeDataReportEntries(rawValue);
         return;
       }
 
       if (field.type === 'risk_list') {
-        template[domain.key].canonical[field.key] = normalizeRiskEntries(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeRiskEntries(rawValue);
         return;
       }
 
       if (field.type === 'service_list') {
-        template[domain.key].canonical[field.key] = normalizeServiceEntries(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeServiceEntries(rawValue);
         return;
       }
 
       if (field.type === 'integration_list') {
-        template[domain.key].canonical[field.key] = normalizeIntegrationEntries(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeIntegrationEntries(rawValue);
         return;
       }
 
       if (field.type === 'tech_stack') {
-        template[domain.key].canonical[field.key] = normalizeTechStack(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizeTechStack(rawValue);
         return;
       }
 
       if (field.type === 'performance') {
-        template[domain.key].canonical[field.key] = normalizePerformanceBaseline(source[field.key]);
+        template[domain.key].canonical[field.key] = normalizePerformanceBaseline(rawValue);
       }
     });
 
@@ -2282,7 +2355,7 @@ const renderServicePreview = (value) => (
           <Space key={`${field.key}-${index}`} style={{ width: '100%' }} align="start">
             <Input
               value={item}
-              placeholder={`请输入${field.label}`}
+              placeholder={`请输入${getLegacyEditorLabel(domainKey, field)}`}
               disabled={!canWrite}
               onChange={(event) => {
                 const next = [...visibleItems];
@@ -2328,7 +2401,7 @@ const renderServicePreview = (value) => (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Input
                 value={row.name}
-                placeholder="名称"
+                placeholder={field.key === 'functional_modules' ? '模块名称' : field.key === 'business_constraints' ? '约束类别' : '名称'}
                 disabled={!canWrite}
                 onChange={(event) => {
                   const next = deepClone(visibleRows);
@@ -2746,7 +2819,7 @@ const renderServicePreview = (value) => (
                   <Text style={{ width: 120, flexShrink: 0 }}>{sectionField.label}</Text>
                   <Input
                     value={performance[section.key][sectionField.key]}
-                    placeholder={`请输入${sectionField.label}`}
+                    placeholder="指标值"
                     disabled={!canWrite}
                     onChange={(event) => {
                       const nextSection = {
@@ -2775,7 +2848,7 @@ const renderServicePreview = (value) => (
           rows={4}
           disabled={!canWrite}
           value={String(value ?? '')}
-          placeholder={`请输入${field.label}`}
+          placeholder={`请输入${getLegacyEditorLabel(domainKey, field)}`}
           onChange={(event) => setDraftFieldValue(domainKey, field.key, event.target.value)}
         />
       );
@@ -3553,12 +3626,12 @@ const renderServicePreview = (value) => (
                 return (
                   <div key={fieldPath}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                      <Text strong>{field.label}</Text>
+                      <Text strong>{getLegacyFieldLabel(activeDomainConfig.key, field)}</Text>
                       {canWrite && (
                         <Button
                           size="small"
                           type="link"
-                          aria-label={`${editing ? '收起编辑' : '编辑'}${field.label}`}
+                          aria-label={`${editing ? '收起编辑' : '编辑'}${getLegacyEditorLabel(activeDomainConfig.key, field)}`}
                           style={{ paddingInline: 0 }}
                           onClick={() => toggleFieldEditMode(fieldPath)}
                         >
