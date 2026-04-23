@@ -1,0 +1,23 @@
+services:
+  # 前端服务
+  frontend:
+    image: nginx:latest
+    container_name: requirement-frontend
+    ports:
+      - "8000:80"
+    volumes:
+      - ${FRONTEND_NGINX_CONF:-./frontend/nginx.internal.conf}:/etc/nginx/nginx.conf:ro
+      - ./frontend/build:/usr/share/nginx/html:ro
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      # Avoid depending on extra tools (curl/wget) in offline environments.
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    driver: bridge

@@ -147,6 +147,9 @@
 
 ## 四、阶段切换前检查
 
+**必须人工审核的阶段**：
+- `proposal→requirements`、`requirements→design`、`design→implementation`，这三个阶段切换必须经过人工显示确认
+
 **命令与 gate 映射**（runtime 会自动检查）：
 - `../.codespec/codespec start-requirements` → 检查 `proposal-maturity`
 - `../.codespec/codespec start-design` → 检查 `requirements-approval`

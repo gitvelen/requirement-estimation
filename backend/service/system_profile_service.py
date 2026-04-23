@@ -320,6 +320,7 @@ class SystemProfileService:
                     "original_estimate": feature.get("original_estimate"),
                     "profile_context_used": bool(feature.get("profile_context_used")),
                     "context_source": str(feature.get("context_source") or normalized_context.get("context_source") or "none").strip() or "none",
+                    "rule_context": feature.get("rule_context") if isinstance(feature.get("rule_context"), dict) else None,
                 }
             )
         if not feature_items:

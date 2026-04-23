@@ -3,7 +3,11 @@ jest.mock('axios', () => ({
   post: jest.fn(),
 }));
 
-import { mergeCosmicConfigForSave } from '../pages/CosmicConfigPage';
+import {
+  COSMIC_GUIDANCE_COPY,
+  COSMIC_PRESET_LABELS,
+  mergeCosmicConfigForSave,
+} from '../pages/CosmicConfigPage';
 
 describe('CosmicConfigPage payload merge', () => {
   it('preserves data movement descriptions when save form omits them', () => {
@@ -112,5 +116,31 @@ describe('CosmicConfigPage payload merge', () => {
         },
       },
     });
+  });
+});
+
+describe('CosmicConfigPage guidance copy', () => {
+  it('exports preset labels without misleading splitting claims', () => {
+    expect(COSMIC_PRESET_LABELS).toEqual({
+      fine: '偏保守口径',
+      medium: '平衡口径',
+      coarse: '宽松口径',
+    });
+
+    const joinedLabels = Object.values(COSMIC_PRESET_LABELS).join(' ');
+    expect(joinedLabels).not.toMatch(/每个按钮\/操作=1个功能点/);
+    expect(joinedLabels).not.toMatch(/完整交易流程=1个功能点/);
+    expect(joinedLabels).not.toMatch(/业务模块=1个功能点/);
+  });
+
+  it('exports concise guidance focused on metric meaning and boundary', () => {
+    const combinedCopy = COSMIC_GUIDANCE_COPY.join('\n');
+
+    expect(combinedCopy).toMatch(/本页用于配置 COSMIC 计量口径/);
+    expect(combinedCopy).toMatch(/不会直接控制当前功能点拆分输出/);
+    expect(combinedCopy).toMatch(/按组织口径统一配置后，再用于 COSMIC 分析与估算解释/);
+    expect(combinedCopy).not.toMatch(/每个按钮\/操作可拆分为单独功能点/);
+    expect(combinedCopy).not.toMatch(/一个完整交易流程（输入\+校验\+处理\+返回）作为一个功能点/);
+    expect(combinedCopy).not.toMatch(/一个业务模块作为一个功能点/);
   });
 });
