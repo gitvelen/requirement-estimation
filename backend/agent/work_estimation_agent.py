@@ -53,6 +53,8 @@ class WorkEstimationAgent:
         feature: Dict[str, Any],
         *,
         system_context: str = "",
+        requirement_context: str = "",
+        rule_context: Optional[Dict[str, Any]] = None,
         correction_context: str = "",
         historical_context: str = "",
     ) -> Dict[str, Any]:
@@ -66,8 +68,14 @@ class WorkEstimationAgent:
 描述：{description}
 拆分阶段原始估值（用于校准，不可直接照搬）：{original_estimate}
 
+完整需求上下文：
+{requirement_context or "无"}
+
 第一层知识（系统画像）：
 {system_context or "无"}
+
+估算规则上下文：
+{json.dumps(rule_context or {}, ensure_ascii=False)}
 
 第二层知识（历史修正模式）：
 {correction_context or "无"}
@@ -154,6 +162,8 @@ class WorkEstimationAgent:
                     detail = self.estimate_three_point_for_feature(
                         feature,
                         system_context=system_context,
+                        requirement_context=str(feature.get("requirement_context") or "").strip(),
+                        rule_context=feature.get("rule_context") if isinstance(feature.get("rule_context"), dict) else None,
                     )
                 except Exception as exc:
                     logger.warning("LLM估算失败，使用降级值 feature=%s error=%s", key, exc)
@@ -167,6 +177,7 @@ class WorkEstimationAgent:
                     }
                 detail["profile_context_used"] = profile_context_used
                 detail["context_source"] = context_source
+                detail["rule_context"] = feature.get("rule_context") if isinstance(feature.get("rule_context"), dict) else None
                 estimates[key] = detail["expected"]
                 self._latest_estimation_details[key] = detail
                 total_estimated += detail["expected"]

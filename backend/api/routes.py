@@ -33,6 +33,7 @@ from backend.service.memory_service import get_memory_service
 from backend.service import user_service
 from backend.service.system_profile_service import get_system_profile_service
 from backend.utils.pdf_report import write_report_pdf
+from backend.utils.cosmic_analyzer import cosmic_analyzer
 from backend.api.auth import get_current_user, require_roles, decode_access_token
 from backend.api import system_routes
 from backend.service.ai_effect_service import create_snapshots
@@ -216,6 +217,54 @@ def _ensure_list(value: Any) -> List[str]:
         parts = re.split(r"[,\n;/，、]+", value)
         return [item.strip() for item in parts if item.strip()]
     return [str(value).strip()]
+
+
+def build_feature_rule_context(task: Dict[str, Any], feature: Dict[str, Any]) -> Dict[str, Any]:
+    selected_rule = str((task or {}).get("estimation_rule") or "cosmic").strip().lower()
+    if selected_rule in {"", "none", "skip", "skipped"}:
+        return {
+            "rule_id": "cosmic",
+            "rule_name": "COSMIC",
+            "status": "skipped",
+            "summary_text": "当前任务未选择 COSMIC 规则，已跳过 COSMIC 上下文注入",
+            "structured_payload": {},
+            "failure_reason": "rule_not_selected",
+        }
+
+    if selected_rule != "cosmic":
+        return {
+            "rule_id": selected_rule,
+            "rule_name": selected_rule.upper(),
+            "status": "skipped",
+            "summary_text": f"当前任务选择的是 {selected_rule.upper()}，本链路未注入 COSMIC 上下文",
+            "structured_payload": {},
+            "failure_reason": "rule_not_supported",
+        }
+
+    if not settings.COSMIC_ENABLED:
+        return {
+            "rule_id": "cosmic",
+            "rule_name": "COSMIC",
+            "status": "degraded",
+            "summary_text": "COSMIC 功能当前未启用，未生成规则上下文",
+            "structured_payload": {},
+            "failure_reason": "cosmic_disabled",
+        }
+
+    cosmic_analysis = feature.get("cosmic_analysis") if isinstance(feature, dict) else None
+    if not isinstance(cosmic_analysis, dict):
+        feature_description = str(
+            feature.get("业务描述")
+            or feature.get("description")
+            or feature.get("功能点")
+            or feature.get("name")
+            or ""
+        ).strip()
+        cosmic_analysis = cosmic_analyzer.analyze_feature(feature_description, feature)
+        if isinstance(feature, dict):
+            feature["cosmic_analysis"] = cosmic_analysis
+
+    return cosmic_analyzer.build_rule_context_from_analysis(cosmic_analysis)
 
 
 def _list_manager_responsible_system_names(current_user: Optional[Dict[str, Any]]) -> List[str]:
@@ -4967,10 +5016,15 @@ async def estimate_task_workload(
                 if fallback <= 0:
                     fallback = 1.0
 
+                rule_context = build_feature_rule_context(task, feature)
+                requirement_context = str(task.get("requirement_content") or "").strip()
+
                 try:
                     detail = work_estimation_agent.estimate_three_point_for_feature(
                         feature,
                         system_context=str(context_payload.get("text") or "").strip(),
+                        requirement_context=requirement_context,
+                        rule_context=rule_context,
                     )
                 except Exception as exc:
                     logger.warning("任务估算降级 task=%s feature=%s error=%s", task_id, feature.get("id"), exc)
@@ -5000,6 +5054,8 @@ async def estimate_task_workload(
                 feature["预估人天"] = detail.get("expected")
                 feature["profile_context_used"] = bool(detail.get("profile_context_used"))
                 feature["context_source"] = str(detail.get("context_source") or "none").strip() or "none"
+                feature["rule_context"] = rule_context
+                feature["requirement_context"] = requirement_context
 
                 features_payload.append(
                     {
@@ -5014,6 +5070,7 @@ async def estimate_task_workload(
                         "original_estimate": resolved_original_estimate,
                         "profile_context_used": bool(detail.get("profile_context_used")),
                         "context_source": str(detail.get("context_source") or "none").strip() or "none",
+                        "rule_context": rule_context,
                     }
                 )
             profile_service.record_estimation_context_artifact(

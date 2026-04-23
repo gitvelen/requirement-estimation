@@ -1,21 +1,25 @@
 wi_id: WI-001
-goal: "在解析器内部补齐附件递归解析与正文合并，使现有任务主链路自动获得更完整的 requirement_content"
+goal: "在不重写拆分链路的前提下，完成规则管理页说明纠偏，并让点击估算时按管理员 COSMIC 配置主动执行分析、通过统一 rule_context 接入估算主链路，保留按功能点可追溯的降级证据"
 scope:
-  - "新增通用附件提取器，扫描 DOCX/XLSX/PPTX 宿主中的嵌入附件并识别支持格式正文"
-  - "在 DocxParser 主入口合并主文档正文与附件正文，保持现有返回字段不变"
-  - "为递归深度、循环检测、大小/数量/超时保护和错误隔离补齐自动化测试"
+  - "重写规则管理页 COSMIC 使用说明与快速设置文案，消除对现网拆分粒度控制的误导表达"
+  - "在 `/tasks/{task_id}/estimate` 链路按管理员当前 COSMIC 配置主动执行分析、构建统一 rule_context，并显式注入估算 Agent"
+  - "让 COSMIC 分析器在当前估算动作内输出统一 rule_context 结构，并在功能点级失败时记录 degraded/failure_reason"
+  - "扩展估算上下文 artifact 与相关测试，证明规则被应用、降级或跳过"
 out_of_scope:
-  - "不修改 backend/agent/** 的系统识别、功能点拆分或估算逻辑"
-  - "不修改 backend/api/** 的任务接口、任务存储或返回结构"
-  - "不新增前端附件展示、来源标注或报告格式变更"
+  - "不修改 backend/agent/feature_breakdown_agent.py 或拆分 prompt"
+  - "不新增前台规则使用证据展示"
+  - "不修改系统识别、报告导出或 COSMIC 配置持久化接口"
 
 allowed_paths:
-  - backend/utils/docx_parser.py
-  - backend/service/document_parser.py
-  - backend/utils/embedded_attachment_extractor.py
-  - tests/test_docx_parser.py
-  - tests/test_document_parser.py
-  - tests/test_attachment_extraction.py
+  - frontend/src/pages/CosmicConfigPage.js
+  - frontend/src/__tests__/cosmicConfigPage.render.test.js
+  - backend/api/routes.py
+  - backend/agent/work_estimation_agent.py
+  - backend/utils/cosmic_analyzer.py
+  - backend/service/system_profile_service.py
+  - tests/test_task_reevaluate_api.py
+  - tests/test_evaluation_contract_api.py
+  - backend/tests/test_target_system_orchestrator.py
   - testing.md
   - meta.yaml
 forbidden_paths:
@@ -25,9 +29,10 @@ forbidden_paths:
   - work-items/**
   - contracts/**
   - deployment.md
-  - backend/agent/**
-  - backend/api/**
-  - frontend/**
+  - backend/agent/feature_breakdown_agent.py
+  - backend/prompts/prompt_templates.py
+  - backend/api/cosmic_routes.py
+  - frontend/src/components/**
 
 branch_execution:
   execution_group: null
@@ -41,25 +46,23 @@ branch_execution:
 phase_scope: Implementation
 
 input_refs:
-  - docs/inputs/attachment-parsing-requirement.md
+  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
+  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
 requirement_refs:
   - REQ-001
   - REQ-002
   - REQ-003
   - REQ-004
-  - REQ-005
 acceptance_refs:
   - ACC-001
   - ACC-002
   - ACC-003
   - ACC-004
-  - ACC-005
 verification_refs:
   - VO-001
   - VO-002
   - VO-003
   - VO-004
-  - VO-005
 derived_from: DS-001
 dependency_refs: []
 dependency_type: none
@@ -69,19 +72,20 @@ evidence_refs: []
 
 verification_profile: focused
 required_verification:
-  - "pytest tests/test_attachment_extraction.py -q"
-  - "pytest tests/test_docx_parser.py tests/test_document_parser.py -q"
-  - "验证无附件文档结果不回归，且损坏附件不会中断整体解析"
+  - "npm test -- --runInBand frontend/src/__tests__/cosmicConfigPage.render.test.js"
+  - "pytest tests/test_task_reevaluate_api.py tests/test_evaluation_contract_api.py -q"
+  - "pytest backend/tests/test_target_system_orchestrator.py -q"
 
 stop_conditions:
-  - "如果实现需要修改 backend/agent/**、backend/api/** 或 frontend/**，立即停止并回到 design 对齐"
-  - "如果真实附件样例无法通过现有依赖稳定解包，需要先确认是否允许新增依赖或缩小支持边界"
-  - "如果正文合并策略会改变现有无附件文档的任务结果语义，需要先回写 spec/design"
+  - "如果实现需要修改拆分 Agent 或拆分 prompt，立即停止并回到 design 对齐"
+  - "如果实现需要新增前台规则使用证据展示，立即停止并回写 spec/design"
+  - "如果统一 rule_context 设计无法兼容未来其他规则，需要先回写 design"
 reopen_triggers:
-  - "发现必须新增 API/UI 字段来表达附件来源、层级或错误详情"
-  - "发现支持边界需要从 DOCX/XLSX/PPTX/PDF 缩减或扩大"
-  - "发现资源保护默认值无法满足现有样例，需要调整 spec 约束"
+  - "发现 `functional_process_rules.granularity` 的字段语义必须重定义或移除"
+  - "发现规则上下文必须扩展为新的外部接口契约"
+  - "发现需要把 COSMIC 直接接入拆分链路而不是只接入估算链路"
 hard_constraints:
-  - "禁止修改已有 Agent 核心逻辑"
-  - "递归深度默认不超过 3 层，单附件默认不超过 10MB，附件总数默认不超过 20 个"
-  - "单个附件解析失败只能记录并跳过，不能中断整个主文档处理流程"
+  - "禁止修改已有功能点拆分主链路"
+  - "COSMIC 分析必须在点击估算时执行，不能只消费历史遗留的 cosmic_analysis"
+  - "规则失败处理必须按功能点降级，不得整任务静默回退"
+  - "估算必须保留完整需求语义，rule_context 只能补强不能替代"

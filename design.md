@@ -10,62 +10,61 @@
   - REQ-002
   - REQ-003
   - REQ-004
-  - REQ-005
 - acceptance_refs:
   - ACC-001
   - ACC-002
   - ACC-003
   - ACC-004
-  - ACC-005
 - verification_refs:
   - VO-001
   - VO-002
   - VO-003
   - VO-004
-  - VO-005
 - spec_alignment_check:
   - spec_ref: REQ-001
     aligned: true
-    notes: 通用附件提取器负责识别并抽取 DOCX/XLSX/PPTX/PDF 附件正文。
+    notes: 前端仅重写规则管理页的说明与快速设置文案，去掉“直接控制拆分粒度”的误导表达。
   - spec_ref: REQ-002
     aligned: true
-    notes: 递归深度、附件大小、附件数量、循环检测都在解析层集中控制。
+    notes: `/tasks/{task_id}/estimate` 在估算前基于管理员当前维护的 COSMIC 配置执行分析、统一构建并注入 rule context，不把 COSMIC 直接焊进估算 Agent。
   - spec_ref: REQ-003
     aligned: true
-    notes: 主文档入口继续输出单一 `requirement_content`，附件正文在解析阶段合并。
+    notes: COSMIC 作为首个规则会在当前估算动作内生成统一 rule context 结构，并按功能点记录 degraded 证据。
   - spec_ref: REQ-004
     aligned: true
-    notes: 单个附件失败只记录错误并继续处理剩余附件。
-  - spec_ref: REQ-005
-    aligned: true
-    notes: 不改现有 API/Agent 契约，不带附件的文档保持现有行为。
+    notes: 估算仍保留完整需求语义和系统画像上下文，rule context 只作补强输入。
 
 ### Architecture Boundary
 - impacted_capabilities:
-  - DOCX 主文档解析入口与 `requirement_content` 组装
-  - 通用多格式正文解析与文本扁平化复用
-  - OOXML 附件扫描、递归控制与错误隔离
+  - 规则管理页 COSMIC 使用说明与快速设置文案
+  - 任务估算主链路的规则执行、上下文构建与注入
+  - COSMIC 管理配置到运行时分析结果的接入与归一化
+  - 估算上下文证据落盘
 - not_impacted_capabilities:
-  - `backend/agent/**` 系统识别、功能点拆分、工作量评估逻辑
-  - `backend/api/routes.py` 任务 API 契约与任务存储结构
-  - `frontend/**` 页面、报告与编辑页展示
+  - 功能点拆分 Agent 主算法
+  - 系统识别链路
+  - 评估报告导出结构
+  - 规则管理配置存储结构本身
 - impacted_shared_surfaces:
-  - `backend/utils/docx_parser.py`
-  - `backend/service/document_parser.py`
-  - `backend/utils/embedded_attachment_extractor.py`
+  - frontend/src/pages/CosmicConfigPage.js
+  - backend/api/routes.py
+  - backend/agent/work_estimation_agent.py
+  - backend/utils/cosmic_analyzer.py
+  - backend/service/system_profile_service.py
 - not_impacted_shared_surfaces:
-  - `backend/agent/**`
-  - `backend/api/**`
-  - `frontend/**`
+  - backend/agent/feature_breakdown_agent.py
+  - backend/prompts/prompt_templates.py 中拆分提示词
+  - backend/api/cosmic_routes.py 的独立配置接口
 - major_constraints:
-  - 默认递归深度 3、单附件 10MB、附件总数 20、总解析预算 5 分钟。
-  - 必须支持循环检测，禁止同一内容无限递归。
-  - 失败降级只能影响当前附件，不能让整个任务解析失败。
+  - 不新增管理员可配置的运行时拆分粒度开关。
+  - 不重写现有功能点拆分主链路，只在估算入口补入最小必要的规则执行与上下文层。
+  - 规则失败处理必须按功能点降级，并留下后台证据；不得整任务静默回退。
+  - 估算仍必须保留完整原始需求语义，不能退化为只看短描述或只看规则摘要。
 - contract_required: false
 - compatibility_constraints:
-  - 主文档仍通过现有 `DocxParser.parse(file_path)` 和 `DocumentParser.parse(file_content, filename)` 入口消费。
-  - Agent 侧继续只接收合并后的纯文本 `requirement_content`，不新增来源标签字段。
-  - 不新增外部服务依赖，不修改任务 API、报告格式或前端交互。
+  - 现有 `/tasks/{task_id}/estimate` 返回结构继续兼容现有字段，可在不破坏旧字段的前提下补充 rule context 证据相关字段。
+  - `build_estimation_context()` 继续作为统一上下文入口扩展，不另造平行上下文体系。
+  - 后续接入其他估算规则时必须复用统一 `rule_context` 结构，而不是为 COSMIC 写专用旁路协议。
 
 ### Work Item Execution Strategy
 
@@ -81,93 +80,100 @@ parallel_groups:
   - group: G1
     work_items: [WI-001]
     can_parallel: false
-    rationale: 附件提取、正文合并和回归测试都围绕同一组解析入口，拆分后只会增加冲突面。
+    rationale: 前端说明纠偏、后端上下文结构、测试与证据落盘都围绕同一条估算链路与同一组共享文件，拆开只会增加冲突面。
 
 #### Branch Strategy Recommendation
 recommended_branch_count: 1
 rationale: |
-  本次改动集中在文档解析层，核心文件只有 `docx_parser.py`、`document_parser.py` 和新增附件提取工具。
-  单分支串行推进可以保证解析行为、限制策略和测试样例同步收敛，避免多个 WI 在同一文本输出口径上互相覆盖。
+  本次改动虽然跨前后端，但都围绕单一目标收敛：纠正规则管理说明，并把 COSMIC 规则接入估算主链路。
+  单分支推进更适合保持 `spec -> design -> work-item -> tests -> code` 的一致性，也能避免多 WI 争夺 `backend/api/routes.py`、`backend/agent/work_estimation_agent.py` 和 `frontend/src/pages/CosmicConfigPage.js`。
 
 alternative_if_parallel_needed: |
-  若后续发现需要拆分，可把“附件提取器/解析器实现”和“测试样例补齐”拆成两个 WI，
-  但前提是先冻结统一的附件正文合并格式并明确共享文件 owner；当前没有必要。
+  若后续要继续扩展到第二套估算规则，可在下一轮把“统一规则上下文层”与“具体规则实现”拆成两个 WI。
+  当前不建议预拆。
 
 **Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
 are suggestions only, not enforced by gates. User decides the actual execution strategy.
 
 #### Shared Surface Analysis
 potentially_conflicting_files:
-  - path: backend/utils/docx_parser.py
-    reason: 主文档入口在这里组装 `requirement_content`，正文拼接规则只能有一套。
-    recommendation: 所有正文合并逻辑都收口到同一 helper，避免在入口里散落分支判断。
-  - path: backend/service/document_parser.py
-    reason: 通用多格式解析器负责把附件文件转成结构化正文，递归路径会直接复用它。
-    recommendation: 只增加附件复用接口和扁平化适配，不改现有知识提取协议。
+  - path: frontend/src/pages/CosmicConfigPage.js
+    reason: 使用说明、快速设置和现有字段标签集中在同一页，文案边界必须统一。
+    recommendation: 所有“粒度”相关描述一次性收口，避免局部改文案后留下残余误导。
+  - path: backend/api/routes.py
+    reason: `/tasks/{task_id}/estimate` 是规则上下文接入主链路的唯一关键入口。
+    recommendation: 在这里集中完成 rule context 构建、注入和证据落盘，不在多处重复拼装。
+  - path: backend/agent/work_estimation_agent.py
+    reason: 估算 Agent 需要消费统一 rule context，同时保留完整语义上下文。
+    recommendation: 只扩展统一入参和提示上下文，不直接依赖 COSMIC 私有对象。
+  - path: backend/service/system_profile_service.py
+    reason: 当前估算上下文与证据落盘都由这里承载，规则上下文证据应在同一产物层补齐。
+    recommendation: 以扩展已有 `build_estimation_context` / `record_estimation_context_artifact` 为主，不另建平行存储。
 
 conflict_risk_assessment:
   high_risk:
-    - backend/utils/docx_parser.py
+    - backend/api/routes.py
+    - backend/agent/work_estimation_agent.py
   medium_risk:
-    - backend/service/document_parser.py
+    - backend/service/system_profile_service.py
+    - frontend/src/pages/CosmicConfigPage.js
   low_risk:
-    - tests/test_docx_parser.py
-    - tests/test_document_parser.py
-    - tests/test_attachment_extraction.py
+    - frontend/src/__tests__/cosmicConfigPage.render.test.js
+    - tests/test_task_reevaluate_api.py
+    - tests/test_evaluation_contract_api.py
 
 #### Pre-work for Parent Feature Branch
 tasks:
-  - task: 初始化测试账本
+  - task: 清理旧主题设计残留
     content: |
-      新建 `testing.md`，为后续 Implementation 阶段记录 branch-local 测试结果预留载体。
-    rationale: `start-implementation` gate 要求 `testing.md` 已存在。
-  - task: 冻结单 WI 边界
+      把 design.md、work-items/WI-001.yaml、testing.md 中上一轮“附件解析”主题内容替换为当前 COSMIC/估算规则主题。
+    rationale: 若不先统一权威文档，后续 gate 会因为追溯和 work-item 对齐失败而阻塞。
+  - task: 固定统一 rule_context 结构
     content: |
-      把实现范围限制在解析器和测试文件，不改 API、Agent、前端与报告展示。
-    rationale: 满足 Spec 中“禁止修改已有 Agent 核心逻辑”的硬约束。
+      在 design 中先冻结统一结构：`rule_id`、`rule_name`、`status`、`summary_text`、`structured_payload`、`failure_reason`。
+    rationale: 这样后续估算 Agent 与 COSMIC 分析器的边界就不会继续摇摆。
 
 #### Notes
-- 当前设计刻意把“附件来源展示”“附件清单持久化”“任务 UI 展示”排除在本次 WI 之外。
-- 允许新增一个解析工具文件，但不允许横向扩散到 `backend/api/**` 或 `backend/agent/**`。
+- 当前设计故意不把“可配置拆分粒度”纳入交付范围，避免继续放大误导语义。
+- 当前设计只要求后台可追溯规则是否被应用，不要求前台新增规则使用证据展示。
 
 ### Design Slice Index
 - DS-001:
   - appendix_ref: none
-  - scope: 在解析层补齐 OOXML 附件扫描、支持格式识别、递归控制、错误隔离与正文合并。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
+  - scope: 纠正规则管理页说明，并在估算主链路中引入统一规则执行与上下文层，由 COSMIC 作为首个规则在点击估算时接入并产出按功能点可追溯证据。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004]
 
 ### Work Item Derivation
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/attachment-parsing-requirement.md
+    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
+    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
   requirement_refs:
     - REQ-001
     - REQ-002
     - REQ-003
     - REQ-004
-    - REQ-005
-  goal: 在不改 Agent 和 API 契约的前提下，为主文档及其嵌套附件补齐递归正文解析和 `requirement_content` 合并。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  goal: 在不重写拆分链路的前提下，完成规则管理页说明纠偏，并让 COSMIC 管理配置在点击估算时通过统一 rule context 真正进入估算主链路，保留按功能点可追溯的降级证据。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
   verification_refs:
     - VO-001
     - VO-002
     - VO-003
     - VO-004
-    - VO-005
   dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 实现仅允许修改解析器和测试文件；任何对 Agent、API、前端、报告格式的需求都必须回到 design 重新开边界。
+  notes_on_boundary: 允许修改前端说明页、估算 API/Agent、COSMIC 分析器、系统画像上下文服务及相关测试；不允许扩散到拆分 Agent、系统识别或报告导出。
   work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
 
 ### Contract Needs
-- no additional contract required; the change stays within parser internals and existing return shapes.
+- no additional contract required; the change stays within existing API shape and internal estimation context artifacts.
 
 ### Failure Paths / Reopen Triggers
-- 如果附件真实载荷无法通过当前已锁定的 `olefile` + 现有解析依赖稳定解出，需要重新评估是否继续引入新的解析依赖或缩小支持边界。
-- 如果正文合并后会破坏现有无附件文档的解析结果或任务编辑页语义，需要先回写 spec/design 再继续。
-- 如果为了暴露附件来源、附件清单或 UI 展示必须修改 API/前端契约，需要重新开 WI，不在本次实现中追加。
+- 如果实现中发现必须通过前台新增“规则使用证据展示”才能满足验收，需要先回写 spec/design 再扩 scope。
+- 如果统一 rule context 无法兼容未来其他估算规则，需要先回写 design 重新定义扩展点。
+- 如果要让 COSMIC 直接参与拆分粒度控制，而不是只作为估算前规则上下文，必须重新开启 spec 决策，不在本次实现中追加。
 
 ### Appendix Map
 - none
@@ -175,56 +181,58 @@ tasks:
 ## Goal / Scope Link
 
 ### Scope Summary
-- 主文档入口仍由 `backend/utils/docx_parser.py` 负责提取需求名称、摘要与正文，但正文来源不再只看主文档段落/表格，而是合并“主文档正文 + 支持格式附件正文”。
-- 通用正文解析继续由 `backend/service/document_parser.py` 负责：`docx/xlsx/pptx/pdf` 附件都先转成已有结构化形态，再复用 `parsed_to_text` 风格扁平化为纯文本。
-- 附件递归控制、大小限制、数量限制、循环检测、失败降级全部放在解析层统一处理，不让 Agent、API 或任务编排层感知附件细节。
-- 本次实现不新增新的对外数据结构；最终交付物仍然是更完整的 `requirement_content` 字符串和与现有兼容的解析结果。
+- 前端只做说明纠偏：保留管理员理解 COSMIC 配置所需的必要说明，去掉会让人理解为“页面直接控制当前拆分粒度”的表述。
+- 后端在估算入口先按管理员当前维护的 COSMIC 配置对待估功能点执行分析，再统一构建 `rule_context`，将“规则是否被执行、是否应用成功、规则摘要与结构化载荷”显式注入估算 Agent。
+- COSMIC 作为首个规则实现运行时分析与 `rule_context` 归一化，并在单个功能点规则失败时输出 `degraded` 证据，而不是整任务静默退回。
+- 估算提示继续以完整需求语义和系统画像为主，`rule_context` 只作为补强信息，禁止替代原始文本。
 
 ### spec_alignment_check
 - spec_ref: REQ-001
   aligned: true
-  notes: 设计以通用 OOXML 附件扫描器覆盖 DOCX/XLSX/PPTX 嵌入对象，并对 PDF 载荷复用现有 `PyPDF2` 解析链路。
+  notes: 设计只改文案和帮助信息，不把当前历史“细/中/粗”教学示例继续表达为现网拆分控制能力。
 - spec_ref: REQ-002
   aligned: true
-  notes: 所有递归参数都通过统一配置对象管理，默认值与 spec 约束一致。
+  notes: 规则上下文层在 `/tasks/{task_id}/estimate` 统一构建，且构建前会按管理员当前维护的 COSMIC 配置触发分析，再通过通用入参扩展到估算 Agent。
 - spec_ref: REQ-003
   aligned: true
-  notes: 附件文本在解析阶段直接拼接进 `requirement_content`，因此功能点拆分无需改协议。
+  notes: COSMIC 分析器负责在当前估算动作内生成分析结果、归一成统一 rule context，并在失败时留下 `failure_reason` 与功能点级降级状态。
 - spec_ref: REQ-004
   aligned: true
-  notes: 附件解析错误只产生日志/元信息，不抛出中断主流程的异常。
-- spec_ref: REQ-005
-  aligned: true
-  notes: 不带附件的路径保持原逻辑，回归测试验证文本结果不退化。
+  notes: 估算 Agent 继续消费完整原始描述、系统画像上下文和功能点信息，rule context 仅作为补充块拼入提示词。
 
 ## Architecture Boundary
-- system_context: 需求评估主链路在 `process_task_sync -> DocxParser.parse -> AgentOrchestrator.process_requirement` 上串联；本次只允许变更 `DocxParser` 与其复用的通用 `DocumentParser`。
+- system_context: 当前估算链路以 `/tasks/{task_id}/estimate -> COSMIC analyze -> build rule_context -> build_estimation_context -> work_estimation_agent.estimate_three_point_for_feature` 为主线；本次在这条链路中补入统一规则执行与上下文消费。
 - impacted_capabilities:
-  - 主文档附件扫描与递归抽取
-  - 多格式附件正文解析与文本扁平化
-  - `requirement_content` 完整性提升
+  - COSMIC 说明文案纠偏
+  - 估算规则运行时执行与上下文构建
+  - COSMIC 管理配置到运行时分析结果的归一化
+  - 估算证据落盘扩展
 - not_impacted_capabilities:
-  - 系统识别 Prompt、功能点拆分 Prompt 与估算逻辑
-  - 任务详情 API、编辑页修改接口与报表导出
-  - 知识库导入、服务治理导入、系统画像导入链路
+  - 功能点拆分 prompt 和拆分实现
+  - 系统识别编排
+  - 报告生成和下载
+  - COSMIC 配置持久化接口
 - impacted_shared_surfaces:
-  - `backend/utils/docx_parser.py`
-  - `backend/service/document_parser.py`
-  - `backend/utils/embedded_attachment_extractor.py`
+  - frontend/src/pages/CosmicConfigPage.js
+  - backend/api/routes.py
+  - backend/agent/work_estimation_agent.py
+  - backend/utils/cosmic_analyzer.py
+  - backend/service/system_profile_service.py
 - not_impacted_shared_surfaces:
-  - `backend/api/routes.py`
-  - `backend/agent/agent_orchestrator.py`
-  - `frontend/src/**`
+  - backend/agent/feature_breakdown_agent.py
+  - backend/agent/agent_orchestrator.py
+  - backend/api/cosmic_routes.py
 - major_constraints:
-  - 附件提取器必须优先通过文件扩展名和文件签名识别支持格式，不能对不明格式做冒进解析。
-  - 对 OOXML 里的 `.bin` 包装对象，需要先尝试 OLE 解包；无法识别时记为失败并继续，不允许阻断主文档。
-  - 递归链路必须对已见内容做哈希去重，避免 A -> B -> A 环路。
-  - 最终合并文本不能暴露内部实现噪声（如 zip entry 路径、OLE stream 名称）。
+  - 统一 `rule_context` 必须对未来其他规则可复用，因此字段名和语义必须通用。
+  - COSMIC 分析必须在点击估算时执行，避免消费过期的历史中间结果。
+  - COSMIC 分析失败时仅允许功能点级降级，不能使整次估算失败。
+  - 规则证据只要求后台可追溯，不新增前台证据展示义务。
+  - 所有新增测试必须围绕当前 acceptance 设计，避免“顺手重构”无关实现。
 - contract_required: false
 - compatibility_constraints:
-  - `DocxParser.parse()` 返回字段名保持不变：`requirement_name`、`requirement_summary`、`requirement_content`、`basic_info`、`all_paragraphs`。
-  - `DocumentParser.parse()` 对无附件输入保持原输出结构；附件能力以附加字段或内部 helper 复用方式接入，不破坏现有调用方。
-  - 不对 API、任务表单、报告导出、前端页面新增字段。
+  - `/tasks/{task_id}/estimate` 现有 `features` 列表返回必须继续可用。
+  - `record_estimation_context_artifact()` 继续写 output artifact，但 payload 可补 rule context 相关字段。
+  - 不修改任务存储的根结构，只在 feature 明细和 artifact 中增加兼容字段。
 
 ## Work Item Execution Strategy
 
@@ -240,141 +248,150 @@ parallel_groups:
   - group: G1
     work_items: [WI-001]
     can_parallel: false
-    rationale: 解析输出口径只有一份，拆成多个 WI 容易在正文合并规则和测试样本上互相踩踏。
+    rationale: 单个 WI 已覆盖前端文案、后端估算上下文和相关测试，拆开会在共享文件上产生无谓冲突。
 
 ### Branch Strategy Recommendation
 recommended_branch_count: 1
 rationale: |
-  实现范围小而耦合度高：主文档解析、通用附件解析和测试样例需要一起收敛。
-  单分支推进更适合持续验证“无附件不回归 + 有附件能递归 + 单附件失败不影响整体”这三类核心行为。
+  本轮是一次小而集中的行为纠偏和链路补强，单 WI 单分支最容易保持追溯清晰。
+  尤其 `backend/api/routes.py`、`backend/agent/work_estimation_agent.py` 和 `frontend/src/pages/CosmicConfigPage.js` 都是共享面，串行推进更稳妥。
 
 alternative_if_parallel_needed: |
-  若后续要继续扩展附件来源展示或非 DOCX 主文档入口，可在下一轮把“解析器实现”和“展示/任务链路扩展”拆成独立 WI。
-  当前不建议提前拆分。
+  后续若引入第二套估算规则，可把“统一规则框架”和“具体规则实现”分开，但当前不需要。
 
 **Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
 are suggestions only, not enforced by gates. User decides the actual execution strategy.
 
 ### Shared Surface Analysis
 potentially_conflicting_files:
-  - path: backend/utils/docx_parser.py
-    reason: 该文件直接决定任务主链路消费的 `requirement_content` 内容。
-    recommendation: 只在这里做入口编排，把复杂解析细节下沉到独立 helper。
-  - path: backend/service/document_parser.py
-    reason: 这是所有附件正文解析的通用入口，任何 return shape 变化都会影响其他调用方。
-    recommendation: 复用现有 parse 结果结构，不随意重命名字段或改变无附件输出。
-  - path: tests/test_document_parser.py
-    reason: 这里已有 XLSX/PDF/PPTX 解析行为回归，新增附件能力后必须同步守住原断言。
-    recommendation: 在原测试旁边补新增场景，不覆盖已有回归用例。
+  - path: frontend/src/pages/CosmicConfigPage.js
+    reason: 说明文案和快速设置入口集中在同一组件内。
+    recommendation: 一次性替换所有误导性表述，避免局部遗漏。
+  - path: backend/api/routes.py
+    reason: 估算入口在这里触发 COSMIC 分析、拼装上下文并写回 feature 字段。
+    recommendation: 所有 COSMIC 分析触发、rule context 的构建、调用与落盘都集中在该入口完成。
+  - path: backend/agent/work_estimation_agent.py
+    reason: 这里控制估算提示词与降级逻辑。
+    recommendation: 新增通用参数，避免对 COSMIC 结构形成硬编码依赖。
+  - path: backend/service/system_profile_service.py
+    reason: 现有估算上下文与 artifact 写入都在这里。
+    recommendation: 沿用现有上下文载体，扩展而不平行复制。
 
 conflict_risk_assessment:
   high_risk:
-    - backend/utils/docx_parser.py
+    - backend/api/routes.py
+    - backend/agent/work_estimation_agent.py
   medium_risk:
-    - backend/service/document_parser.py
-    - backend/utils/embedded_attachment_extractor.py
+    - frontend/src/pages/CosmicConfigPage.js
+    - backend/service/system_profile_service.py
   low_risk:
-    - tests/test_docx_parser.py
-    - tests/test_document_parser.py
-    - tests/test_attachment_extraction.py
+    - backend/utils/cosmic_analyzer.py
+    - frontend/src/__tests__/cosmicConfigPage.render.test.js
+    - tests/test_task_reevaluate_api.py
+    - tests/test_evaluation_contract_api.py
 
 ### Pre-work for Parent Feature Branch
 tasks:
-  - task: 落地 branch-local 测试账本载体
+  - task: 冻结设计中的统一 rule_context 字段与执行时机
     content: |
-      在仓库根目录创建 `testing.md`，后续 Implementation 直接往 WI-001 下面追加测试记录。
-    rationale: `implementation-start` gate 硬要求 `testing.md` 存在。
-  - task: 确认实现边界不触碰 Agent/API
+      `rule_id`、`rule_name`、`status`、`summary_text`、`structured_payload`、`failure_reason`，并明确 COSMIC 在点击估算时执行，而不是只消费历史 `cosmic_analysis`。
+    rationale: 防止后续实现时把 COSMIC 私有字段直接扩散进多个层级，也防止规则配置的生效时机继续摇摆。
+  - task: 限定单 WI 允许改动路径
     content: |
-      通过 `work-items/WI-001.yaml` 的 `allowed_paths` 和 `out_of_scope` 把实现固定在解析器与测试文件。
-    rationale: 避免设计阶段 scope 漂移。
+      只允许修改前端说明页、估算 API/Agent、COSMIC 分析器、系统画像服务与对应测试。
+    rationale: 防止本轮演变成“顺手改拆分算法”或“顺手加前台证据展示”。
 
 ### Notes
-- 本设计推荐新增 `backend/utils/embedded_attachment_extractor.py` 作为唯一附件递归入口，避免把 zip/OLE 细节散落到多个解析器中。
-- 附件正文合并顺序采用“主文档正文在前，附件正文按发现顺序追加”，保证当前系统识别与拆分仍然优先看到主文档上下文。
-- 对于无法识别的附件，只记录错误并继续，不把文件名或二进制摘要写进最终正文。
+- 本次不要求 COSMIC 一定“正确估值”，要求的是“被选择的规则确实被结构化消费，并能证明是否成功应用”。
+- `fine / medium / coarse` 字段本身暂不移除，但其文案语义要回到组织内部计量口径配置，不再暗示现网拆分控制能力。
+- 当前设计明确把 COSMIC 的执行时机收敛到点击估算，避免“配置只影响旁路分析器、不影响真实估算任务”的半闭环状态。
 
 ## Design Slice Index
 - DS-001:
   - appendix_ref: none
-  - scope: 在文档解析层增加通用附件扫描、O​​OXML/OLE 解包、递归控制、文本扁平化与正文合并。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
+  - scope: 前端说明纠偏 + 后端点击估算时执行 COSMIC 分析并构建统一规则上下文层 + 按功能点降级证据。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004]
 
 ## Work Item Derivation
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/attachment-parsing-requirement.md
+    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
+    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
   requirement_refs:
     - REQ-001
     - REQ-002
     - REQ-003
     - REQ-004
-    - REQ-005
-  goal: 在解析器内部补齐附件递归解析与正文合并，使现有任务主链路自动获得更完整的 `requirement_content`。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  goal: 在估算入口引入统一 rule context，并让点击估算时主动执行 COSMIC 分析，完成 COSMIC 使用说明纠偏与后台证据闭环。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
   verification_refs:
     - VO-001
     - VO-002
     - VO-003
     - VO-004
-    - VO-005
   dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 仅允许修改 `docx_parser`、`document_parser`、新增附件提取 helper 和相关测试；任何 Agent/API/UI 变化都必须停下并回到 design 对齐。
+  notes_on_boundary: 允许修改前端文案页、估算 API/Agent、COSMIC 分析器、系统画像服务和相关测试；不允许修改拆分 Agent、系统识别、报告导出或其他无关前端页面。
   work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
 
 ## Contract Needs
-- no additional contract required; implementation stays inside parser internals and existing return structures.
+- contract_id: none
+  required: false
+  reason: 现有改动不引入新的外部接口契约，只在内部上下文和兼容字段上扩展。
+  consumers: []
 
 ## Implementation Readiness Baseline
 
 ### Environment Configuration Matrix
-- 运行时沿用当前 Python 后端环境；附件递归解析新增并显式锁定 `olefile` 运行依赖，其余继续复用仓库已存在的 `python-docx`、`openpyxl`、`PyPDF2`、`xlrd` 能力。
-- 主文档入口仍在 `backend/api/routes.py` 的 `process_task_sync()` 中调用 `DocxParser.parse(file_path)`，不新增环境变量或部署参数。
-- 测试执行使用现有 `pytest` 环境；新增样例优先通过内存构造 zip/OLE fixture，避免依赖真实上传文件。
+- 前端测试继续使用现有 Jest 环境，验证 `CosmicConfigPage` 文案渲染与 payload merge 行为。
+- 后端测试继续使用 pytest + FastAPI TestClient，不引入新的外部服务依赖。
+- 若环境已启用 `ENABLE_V27_PROFILE_SCHEMA`，估算上下文扩展必须兼容当前 `build_estimation_context()` 返回形状。
 
 ### Security Baseline
-- 附件解析只处理内嵌二进制内容，不落盘外部可执行文件，不调用 shell，不扩展上传文件权限。
-- 附件类型识别以扩展名和文件签名双重校验为主，对未知/伪装格式直接降级失败，不做不受控解析。
-- 递归限制、数量限制、大小限制和总预算是默认开启的资源保护措施，不能在实现中绕开。
+- 规则上下文只在已有任务所有者可触发的 `/tasks/{task_id}/estimate` 链路中使用，不新增越权入口。
+- COSMIC 分析执行也只在已有任务所有者可触发的 `/tasks/{task_id}/estimate` 链路中发生，不新增越权入口。
+- 估算证据 artifact 继续沿用现有 output artifact 写入路径，不新增公开读接口。
+- 前端说明纠偏不改变权限模型，规则管理页仍仅管理员可写。
 
 ### Data / Migration Strategy
-- 本次不引入新的持久化 schema，不需要数据迁移或回填脚本。
-- 已有任务数据结构保持不变；改善只体现在新解析出的 `requirement_content` 更完整。
-- 对历史无附件或未重新评估的任务不做离线重算，保持按需重新上传/重新评估的现有流程。
+- 不做数据库或持久化结构迁移。
+- 任务内 feature 明细允许在估算时即时生成或覆盖 `cosmic_analysis` / `rule_context` 兼容字段；历史任务缺失这些字段时，应在当前估算动作内即时补齐，而不是直接判定为缺失。
+- 估算 artifact payload 扩展为向后兼容追加字段，不要求回填历史产物。
 
 ### Operability / Health Checks
-- 关键健康信号是“无附件文档回归通过”“递归附件样例解析通过”“损坏附件样例不会中断主流程”。
-- 解析失败必须通过日志带出附件文件名和失败原因，便于排查具体嵌入对象，但不污染最终正文。
-- 若附件总量或单附件过大触发限制，应输出明确日志而不是静默丢失。
+- COSMIC 分析或规则上下文生成失败时必须记录 `degraded` / `failure_reason`，便于后台排查“规则是否真的在当前估算动作中被用到”。
+- 估算主链路仍应返回结果，即使部分功能点的规则上下文降级。
+- 日志中需要能区分 LLM 估算失败与规则上下文生成失败两类降级来源。
 
 ### Backup / Restore
-- 代码级改动没有持久化迁移，回滚只需恢复解析器和测试文件变更即可。
-- 若上线后发现正文合并影响现有拆分结果，可直接回退本 WI 对解析器的修改，不涉及数据恢复。
+- 本轮不引入新的持久化根目录或新文件类型，沿用现有 artifact 目录与任务存储备份策略。
+- 如需回滚，只需回退代码和新增 artifact 字段消费逻辑，不涉及数据迁移回滚。
+
+### UX / Experience Readiness
+- “使用说明”需让管理员一眼理解哪些字段是计量口径配置，哪些不是现网拆分控制。
+- 快速设置的命名和说明必须避免再出现“每个按钮/操作=1个功能点”这类能力承诺式表述。
 
 ## Verification Design
 - ACC-001:
-  - approach: 为通用附件提取器和 `DocumentParser` 增加 `docx/xlsx/pptx/pdf` 嵌入载荷解析测试，覆盖原生嵌入 entry 与 OLE 包装 entry。
-  - evidence: `pytest tests/test_attachment_extraction.py tests/test_document_parser.py -q`
+  - approach: 更新前端渲染测试，验证 Modal 说明和快速设置文案已去除“直接控制拆分粒度”的误导，并保留必要配置说明。
+  - evidence: `frontend/src/__tests__/cosmicConfigPage.render.test.js` 通过。
 - ACC-002:
-  - approach: 构造三层嵌套、循环引用、超大附件和超过数量上限的样例，验证深度/去重/保护策略都生效。
-  - evidence: `pytest tests/test_attachment_extraction.py -q`
+  - approach: 更新任务估算 API 测试，验证估算前会按管理员当前维护的 COSMIC 配置触发分析、构建统一 rule context，并显式传入估算 Agent；规则禁用或显式跳过时状态为 degraded/skipped。
+  - evidence: `tests/test_task_reevaluate_api.py` 或等效测试通过。
 - ACC-003:
-  - approach: 在 `DocxParser` 测试中验证最终 `requirement_content` 同时包含主文档正文和附件正文，且顺序稳定。
-  - evidence: `pytest tests/test_docx_parser.py -q`
+  - approach: 为 COSMIC 分析器 / 估算入口补测试，验证点击估算时确实按管理员配置触发分析、统一 rule context 结构、功能点级 degraded 状态与后台 artifact 证据。
+  - evidence: 后端新增或更新测试通过，且 artifact payload 包含规则状态、失败原因和当前估算动作内生成的规则结果。
 - ACC-004:
-  - approach: 注入损坏附件和无法识别的伪装格式，验证其被记录并跳过，其他附件正文仍可进入结果。
-  - evidence: `pytest tests/test_attachment_extraction.py tests/test_docx_parser.py -q`
-- ACC-005:
-  - approach: 保留现有 `tests/test_docx_parser.py`、`tests/test_document_parser.py` 回归，并新增无附件样例断言确保结果不变。
-  - evidence: `pytest tests/test_docx_parser.py tests/test_document_parser.py -q`
+  - approach: 为估算 Agent 增加测试，验证其入参同时保留完整需求语义、系统画像上下文与 rule context，提示输入不退化为短描述摘要。
+  - evidence: 后端新增或更新测试通过，并能断言提示中包含完整上下文块。
 
 ## Failure Paths / Reopen Triggers
-- 如果真实样例表明主流附件都以当前无法稳定解包的专有容器存在，需要重新评估支持边界或依赖策略。
-- 如果为了表达附件来源、层级或错误详情必须修改任务返回结构或前端 UI，需要 reopen design，而不是在当前 WI 内偷偷扩 scope。
-- 如果附件正文拼接显著降低现有系统识别/拆分质量，需要先回到 spec/design 重新定义合并规则和过滤策略。
+- 如果实现必须修改功能点拆分 prompt 或拆分主链路，需回到 spec/design 重新界定范围。
+- 如果现有 `functional_process_rules.granularity` 字段被证明无法保留其现有存储语义，需要先做产品决策，再回写 spec。
+- 如果要把规则使用证据暴露到前台页面，而不仅是后台 artifact，需要重新开边界。
+- 如果发现点击估算时执行 COSMIC 分析会引入不可接受的额外时延或 LLM 成本，需要先回到 design 重新决策是否引入缓存或预分析机制。
 
 ## Appendix Map
 - none

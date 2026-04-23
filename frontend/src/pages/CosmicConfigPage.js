@@ -29,6 +29,18 @@ import usePermission from '../hooks/usePermission';
 const { Title, Text, Paragraph } = Typography;
 const { TabPane } = Tabs;
 
+export const COSMIC_PRESET_LABELS = {
+  fine: '偏保守口径',
+  medium: '平衡口径',
+  coarse: '宽松口径',
+};
+
+export const COSMIC_GUIDANCE_COPY = [
+  '本页用于配置 COSMIC 计量口径，帮助管理员按组织要求统一维护数据组、功能处理、数据移动、计数与校验规则。',
+  'COSMIC 通过统计入口/出口/读/写四类数据移动来解释功能规模，但本页配置的是计量口径，不会直接控制当前功能点拆分输出。',
+  '快速设置提供的是偏保守、平衡、宽松三种口径预设，便于管理员初始化参数；按组织口径统一配置后，再用于 COSMIC 分析与估算解释。',
+];
+
 const mergeSection = (currentSection, nextSection) => ({
   ...(currentSection || {}),
   ...(nextSection || {}),
@@ -100,7 +112,7 @@ const CosmicConfigPage = () => {
     const values = presetConfigs[preset];
     if (values) {
       form.setFieldsValue(values);
-      message.success(`已应用${preset === 'fine' ? '细' : preset === 'medium' ? '中等' : '粗'}粒度预设配置`);
+      message.success(`已应用${COSMIC_PRESET_LABELS[preset]}预设配置`);
     }
   };
 
@@ -190,17 +202,17 @@ const CosmicConfigPage = () => {
                           items: [
                             {
                               key: 'fine',
-                              label: '细粒度（每个按钮/操作=1个功能点）',
+                              label: COSMIC_PRESET_LABELS.fine,
                               onClick: () => applyPreset('fine'),
                             },
                             {
                               key: 'medium',
-                              label: '中等粒度（完整交易流程=1个功能点）',
+                              label: COSMIC_PRESET_LABELS.medium,
                               onClick: () => applyPreset('medium'),
                             },
                             {
                               key: 'coarse',
-                              label: '粗粒度（业务模块=1个功能点）',
+                              label: COSMIC_PRESET_LABELS.coarse,
                               onClick: () => applyPreset('coarse'),
                             },
                           ],
@@ -405,17 +417,14 @@ const CosmicConfigPage = () => {
           >
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Paragraph style={{ marginBottom: 0 }}>
-                COSMIC 通过统计<strong>入口/出口/读/写</strong>四类数据移动估算功能规模。前端展示仅做理解简化，后台算法保持不变。
+                {COSMIC_GUIDANCE_COPY[0]}
               </Paragraph>
-
-              <div>
-                <Text strong>拆分示例（细/中/粗）</Text>
-                <Space direction="vertical" size={8} style={{ marginTop: 8 }}>
-                  <Text><Tag color="blue">细粒度</Tag>每个按钮/操作可拆分为单独功能点。</Text>
-                  <Text><Tag color="gold">中等粒度</Tag>一个完整交易流程（输入+校验+处理+返回）作为一个功能点。</Text>
-                  <Text><Tag color="purple">粗粒度</Tag>一个业务模块作为一个功能点，适合高层级粗估。</Text>
-                </Space>
-              </div>
+              <Paragraph style={{ marginBottom: 0 }}>
+                COSMIC 通过统计<strong>入口/出口/读/写</strong>四类数据移动来解释功能规模，但本页配置的是计量口径，<strong>不会直接控制当前功能点拆分输出</strong>。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 0 }}>
+                {COSMIC_GUIDANCE_COPY[2]}
+              </Paragraph>
             </Space>
           </Modal>
         </Space>

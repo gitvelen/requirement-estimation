@@ -186,6 +186,63 @@ class CosmicAnalyzer:
             "counting_basis": "分析失败，使用默认值"
         }
 
+    def _is_default_analysis(self, analysis: Dict[str, Any]) -> bool:
+        if not isinstance(analysis, dict):
+            return True
+        counting_basis = str(analysis.get("counting_basis") or "").strip()
+        return counting_basis == "分析失败，使用默认值"
+
+    def _build_movement_summary(self, data_movements: Dict[str, Any]) -> str:
+        safe_movements = data_movements if isinstance(data_movements, dict) else {}
+        parts = []
+        for movement_type in ("E", "X", "R", "W"):
+            movement_items = safe_movements.get(movement_type) or []
+            count = len(movement_items) if isinstance(movement_items, list) else int(movement_items or 0)
+            parts.append(f"{movement_type}={count}")
+        return ", ".join(parts)
+
+    def build_rule_context_from_analysis(self, cosmic_analysis: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not isinstance(cosmic_analysis, dict):
+            return {
+                "rule_id": "cosmic",
+                "rule_name": "COSMIC",
+                "status": "degraded",
+                "summary_text": "COSMIC 规则未提供可复用分析结果",
+                "structured_payload": {},
+                "failure_reason": "cosmic_analysis_missing",
+            }
+
+        counting_basis = str(cosmic_analysis.get("counting_basis") or "").strip()
+        data_movements = cosmic_analysis.get("data_movements") if isinstance(cosmic_analysis.get("data_movements"), dict) else {}
+        cff = cosmic_analysis.get("cff", 0)
+        status = "degraded" if self._is_default_analysis(cosmic_analysis) else "applied"
+        failure_reason = "cosmic_analysis_unavailable" if status == "degraded" else None
+        summary_parts = [f"CFF={cff}", self._build_movement_summary(data_movements)]
+        if counting_basis:
+            summary_parts.append(counting_basis)
+
+        return {
+            "rule_id": "cosmic",
+            "rule_name": "COSMIC",
+            "status": status,
+            "summary_text": "；".join(part for part in summary_parts if part),
+            "structured_payload": {
+                "data_movements": data_movements,
+                "cff": cff,
+                "counting_basis": counting_basis,
+                "config_snapshot": {
+                    "cff_calculation_method": ((self.config or {}).get("counting_rules") or {}).get("cff_calculation_method"),
+                    "min_cff_per_feature": ((self.config or {}).get("validation_rules") or {}).get("min_cff_per_feature"),
+                    "max_cff_per_feature": ((self.config or {}).get("validation_rules") or {}).get("max_cff_per_feature"),
+                },
+            },
+            "failure_reason": failure_reason,
+        }
+
+    def build_rule_context(self, feature_description: str, feature_info: Dict = None) -> Dict[str, Any]:
+        analysis = self.analyze_feature(feature_description, feature_info)
+        return self.build_rule_context_from_analysis(analysis)
+
     def analyze_features_batch(self, features: List[Dict]) -> List[Dict]:
         """
         批量分析功能点
