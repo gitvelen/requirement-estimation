@@ -5,8 +5,10 @@ services:
     container_name: requirement-frontend
     ports:
       - "8000:80"
+      - "443:443"
     volumes:
       - ${FRONTEND_NGINX_CONF:-./frontend/nginx.internal.conf}:/etc/nginx/nginx.conf:ro
+      - ${FRONTEND_SSL_DIR:-./frontend/ssl}:/etc/nginx/ssl:ro
       - ./frontend/build:/usr/share/nginx/html:ro
     restart: unless-stopped
     networks:

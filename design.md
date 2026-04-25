@@ -2,7 +2,7 @@
 
 ## Default Read Layer
 
-**说明**：本章节是设计完成时的快照索引，用于快速浏览核心结构。详细内容以正文各章节为准，索引可能滞后于正文更新。
+**说明**：本章节是 Design 阶段当前结论的快照索引，用于快速浏览目标、边界和 WI 追溯；详细描述以后文正文为准。
 
 ### Goal / Scope Link
 - requirement_refs:
@@ -10,229 +10,223 @@
   - REQ-002
   - REQ-003
   - REQ-004
+  - REQ-005
 - acceptance_refs:
   - ACC-001
   - ACC-002
   - ACC-003
   - ACC-004
+  - ACC-005
 - verification_refs:
   - VO-001
   - VO-002
   - VO-003
   - VO-004
+  - VO-005
 - spec_alignment_check:
   - spec_ref: REQ-001
     aligned: true
-    notes: 前端仅重写规则管理页的说明与快速设置文案，去掉“直接控制拆分粒度”的误导表达。
+    notes: 三项通用安全头按“API 由后端、静态页由前端 nginx”统一补齐，避免只在局部页面生效。
   - spec_ref: REQ-002
     aligned: true
-    notes: `/tasks/{task_id}/estimate` 在估算前基于管理员当前维护的 COSMIC 配置执行分析、统一构建并注入 rule context，不把 COSMIC 直接焊进估算 Agent。
+    notes: 保留现有 `http://<前端IP>:8000` 访问方式，不做 `8000 -> 443` 自动重定向。
   - spec_ref: REQ-003
     aligned: true
-    notes: COSMIC 作为首个规则会在当前估算动作内生成统一 rule context 结构，并按功能点记录 degraded 证据。
+    notes: HSTS 只在新增的 `https://<前端IP>:443` 前端 HTTPS 入口下发，头值固定为 `max-age=16070400`。
   - spec_ref: REQ-004
     aligned: true
-    notes: 估算仍保留完整需求语义和系统画像上下文，rule context 只作补强输入。
+    notes: 设计明确了 HSTS 的复测入口、TLS 终止点、证书目录和兼容性验证路径。
+  - spec_ref: REQ-005
+    aligned: true
+    notes: 设计允许部署脚本在证书缺失时生成带目标访问 IP SAN 的自签名证书，但不扩展到浏览器信任链分发。
 
 ### Architecture Boundary
+- system_context: 当前安全扫描入口为 `http://10.62.16.251:8000`，由内网前端 nginx 承接页面与 `/api/` 代理；仓库中仍保留后端独立暴露的历史部署路径。
 - impacted_capabilities:
-  - 规则管理页 COSMIC 使用说明与快速设置文案
-  - 任务估算主链路的规则执行、上下文构建与注入
-  - COSMIC 管理配置到运行时分析结果的接入与归一化
-  - 估算上下文证据落盘
+  - 前端页面与静态资源的统一安全头下发
+  - 后端 API 的统一安全头下发
+  - 内网前端 HTTPS/443 入口与 HSTS 复测能力
+  - 内网前端部署脚本的证书/端口预检与运行态校验
+  - 内网前端证书缺失时的自签名 IP 证书 fallback
 - not_impacted_capabilities:
-  - 功能点拆分 Agent 主算法
-  - 系统识别链路
-  - 评估报告导出结构
-  - 规则管理配置存储结构本身
+  - 业务路由、鉴权逻辑、数据模型、任务评估流程
+  - 域名体系、受信任 CA 接入与浏览器根证书分发
+  - 现有 `http://IP:8000` 基本访问方式
 - impacted_shared_surfaces:
-  - frontend/src/pages/CosmicConfigPage.js
-  - backend/api/routes.py
-  - backend/agent/work_estimation_agent.py
-  - backend/utils/cosmic_analyzer.py
-  - backend/service/system_profile_service.py
-- not_impacted_shared_surfaces:
-  - backend/agent/feature_breakdown_agent.py
-  - backend/prompts/prompt_templates.py 中拆分提示词
-  - backend/api/cosmic_routes.py 的独立配置接口
+  - backend/app.py
+  - frontend/nginx.conf
+  - frontend/nginx.internal.conf
+  - frontend/nginx-remote.conf
+  - docker-compose.frontend.internal.yml
+  - deploy-frontend-internal.sh
+  - tests/test_frontend_nginx_upload_limit.py
+  - tests/test_deploy_frontend_internal_script.py
+  - tests/test_backend_security_headers.py
 - major_constraints:
-  - 不新增管理员可配置的运行时拆分粒度开关。
-  - 不重写现有功能点拆分主链路，只在估算入口补入最小必要的规则执行与上下文层。
-  - 规则失败处理必须按功能点降级，并留下后台证据；不得整任务静默回退。
-  - 估算仍必须保留完整原始需求语义，不能退化为只看短描述或只看规则摘要。
+  - HSTS 只允许在 HTTPS/TLS 终止点下发，不能在纯 HTTP 入口上做伪闭环。
+  - 现有 `http://IP:8000` 必须保留可访问，不得以安全头整改为名强制改用域名或 HTTPS。
+  - `/api/` 代理链路不得重复追加与后端同名的三项通用安全头。
+  - 自动生成的证书只允许作为环境内自签名 fallback，必须覆盖操作人指定的访问 IP，且不应覆盖已提供的正式证书。
+  - 本轮不扩展到 CSP、Referrer-Policy、Permissions-Policy 等其他安全头。
 - contract_required: false
 - compatibility_constraints:
-  - 现有 `/tasks/{task_id}/estimate` 返回结构继续兼容现有字段，可在不破坏旧字段的前提下补充 rule context 证据相关字段。
-  - `build_estimation_context()` 继续作为统一上下文入口扩展，不另造平行上下文体系。
-  - 后续接入其他估算规则时必须复用统一 `rule_context` 结构，而不是为 COSMIC 写专用旁路协议。
-
-### Work Item Execution Strategy
-
-#### Dependency Analysis
-dependency_graph:
-  WI-001:
-    depends_on: []
-    blocks: []
-    confidence: high
-
-#### Parallel Recommendation
-parallel_groups:
-  - group: G1
-    work_items: [WI-001]
-    can_parallel: false
-    rationale: 前端说明纠偏、后端上下文结构、测试与证据落盘都围绕同一条估算链路与同一组共享文件，拆开只会增加冲突面。
-
-#### Branch Strategy Recommendation
-recommended_branch_count: 1
-rationale: |
-  本次改动虽然跨前后端，但都围绕单一目标收敛：纠正规则管理说明，并把 COSMIC 规则接入估算主链路。
-  单分支推进更适合保持 `spec -> design -> work-item -> tests -> code` 的一致性，也能避免多 WI 争夺 `backend/api/routes.py`、`backend/agent/work_estimation_agent.py` 和 `frontend/src/pages/CosmicConfigPage.js`。
-
-alternative_if_parallel_needed: |
-  若后续要继续扩展到第二套估算规则，可在下一轮把“统一规则上下文层”与“具体规则实现”拆成两个 WI。
-  当前不建议预拆。
-
-**Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
-are suggestions only, not enforced by gates. User decides the actual execution strategy.
-
-#### Shared Surface Analysis
-potentially_conflicting_files:
-  - path: frontend/src/pages/CosmicConfigPage.js
-    reason: 使用说明、快速设置和现有字段标签集中在同一页，文案边界必须统一。
-    recommendation: 所有“粒度”相关描述一次性收口，避免局部改文案后留下残余误导。
-  - path: backend/api/routes.py
-    reason: `/tasks/{task_id}/estimate` 是规则上下文接入主链路的唯一关键入口。
-    recommendation: 在这里集中完成 rule context 构建、注入和证据落盘，不在多处重复拼装。
-  - path: backend/agent/work_estimation_agent.py
-    reason: 估算 Agent 需要消费统一 rule context，同时保留完整语义上下文。
-    recommendation: 只扩展统一入参和提示上下文，不直接依赖 COSMIC 私有对象。
-  - path: backend/service/system_profile_service.py
-    reason: 当前估算上下文与证据落盘都由这里承载，规则上下文证据应在同一产物层补齐。
-    recommendation: 以扩展已有 `build_estimation_context` / `record_estimation_context_artifact` 为主，不另建平行存储。
-
-conflict_risk_assessment:
-  high_risk:
-    - backend/api/routes.py
-    - backend/agent/work_estimation_agent.py
-  medium_risk:
-    - backend/service/system_profile_service.py
-    - frontend/src/pages/CosmicConfigPage.js
-  low_risk:
-    - frontend/src/__tests__/cosmicConfigPage.render.test.js
-    - tests/test_task_reevaluate_api.py
-    - tests/test_evaluation_contract_api.py
-
-#### Pre-work for Parent Feature Branch
-tasks:
-  - task: 清理旧主题设计残留
-    content: |
-      把 design.md、work-items/WI-001.yaml、testing.md 中上一轮“附件解析”主题内容替换为当前 COSMIC/估算规则主题。
-    rationale: 若不先统一权威文档，后续 gate 会因为追溯和 work-item 对齐失败而阻塞。
-  - task: 固定统一 rule_context 结构
-    content: |
-      在 design 中先冻结统一结构：`rule_id`、`rule_name`、`status`、`summary_text`、`structured_payload`、`failure_reason`。
-    rationale: 这样后续估算 Agent 与 COSMIC 分析器的边界就不会继续摇摆。
-
-#### Notes
-- 当前设计故意不把“可配置拆分粒度”纳入交付范围，避免继续放大误导语义。
-- 当前设计只要求后台可追溯规则是否被应用，不要求前台新增规则使用证据展示。
-
-### Design Slice Index
-- DS-001:
-  - appendix_ref: none
-  - scope: 纠正规则管理页说明，并在估算主链路中引入统一规则执行与上下文层，由 COSMIC 作为首个规则在点击估算时接入并产出按功能点可追溯证据。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004]
+  - 旧的 HTTP/IP 访问方式继续可用。
+  - 新增 HTTPS/443 仅作为第 3 项 HSTS 的复测入口，不替换现有入口。
+  - 仓库不内置证书；证书优先由部署环境提供，缺失时才由脚本在目标环境本地生成。
 
 ### Work Item Derivation
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
+    - docs/inputs/2026-04-24-security-headers-proposal.md#intent
+    - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
   requirement_refs:
     - REQ-001
     - REQ-002
     - REQ-003
     - REQ-004
-  goal: 在不重写拆分链路的前提下，完成规则管理页说明纠偏，并让 COSMIC 管理配置在点击估算时通过统一 rule context 真正进入估算主链路，保留按功能点可追溯的降级证据。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
+    - REQ-005
+  goal: 在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，并新增用于 HSTS 复测的 HTTPS/443 前端入口。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
   verification_refs:
     - VO-001
     - VO-002
     - VO-003
     - VO-004
+    - VO-005
   dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 允许修改前端说明页、估算 API/Agent、COSMIC 分析器、系统画像上下文服务及相关测试；不允许扩散到拆分 Agent、系统识别或报告导出。
-  work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
+  notes_on_boundary: 允许修改后端入口、三个前端 nginx 配置、内网前端 compose/部署脚本和对应测试，并允许在部署脚本内补充最小自签名证书 fallback；不允许扩散到业务逻辑、前端业务页面、域名体系、受信任 CA 接入或浏览器根证书分发。
 
-### Contract Needs
-- no additional contract required; the change stays within existing API shape and internal estimation context artifacts.
+### Design Slice Index
+- DS-001:
+  - appendix_ref: none
+  - scope: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增 `https://<前端IP>:443` 前端入口承接 HSTS 复测；若目标环境缺少预置证书，则由部署脚本生成带 IP SAN 的自签名证书，同时保留现有 `http://<前端IP>:8000` 兼容访问。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
 
-### Failure Paths / Reopen Triggers
-- 如果实现中发现必须通过前台新增“规则使用证据展示”才能满足验收，需要先回写 spec/design 再扩 scope。
-- 如果统一 rule context 无法兼容未来其他估算规则，需要先回写 design 重新定义扩展点。
-- 如果要让 COSMIC 直接参与拆分粒度控制，而不是只作为估算前规则上下文，必须重新开启 spec 决策，不在本次实现中追加。
+## Summary
 
-### Appendix Map
-- none
+本次设计采用“后端统一补 API 头 + 前端 nginx 补静态页头 + 新增 HTTPS/443 前端入口承接 HSTS + 证书缺失时由部署脚本生成自签名 IP 证书”的最小闭环方案。
+其中 `X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 通过 `FastAPI` 中间件和前端 nginx 静态响应双层收口，覆盖当前两类真实入口：前端页面/静态资源，以及后端 API/后端直连部署。
+第 3 项 HSTS 不再停留在抽象讨论，设计上明确由内网前端 nginx 作为 TLS 终止点，对外新增 `https://<前端IP>:443` 复测入口，并在该入口统一返回 `Strict-Transport-Security: max-age=16070400`；若部署环境没有现成证书，则由部署脚本生成仅供该环境使用、覆盖目标访问 IP 的自签名证书。
+为避免破坏现有使用方式，本轮保留 `http://<前端IP>:8000` 兼容访问，不做 `8000` 到 `443` 的自动重定向；这也是当前在“通过安全复测”和“不改坏用户访问”之间的最小可行平衡。
 
 ## Goal / Scope Link
 
 ### Scope Summary
-- 前端只做说明纠偏：保留管理员理解 COSMIC 配置所需的必要说明，去掉会让人理解为“页面直接控制当前拆分粒度”的表述。
-- 后端在估算入口先按管理员当前维护的 COSMIC 配置对待估功能点执行分析，再统一构建 `rule_context`，将“规则是否被执行、是否应用成功、规则摘要与结构化载荷”显式注入估算 Agent。
-- COSMIC 作为首个规则实现运行时分析与 `rule_context` 归一化，并在单个功能点规则失败时输出 `degraded` 证据，而不是整任务静默退回。
-- 估算提示继续以完整需求语义和系统画像为主，`rule_context` 只作为补强信息，禁止替代原始文本。
+- 为后端所有 HTTP API 响应补齐 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+- 为三个前端 nginx 配置中的静态页面和静态资源响应补齐相同的三项通用安全头。
+- 为内网前端部署补齐 HTTPS/443 入口、证书挂载或自签名证书 fallback，以及 HSTS 响应头，以承接第 3 项复测。
+- 保留现有 `http://<前端IP>:8000` 使用方式，不在本轮强制跳转或替换成 HTTPS-only 入口。
 
 ### spec_alignment_check
 - spec_ref: REQ-001
   aligned: true
-  notes: 设计只改文案和帮助信息，不把当前历史“细/中/粗”教学示例继续表达为现网拆分控制能力。
+  notes: 设计按页面、静态资源、API 三类响应明确补齐三项通用安全头，并避免只有单点入口生效。
 - spec_ref: REQ-002
   aligned: true
-  notes: 规则上下文层在 `/tasks/{task_id}/estimate` 统一构建，且构建前会按管理员当前维护的 COSMIC 配置触发分析，再通过通用入参扩展到估算 Agent。
+  notes: 明确保留 `http://<前端IP>:8000`，不做自动跳转，以兼容当前 Windows 浏览器直接输入 IP 的访问方式。
 - spec_ref: REQ-003
   aligned: true
-  notes: COSMIC 分析器负责在当前估算动作内生成分析结果、归一成统一 rule context，并在失败时留下 `failure_reason` 与功能点级降级状态。
+  notes: HSTS 头值固定为 `Strict-Transport-Security: max-age=16070400`，只在最终 HTTPS 复测入口统一返回。
 - spec_ref: REQ-004
   aligned: true
-  notes: 估算 Agent 继续消费完整原始描述、系统画像上下文和功能点信息，rule context 仅作为补充块拼入提示词。
+  notes: 设计正文和 WI 已明确记录复测入口、443/TLS 前提、证书来源及兼容性验证方法。
+- spec_ref: REQ-005
+  aligned: true
+  notes: 若部署目录缺少证书，脚本会按操作人指定 IP 生成自签名证书并显式保留“浏览器信任链未解决”的限制说明。
+
+## Technical Approach
+
+- 设计决策 1：通用安全头的责任边界按“API 由后端，静态页由前端”拆分。
+  - `backend/app.py` 新增统一 HTTP 中间件，为所有 HTTP API 响应补齐 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  - 前端 nginx 仅在静态页面和静态资源响应上补齐这三项头，`/api/` 代理链路不重复追加，直接透传后端响应头，避免同名响应头重复。
+  - 这样既能覆盖当前通过前端入口访问的页面/静态资源，也能覆盖后端独立暴露的历史部署口径。
+
+- 设计决策 2：HSTS 只在 HTTPS 终止点下发，不在当前 HTTP/IP 入口上做伪闭环。
+  - 关闭 `DEC-001` 的具体方案为：内网前端 nginx 新增 `listen 443 ssl;` 的 HTTPS `server`，以它作为安全团队第 3 项的复测入口。
+  - `Strict-Transport-Security: max-age=16070400` 只在该 HTTPS `server` 上统一追加，并覆盖首页、静态资源和代理 API 响应。
+  - 现有 `http://<前端IP>:8000` 保留，不在本轮自动重定向到 HTTPS，以避免改变当前 Windows 浏览器直接输入 IP 的操作习惯。
+
+- 设计决策 3：证书优先由部署层提供；若缺失，则由部署脚本生成带 IP SAN 的自签名证书。
+  - 仓库内不存放证书；内网前端部署脚本优先读取固定证书目录中的 `cert.pem` 和 `key.pem`，挂载到容器内 `/etc/nginx/ssl/`。
+  - 若证书文件缺失，脚本使用 `openssl` 在目标环境生成新的自签名证书和私钥，subjectAltName 必须覆盖操作人指定的访问 IP；建议通过 `FRONTEND_CERT_IPS=<ip1,ip2,...>` 显式传入，避免误用宿主机私网地址。
+  - `docker-compose.frontend.internal.yml` 增加 `443:443` 暴露和证书目录挂载。
+  - `deploy-frontend-internal.sh` 在停旧服务前先检查：`openssl` 是否可用、证书是否已存在或可按指定 IP 自动生成、443 端口是否可用、渲染后的 nginx 配置在离线镜像里可通过 `nginx -t`；任一失败都停止，避免把现有 8000 服务替换成不可用状态。
+  - 该 fallback 只为 HTTPS/HSTS 落地与安装脚本复用服务，不承诺浏览器信任链闭环；若需要浏览器无告警访问，仍需单独引入受信任 CA 或根证书分发。
+
+- 设计决策 4：配置文件按部署角色分层，不把 HSTS 强绑到所有 nginx 变体。
+  - `frontend/nginx.conf`、`frontend/nginx-remote.conf`、`frontend/nginx.internal.conf` 都补齐三项通用安全头，保持不同前端交付方式的基线一致。
+  - 只有内网前端运行时配置和其部署脚本/compose 负责新增 HTTPS/443 与 HSTS，因为当前安全扫描入口就是 `10.62.16.251:8000`，HSTS 闭环也只需先在该路径落地。
+  - `docker-compose.yml`、`docker-compose.frontend.yml` 等未被当前复测直接依赖的交付路径，本轮不强制新增 `443` 暴露，避免把设计扩散成全环境重构。
 
 ## Architecture Boundary
-- system_context: 当前估算链路以 `/tasks/{task_id}/estimate -> COSMIC analyze -> build rule_context -> build_estimation_context -> work_estimation_agent.estimate_three_point_for_feature` 为主线；本次在这条链路中补入统一规则执行与上下文消费。
+
+- system_context: 当前内网主入口是 `http://10.62.16.251:8000 -> frontend/nginx.internal.conf -> proxy_pass http://10.62.22.121:443`；同时仓库仍保留后端直接对外暴露的历史部署路径。
 - impacted_capabilities:
-  - COSMIC 说明文案纠偏
-  - 估算规则运行时执行与上下文构建
-  - COSMIC 管理配置到运行时分析结果的归一化
-  - 估算证据落盘扩展
+  - 前端页面和静态资源统一下发三项通用安全头
+  - 后端 API 统一下发三项通用安全头
+  - 内网前端 HTTPS/443 + HSTS 复测入口
+  - 部署脚本的证书、端口与配置校验
+  - 部署脚本的自签名证书 fallback 与 IP SAN 生成功能
 - not_impacted_capabilities:
-  - 功能点拆分 prompt 和拆分实现
-  - 系统识别编排
-  - 报告生成和下载
-  - COSMIC 配置持久化接口
+  - 业务路由、鉴权逻辑、数据模型、任务评估流程
+  - 前端业务页面与交互逻辑
+  - 域名治理、受信任 CA 接入、浏览器信任链分发
 - impacted_shared_surfaces:
-  - frontend/src/pages/CosmicConfigPage.js
-  - backend/api/routes.py
-  - backend/agent/work_estimation_agent.py
-  - backend/utils/cosmic_analyzer.py
-  - backend/service/system_profile_service.py
+  - backend/app.py
+  - frontend/nginx.conf
+  - frontend/nginx.internal.conf
+  - frontend/nginx-remote.conf
+  - docker-compose.frontend.internal.yml
+  - deploy-frontend-internal.sh
+  - tests/test_frontend_nginx_upload_limit.py
+  - tests/test_deploy_frontend_internal_script.py
+  - tests/test_backend_security_headers.py
 - not_impacted_shared_surfaces:
-  - backend/agent/feature_breakdown_agent.py
-  - backend/agent/agent_orchestrator.py
-  - backend/api/cosmic_routes.py
+  - 前端业务组件和页面源码
+  - 后端业务路由与数据访问层
+  - 其他未被当前安全复测入口直接依赖的交付路径
 - major_constraints:
-  - 统一 `rule_context` 必须对未来其他规则可复用，因此字段名和语义必须通用。
-  - COSMIC 分析必须在点击估算时执行，避免消费过期的历史中间结果。
-  - COSMIC 分析失败时仅允许功能点级降级，不能使整次估算失败。
-  - 规则证据只要求后台可追溯，不新增前台证据展示义务。
-  - 所有新增测试必须围绕当前 acceptance 设计，避免“顺手重构”无关实现。
+  - HSTS 必须只在 HTTPS/TLS 终止点返回。
+  - 三项通用安全头必须覆盖复测范围内的代表性首页、静态资源和 API。
+  - `/api/` 代理层不得重复追加由后端统一下发的三项通用安全头。
+  - 现有 `http://<前端IP>:8000` 不得因本轮整改变成不可用。
 - contract_required: false
 - compatibility_constraints:
-  - `/tasks/{task_id}/estimate` 现有 `features` 列表返回必须继续可用。
-  - `record_estimation_context_artifact()` 继续写 output artifact，但 payload 可补 rule context 相关字段。
-  - 不修改任务存储的根结构，只在 feature 明细和 artifact 中增加兼容字段。
+  - 内网用户继续通过 IP 直接访问系统。
+  - 新增 `https://<前端IP>:443` 作为补充入口，而非替换原入口。
+  - 未引入新的外部接口契约或数据迁移要求。
+
+## Boundaries & Impacted Surfaces
+
+- system_context: 当前内网主入口是 `http://10.62.16.251:8000 -> frontend/nginx.internal.conf -> proxy_pass http://10.62.22.121:443`；同时仓库仍保留后端直接对外暴露的历史部署路径。
+- impacted_surfaces:
+  - `backend/app.py`：新增统一 HTTP 安全响应头中间件。
+  - `frontend/nginx.conf`：补静态页/静态资源安全头基线。
+  - `frontend/nginx.internal.conf`：补静态页安全头，并为运行时渲染保留 HTTPS/HSTS 入口骨架。
+  - `frontend/nginx-remote.conf`：补静态页/静态资源安全头基线，保持远程前端部署口径一致。
+  - `docker-compose.frontend.internal.yml`：新增 `443:443` 暴露和证书目录挂载。
+  - `deploy-frontend-internal.sh`：新增 HTTPS 证书存在性/自动生成、`openssl`/端口预检、运行时配置渲染和 HTTP/HTTPS 双路径验证。
+  - `tests/test_frontend_nginx_upload_limit.py`、`tests/test_deploy_frontend_internal_script.py`、新增后端安全头测试：覆盖配置与脚本回归。
+- out_of_scope:
+  - 业务路由、鉴权逻辑、数据模型、任务评估流程。
+  - 域名体系、受信任 CA 接入、浏览器根证书分发。
+  - 强制把 `http://<前端IP>:8000` 重定向到 HTTPS。
+  - `Content-Security-Policy`、`Referrer-Policy`、`Permissions-Policy` 等本轮未进入需求范围的其他安全头。
+
+## Execution Model
+
+- mode: single-branch
+- rationale: 本轮改动集中在同一条“入口响应头与部署接线”链路上，核心共享面只有 `backend/app.py`、前端 nginx 配置、内网前端 compose/脚本与对应测试。拆成多个分支只会增加共享文件冲突和权威文档同步成本，不会带来真实并行收益。
+
+## Work Item Mapping
+
+- wi_id: WI-001
+  requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
+  acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  summary: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增前端 HTTPS/443 入口承接 HSTS 复测，同时补齐后端部署环境变量样例与读取能力，保留现有 HTTP/IP 兼容访问。
 
 ## Work Item Execution Strategy
 
@@ -248,150 +242,156 @@ parallel_groups:
   - group: G1
     work_items: [WI-001]
     can_parallel: false
-    rationale: 单个 WI 已覆盖前端文案、后端估算上下文和相关测试，拆开会在共享文件上产生无谓冲突。
+    rationale: 通用安全头、HSTS 入口、compose/部署脚本和测试都围绕同一条入口链路，拆成多个 WI 只会增加共享文件冲突。
 
 ### Branch Strategy Recommendation
 recommended_branch_count: 1
 rationale: |
-  本轮是一次小而集中的行为纠偏和链路补强，单 WI 单分支最容易保持追溯清晰。
-  尤其 `backend/api/routes.py`、`backend/agent/work_estimation_agent.py` 和 `frontend/src/pages/CosmicConfigPage.js` 都是共享面，串行推进更稳妥。
+  本轮是一次围绕“安全响应头 + HSTS 复测入口”的集中改动，单 WI 单分支最容易保持 `spec -> design -> work-item -> tests -> code` 一致。
+  尤其 `backend/app.py`、`frontend/nginx.internal.conf`、`docker-compose.frontend.internal.yml` 和 `deploy-frontend-internal.sh` 存在强耦合，串行推进更稳妥。
 
 alternative_if_parallel_needed: |
-  后续若引入第二套估算规则，可把“统一规则框架”和“具体规则实现”分开，但当前不需要。
+  若后续安全团队要求把其他交付路径也一并补齐 HTTPS/443，可在下一轮把“内网扫描入口闭环”和“其他部署变体收口”拆成新 WI。
+  当前不建议预拆。
 
 **Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
 are suggestions only, not enforced by gates. User decides the actual execution strategy.
 
 ### Shared Surface Analysis
 potentially_conflicting_files:
-  - path: frontend/src/pages/CosmicConfigPage.js
-    reason: 说明文案和快速设置入口集中在同一组件内。
-    recommendation: 一次性替换所有误导性表述，避免局部遗漏。
-  - path: backend/api/routes.py
-    reason: 估算入口在这里触发 COSMIC 分析、拼装上下文并写回 feature 字段。
-    recommendation: 所有 COSMIC 分析触发、rule context 的构建、调用与落盘都集中在该入口完成。
-  - path: backend/agent/work_estimation_agent.py
-    reason: 这里控制估算提示词与降级逻辑。
-    recommendation: 新增通用参数，避免对 COSMIC 结构形成硬编码依赖。
-  - path: backend/service/system_profile_service.py
-    reason: 现有估算上下文与 artifact 写入都在这里。
-    recommendation: 沿用现有上下文载体，扩展而不平行复制。
+  - path: backend/app.py
+    reason: 后端三项通用安全头的唯一统一入口。
+    recommendation: 只在应用级统一中间件补齐，不在各路由局部重复加头。
+  - path: backend/config/config.py
+    reason: 后端运行参数与 env file 读取优先级集中在这里。
+    recommendation: 只补 `.env.backend` / `.env.backend.internal` 读取和部署所需配置暴露，不改变业务默认行为。
+  - path: frontend/nginx.internal.conf
+    reason: 既承接现有 `8000` 入口，也要新增 `443` HTTPS/HSTS 入口。
+    recommendation: 在同一配置内同时明确 HTTP 兼容入口、HTTPS 复测入口和 `/api/` 代理边界。
+  - path: docker-compose.frontend.internal.yml
+    reason: `443` 暴露和证书目录挂载都集中在这里。
+    recommendation: 只增加当前 HSTS 闭环所需的最小挂载和端口，不顺带重构其他部署拓扑。
+  - path: deploy-frontend-internal.sh
+    reason: 需要在停旧服务前完成证书、端口和 nginx 配置预检。
+    recommendation: 预检失败时直接停止，避免替换后才发现 443 路径不可用。
+  - path: .env.backend.example
+    reason: 独立部署示例文件需要与当前后端实际读取的参数集合保持一致。
+    recommendation: 仅保留当前代码/部署脚本真实依赖的键，并把示例值写成贴近当前 IP 直连部署方式的样式。
 
 conflict_risk_assessment:
   high_risk:
-    - backend/api/routes.py
-    - backend/agent/work_estimation_agent.py
+    - frontend/nginx.internal.conf
+    - deploy-frontend-internal.sh
   medium_risk:
-    - frontend/src/pages/CosmicConfigPage.js
-    - backend/service/system_profile_service.py
+    - backend/app.py
+    - docker-compose.frontend.internal.yml
+    - backend/config/config.py
   low_risk:
-    - backend/utils/cosmic_analyzer.py
-    - frontend/src/__tests__/cosmicConfigPage.render.test.js
-    - tests/test_task_reevaluate_api.py
-    - tests/test_evaluation_contract_api.py
-
-### Pre-work for Parent Feature Branch
-tasks:
-  - task: 冻结设计中的统一 rule_context 字段与执行时机
-    content: |
-      `rule_id`、`rule_name`、`status`、`summary_text`、`structured_payload`、`failure_reason`，并明确 COSMIC 在点击估算时执行，而不是只消费历史 `cosmic_analysis`。
-    rationale: 防止后续实现时把 COSMIC 私有字段直接扩散进多个层级，也防止规则配置的生效时机继续摇摆。
-  - task: 限定单 WI 允许改动路径
-    content: |
-      只允许修改前端说明页、估算 API/Agent、COSMIC 分析器、系统画像服务与对应测试。
-    rationale: 防止本轮演变成“顺手改拆分算法”或“顺手加前台证据展示”。
-
-### Notes
-- 本次不要求 COSMIC 一定“正确估值”，要求的是“被选择的规则确实被结构化消费，并能证明是否成功应用”。
-- `fine / medium / coarse` 字段本身暂不移除，但其文案语义要回到组织内部计量口径配置，不再暗示现网拆分控制能力。
-- 当前设计明确把 COSMIC 的执行时机收敛到点击估算，避免“配置只影响旁路分析器、不影响真实估算任务”的半闭环状态。
+    - .env.backend.example
+    - frontend/nginx.conf
+    - frontend/nginx-remote.conf
+    - tests/test_frontend_nginx_upload_limit.py
+    - tests/test_deploy_frontend_internal_script.py
+    - tests/test_backend_security_headers.py
+    - tests/test_backend_config_env_files.py
 
 ## Design Slice Index
+
 - DS-001:
   - appendix_ref: none
-  - scope: 前端说明纠偏 + 后端点击估算时执行 COSMIC 分析并构建统一规则上下文层 + 按功能点降级证据。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004]
+  - scope: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增 `https://<前端IP>:443` 前端入口承接 HSTS 复测；若目标环境缺少预置证书，则由部署脚本生成带 IP SAN 的自签名证书，同时保留现有 `http://<前端IP>:8000` 兼容访问，并补齐后端独立部署 env 样例与 `Settings()` 对 `.env.backend` / `.env.backend.internal` 的直接读取。
+  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
+  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
 
 ## Work Item Derivation
+
 - wi_id: WI-001
   input_refs:
-    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-    - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
+    - docs/inputs/2026-04-24-security-headers-proposal.md#intent
+    - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
   requirement_refs:
     - REQ-001
     - REQ-002
     - REQ-003
     - REQ-004
-  goal: 在估算入口引入统一 rule context，并让点击估算时主动执行 COSMIC 分析，完成 COSMIC 使用说明纠偏与后台证据闭环。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004]
+    - REQ-005
+  goal: 在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，新增用于 HSTS 复测的 HTTPS/443 前端入口，并收口后端独立部署所需的环境变量样例与读取方式。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
   verification_refs:
     - VO-001
     - VO-002
     - VO-003
     - VO-004
+    - VO-005
   dependency_refs: []
   contract_needed: false
-  notes_on_boundary: 允许修改前端文案页、估算 API/Agent、COSMIC 分析器、系统画像服务和相关测试；不允许修改拆分 Agent、系统识别、报告导出或其他无关前端页面。
+  notes_on_boundary: 允许修改 `backend/app.py`、`backend/config/config.py`、`.env.backend.example`、三个前端 nginx 配置、内网前端 compose/部署脚本和对应测试，并允许在部署脚本内新增最小自签名证书 fallback；不允许扩散到业务路由、前端业务页面、数据结构、域名体系、受信任 CA 接入或浏览器根证书分发。
   work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
 
 ## Contract Needs
+
 - contract_id: none
   required: false
-  reason: 现有改动不引入新的外部接口契约，只在内部上下文和兼容字段上扩展。
+  reason: 本轮不引入新的外部接口契约，只在既有 HTTP 入口、nginx 配置和部署接线内补齐安全响应头与运行态校验。
   consumers: []
 
 ## Implementation Readiness Baseline
 
 ### Environment Configuration Matrix
-- 前端测试继续使用现有 Jest 环境，验证 `CosmicConfigPage` 文案渲染与 payload merge 行为。
-- 后端测试继续使用 pytest + FastAPI TestClient，不引入新的外部服务依赖。
-- 若环境已启用 `ENABLE_V27_PROFILE_SCHEMA`，估算上下文扩展必须兼容当前 `build_estimation_context()` 返回形状。
+- 后端验证继续使用现有 pytest + FastAPI TestClient，不引入新的外部依赖。
+- 后端配置补充 `Settings()` 读取 `.env.backend` / `.env.backend.internal` 的自动化测试，并用示例文件键集合测试锁定 `.env.backend.example` 的完整性。
+- nginx 配置验证沿用现有配置测试方式，扩展断言页面/静态资源安全头和 `/api/` 代理边界。
+- 内网前端部署脚本测试沿用现有脚本测试结构，增加 `443` 暴露、证书目录挂载、自签名证书生成和 `nginx -t` 预检断言。
 
 ### Security Baseline
-- 规则上下文只在已有任务所有者可触发的 `/tasks/{task_id}/estimate` 链路中使用，不新增越权入口。
-- COSMIC 分析执行也只在已有任务所有者可触发的 `/tasks/{task_id}/estimate` 链路中发生，不新增越权入口。
-- 估算证据 artifact 继续沿用现有 output artifact 写入路径，不新增公开读接口。
-- 前端说明纠偏不改变权限模型，规则管理页仍仅管理员可写。
+- HSTS 只在 `https://<前端IP>:443` 下发，不在 `http://<前端IP>:8000` 返回。
+- 三项通用安全头必须在后端 API 和前端静态资源路径上都可见。
+- 证书优先从部署环境提供的目录挂载；若脚本自动生成自签名证书，则也只允许在目标环境本地生成、本地使用，不入库、不落地到版本控制。
+- 自动生成的自签名证书不解决浏览器信任链，相关风险需在测试/部署证据中显式记录。
 
 ### Data / Migration Strategy
-- 不做数据库或持久化结构迁移。
-- 任务内 feature 明细允许在估算时即时生成或覆盖 `cosmic_analysis` / `rule_context` 兼容字段；历史任务缺失这些字段时，应在当前估算动作内即时补齐，而不是直接判定为缺失。
-- 估算 artifact payload 扩展为向后兼容追加字段，不要求回填历史产物。
+- 本轮不涉及数据库或持久化结构迁移。
+- 本轮不新增业务数据字段；变化集中在 HTTP 响应头、nginx 配置和部署脚本接线。
 
 ### Operability / Health Checks
-- COSMIC 分析或规则上下文生成失败时必须记录 `degraded` / `failure_reason`，便于后台排查“规则是否真的在当前估算动作中被用到”。
-- 估算主链路仍应返回结果，即使部分功能点的规则上下文降级。
-- 日志中需要能区分 LLM 估算失败与规则上下文生成失败两类降级来源。
+- `deploy-frontend-internal.sh` 需要在停旧服务前完成 `openssl` 可用性检查、证书存在性或自动生成、`443` 端口可用性和运行时 `nginx -t` 校验。
+- 部署后需保留 `http://localhost:8000` 可访问验证，以及 `https://localhost:443`/目标 IP 的 HSTS 头验证命令。
+- 预检失败或运行态校验失败时必须中止替换，避免把现有 `8000` 入口改坏。
 
 ### Backup / Restore
-- 本轮不引入新的持久化根目录或新文件类型，沿用现有 artifact 目录与任务存储备份策略。
-- 如需回滚，只需回退代码和新增 artifact 字段消费逻辑，不涉及数据迁移回滚。
+- 回滚方式是回退 nginx 配置、compose 和部署脚本，不涉及数据回滚。
+- 若 `443` 路径不可用，允许回退到仅保留原有 `8000` 服务的状态，但第 3 项 HSTS 需重新开启设计决策。
 
 ### UX / Experience Readiness
-- “使用说明”需让管理员一眼理解哪些字段是计量口径配置，哪些不是现网拆分控制。
-- 快速设置的命名和说明必须避免再出现“每个按钮/操作=1个功能点”这类能力承诺式表述。
+- 用户继续在 Windows 浏览器中通过 IP 直接输入现有地址访问系统。
+- 本轮不引入“必须改用域名”或“必须信任新证书后才能继续工作”的流程变更承诺；如部署环境使用脚本自动生成的自签名证书，浏览器证书信任问题需要在测试/部署证据中显式记录，而不是在设计里假设自动解决。
 
 ## Verification Design
+
 - ACC-001:
-  - approach: 更新前端渲染测试，验证 Modal 说明和快速设置文案已去除“直接控制拆分粒度”的误导，并保留必要配置说明。
-  - evidence: `frontend/src/__tests__/cosmicConfigPage.render.test.js` 通过。
+  - approach: 使用 `FastAPI TestClient` 验证 API 响应头，使用配置测试验证三个 nginx 配置中的静态页/静态资源安全头均存在。
+  - evidence: 后端安全头测试通过；`tests/test_frontend_nginx_upload_limit.py` 或等效 nginx 配置测试扩展后通过。
 - ACC-002:
-  - approach: 更新任务估算 API 测试，验证估算前会按管理员当前维护的 COSMIC 配置触发分析、构建统一 rule context，并显式传入估算 Agent；规则禁用或显式跳过时状态为 degraded/skipped。
-  - evidence: `tests/test_task_reevaluate_api.py` 或等效测试通过。
+  - approach: 部署脚本和人工验证双轨收口。脚本侧验证 `http://localhost:8000` 仍可访问；人工侧在 Windows 浏览器继续用当前 IP 打开首页，确认不需要切换到域名或强制 HTTPS。
+  - evidence: `deploy-frontend-internal.sh` 的验证步骤、脚本测试，以及后续 `testing.md`/`deployment.md` 中的浏览器验证记录。
 - ACC-003:
-  - approach: 为 COSMIC 分析器 / 估算入口补测试，验证点击估算时确实按管理员配置触发分析、统一 rule context 结构、功能点级 degraded 状态与后台 artifact 证据。
-  - evidence: 后端新增或更新测试通过，且 artifact payload 包含规则状态、失败原因和当前估算动作内生成的规则结果。
+  - approach: 使用 `curl -k -I https://<前端IP>:443` 和 `curl -k -I https://<前端IP>:443/api/v1/health` 检查 HSTS 头；同时用脚本测试验证内网部署支持 `443` 暴露、证书挂载和运行时 nginx 配置校验。
+  - evidence: `tests/test_deploy_frontend_internal_script.py` 扩展后通过；运行态 HTTP 头检查命令输出保留为测试/部署证据。
 - ACC-004:
-  - approach: 为估算 Agent 增加测试，验证其入参同时保留完整需求语义、系统画像上下文与 rule context，提示输入不退化为短描述摘要。
-  - evidence: 后端新增或更新测试通过，并能断言提示中包含完整上下文块。
+  - approach: 通过本设计文档、`work-items/WI-001.yaml` 和后续部署检查项明确记录 HSTS 的复测入口、TLS 终止边界、证书目录和“不做 `8000 -> 443` 重定向”的兼容策略。
+  - evidence: `design.md`、`work-items/WI-001.yaml` 和后续 `deployment.md` 的对应章节可直接引用，无需依赖口头说明。
+- ACC-005:
+  - approach: 使用脚本测试验证“证书缺失 -> 自动生成 `cert.pem` / `key.pem` -> 证书包含指定 IP SAN -> HTTPS 健康检查继续可用”的闭环；同时在部署文档保留“自签名证书不解决浏览器信任链”的说明。
+  - evidence: `tests/test_deploy_frontend_internal_script.py` 的新增断言、`openssl x509 -text` 等价输出，以及 `deployment.md` 中对浏览器信任限制的记录。
 
 ## Failure Paths / Reopen Triggers
-- 如果实现必须修改功能点拆分 prompt 或拆分主链路，需回到 spec/design 重新界定范围。
-- 如果现有 `functional_process_rules.granularity` 字段被证明无法保留其现有存储语义，需要先做产品决策，再回写 spec。
-- 如果要把规则使用证据暴露到前台页面，而不仅是后台 artifact，需要重新开边界。
-- 如果发现点击估算时执行 COSMIC 分析会引入不可接受的额外时延或 LLM 成本，需要先回到 design 重新决策是否引入缓存或预分析机制。
+
+- 如果安全团队坚持原始 `http://10.62.16.251:8000` 本身必须返回 HSTS，或必须自动重定向到 HTTPS，需重新开启 spec/design，因为这会改变当前“保留 `8000` 兼容入口”的既定边界。
+- 如果 `X-Frame-Options: DENY` 被证实现网依赖 iframe/门户嵌入，需重新开启 spec/design，并与安全团队重新对齐取值。
+- 如果前端服务器无法提供 `443` 端口、`openssl` 或正确的访问 IP 信息，导致 HTTPS/443 入口或自签名证书 fallback 不可落地，需重新开启 spec/design，重新选择第 3 项闭环路径。
+- 如果后续要求把浏览器信任链下发、受信任 CA 接入或域名治理也纳入本次交付，需重新开启 spec/design，因为这已超出当前最小闭环范围。
 
 ## Appendix Map
+
 - none

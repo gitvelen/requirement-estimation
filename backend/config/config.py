@@ -172,7 +172,8 @@ class Settings(BaseSettings):
 
     model_config = {
         "extra": "ignore",
-        "env_file": ".env",
+        "env_file": (".env", ".env.backend", ".env.backend.internal"),
+        "env_file_encoding": "utf-8",
         "case_sensitive": True
     }
 

@@ -1,293 +1,169 @@
 # spec.md
 
-## Default Read Layer
+## Summary
 
-### Intent Summary
-- Problem: 当前“规则管理”页的 COSMIC 使用说明把计量口径、功能过程颗粒度示意和实际功能点拆分行为混在一起，管理员容易误以为页面配置会直接控制拆分粒度；同时现有功能点拆分与工作量估算主链路未把 COSMIC 等估算规则作为必经上下文，导致规则容易沦为展示信息，无法证明估算 Agent 真正理解并使用了规则。进一步核查发现，管理员在“规则管理”中维护的 COSMIC 配置虽然会影响独立分析器，但尚未稳定成为所有估算任务的前置执行步骤。
-- Goals:
-  - G1: 优化规则管理页“使用说明”，只保留管理员完成 COSMIC 配置所需的必要说明，帮助其快速理解指标意义并按组织要求配置规则。
-  - G2: 澄清产品能力边界，明确规则管理页用于配置 COSMIC 计量口径，而不是直接控制当前功能点拆分粒度。
-  - G3: 在估算主链路中引入统一的“估算规则上下文层”，并在点击估算时按管理员当前维护的 COSMIC 配置对待估功能点执行分析，使该规则成为工作量估算前的必经上下文，而不是摆设。
-  - G4: 保持估算基于完整需求语义，禁止退化为只依赖功能点短描述或启发式标签。
-- Non-goals:
-  - NG1: 本轮不引入管理员可直接配置的运行时拆分粒度开关。
-  - NG2: 本轮不重写现有功能点拆分算法，也不承诺用 COSMIC 完全接管拆分决策。
-  - NG3: 本轮不实现第二套以上估算规则引擎，只为后续接入其他规则预留统一上下文接口。
-- Must-have Anchors:
-  - A1: “使用说明”必须围绕管理员配置动作展开，重点解释指标含义、适用边界和组织配置含义。
-  - A2: 估算前必须按管理员当前维护的 COSMIC 配置主动生成所选规则的结构化上下文，并显式交给估算 Agent 使用。
-  - A3: 规则上下文失败时必须按功能点降级并保留后台证据，不能静默回退。
-  - A4: 估算仍须保留完整原始需求上下文，规则上下文只能补强，不能替代原始语义。
-- Prohibition Anchors:
-  - P1: 禁止继续保留会让管理员误认为“修改页面粒度说明 = 直接修改拆分粒度”的文案。
-  - P2: 禁止让启发式检测、关键词命中或短描述摘要直接替代工作量估算所需的完整语义上下文。
-  - P3: 禁止把 COSMIC 内部结构直接焊死到估算 Agent 中，规则接入必须通过统一上下文层。
-- Success Anchors:
-  - S1: 管理员能从规则管理页快速理解各 COSMIC 配置项的意义及边界，不再被误导为拆分开关。
-  - S2: 工作量估算链路能留下后台证据，证明“管理员配置的规则已在当前估算动作中被应用、降级或跳过”，而不是只消费历史残留结果。
-  - S3: COSMIC 作为首个规则接入时，估算仍保持完整上下文，不退化为只看短文本。
-- Boundary Alerts:
-  - B1: COSMIC 在实践中关注功能过程边界，但不能被简化为一个页面配置项就能决定拆分粒度。
-  - B2: 为控制 token 成本增加的局部规则补强必须偏保守，避免大量额外 LLM 调用。
-  - B3: 未来可能引入其他估算规则（如 CCEP），因此实现不能与 COSMIC 特有字段深耦合。
-- Unresolved Decisions:
-  - D1: 是否在未来版本单独引入“可配置拆分粒度”能力，本轮保持 deferred，不纳入交付范围。
-
-### Requirements Quick Index
-- Requirements Index:
-  - REQ-001: 规则管理页 COSMIC 使用说明纠偏
-  - REQ-002: 估算规则上下文层接入估算主链路
-  - REQ-003: COSMIC 规则上下文产出与按功能点降级证据
-  - REQ-004: 估算完整语义保留与提示词消费约束
-- Proposal Coverage Map: maintain in `## Requirements`
-- Clarification Status: maintain in `## Requirements`
-
-### Acceptance Index
-- ACC-001 -> REQ-001: 使用说明只保留必要配置说明并明确能力边界
-- ACC-002 -> REQ-002: 估算前统一构建并注入规则上下文
-- ACC-003 -> REQ-003: COSMIC 规则上下文可产出、可降级、可追溯
-- ACC-004 -> REQ-004: 估算仍使用完整原始上下文，规则上下文仅作补强
-
-### Verification Index
-- VO-001 -> ACC-001: 前端渲染测试或等效验证
-- VO-002 -> ACC-002: API / 服务层自动化测试
-- VO-003 -> ACC-003: 规则上下文与降级证据自动化测试
-- VO-004 -> ACC-004: 估算提示词与上下文注入自动化测试
-
-### Appendix Map
-- none: 当前无正式 appendix；补充输入沉淀见 `docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md`
+本次变更用于收口安全团队在测试环境扫描发现的 4 项安全响应头问题：`X-XSS-Protection`、`X-Frame-Options`、`Strict-Transport-Security`、`X-Content-Type-Options`。
+当前需求目标是在不破坏当前 Windows 浏览器通过 IP 直接访问系统方式的前提下，定义统一的整改口径、默认头值和复测边界。
+本地核查已确认当前后端入口与前端 nginx 入口都未统一下发上述响应头。
+Requirements 阶段成功标准是：4 项扫描问题的正式 REQ/ACC/VO、输入追溯、兼容性约束和 HSTS 的设计前提已经收口到可审查状态，可支撑进入 Design 阶段。
 
 <!-- SKELETON-END -->
+
+## Inputs
+
+- source_refs:
+  - docs/inputs/2026-04-24-security-headers-proposal.md#intent
+  - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+- source_owner: human
+- maturity: L2
+- normalization_note: 将安全扫描结果、用户对 IP 访问方式与复测目标的澄清、HSTS 的默认目标值与部署前提，以及“证书缺失时允许脚本自动生成自签名证书”的新增部署约束拆开整理；避免把第 3 项误写成“只需补一个响应头”的纯实现问题。
+- approval_basis: 用户已确认四项问题都需要整改并通过安全团队复测；同时确认当前长期通过 IP 直接访问，第 3 项在没有更优路径时可先采纳安全团队建议的 HSTS 头值与 HTTPS/443 前提说明，并明确选择“脚本自动生成带 IP SAN 的自签名证书，但不扩展到浏览器信任链”作为部署 fallback。
 
 ## Intent
 
 ### Problem / Background
-当前评估链路存在两个相互耦合的问题。
+安全团队在测试环境入口 `http://10.62.16.251:8000` 上扫描出 4 项缺失的安全响应头问题，涉及 `X-XSS-Protection`、`X-Frame-Options`、`Strict-Transport-Security` 和 `X-Content-Type-Options`。
 
-第一，规则管理页的 COSMIC 使用说明混合了计量口径说明、功能过程颗粒度示意和类似“粗粒度 / 中等粒度 / 细粒度”的教学式示例，管理员容易误解为该页面配置会直接控制当前功能点拆分粒度。这与实际实现不一致，也会让页面文案对外形成错误能力承诺。
+本地代码核查确认，当前后端 `FastAPI` 入口和仓库内三个前端 `nginx` 配置文件均未统一下发这些响应头，因此扫描结果与仓库现状一致，不是单点环境漂移。
 
-第二，当前功能点拆分和工作量估算链路并没有把 COSMIC 等估算规则作为必经上下文来消费。现状更接近“LLM 基于文本语义做拆分和估算，COSMIC 分析器作为旁路能力存在”。这会带来两个风险：其一，复杂改造项容易被粗粒度合并；其二，即使管理员配置了 COSMIC 规则，也缺乏后台证据证明估算 Agent 真实理解并运用了这些规则。
+同时，当前系统的真实使用方式不是通过域名访问，而是由内网/外网 Windows 机器直接在浏览器输入 IP 访问系统。用户已明确要求：整改必须充分测试，不能把这种既有访问方式改坏。
 
-因此，本轮 Requirements 的核心不是把 COSMIC 直接改造成唯一拆分引擎，而是落实两个最小必要动作：先纠正规则管理页“使用说明”的产品语义，再把 COSMIC 管理配置真正接到估算主链路中，确保点击估算时会基于当前管理员规则对待估功能点执行分析、生成统一 `rule_context`、注入估算、可追溯降级，并且不牺牲完整需求语义。
+在四项问题中，`X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 可以先按统一响应头策略推进；`Strict-Transport-Security` 则除了目标头值外，还额外受到“HTTPS/443 入口”和当前 IP 访问兼容性的约束，因此需要在 Requirements 中显式记录默认口径和风险边界。
+
+最新澄清是：为避免其他环境部署时因为没有预置 `cert.pem` / `key.pem` 而卡住，允许安装/部署脚本在证书缺失时自动生成带目标访问 IP subjectAltName 的自签名证书，以支撑 HTTPS/HSTS 验证闭环；但这不等于浏览器信任链已经解决，浏览器根证书分发或受信任 CA 接入仍不在本轮范围内。
 
 ### Goals
-- G1: 优化规则管理页“使用说明”，只保留管理员完成 COSMIC 配置所需的必要说明，帮助其快速理解指标意义并按组织要求配置规则。
-- G2: 澄清产品能力边界，明确规则管理页配置的是 COSMIC 计量口径，而不是当前拆分粒度控制。
-- G3: 在估算主链路中引入统一的“估算规则上下文层”，并在点击估算时按管理员当前维护的 COSMIC 配置对待估功能点执行分析，让该规则成为估算前的必经上下文。
-- G4: 保持估算基于完整需求语义，禁止退化为只依赖功能点短描述或只言片语。
+- G1: 为四项安全扫描问题建立统一、可追溯的整改范围和默认策略，而不是只记录零散的扫描原文。
+- G2: 明确当前整改必须兼容“Windows 浏览器直接输入 IP 访问系统”的既有使用方式。
+- G3: 将 `X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 的默认头值与覆盖范围固化为正式 requirement。
+- G4: 将第 3 项 HSTS 的默认目标值、入口前提和复测风险边界在当前 Requirements 阶段写清楚，避免后续 Design / Implementation 阶段出现口径漂移。
+- G5: 为“目标环境没有预置 HTTPS 证书”的部署场景定义最小 fallback，确保安装脚本可重复复用，但不把浏览器信任链治理混入本轮范围。
 
-### Non-goals
-- NG1: 本轮不引入管理员可直接配置的运行时拆分粒度开关。
-- NG2: 本轮不重写现有功能点拆分算法，也不承诺用 COSMIC 完全接管拆分决策。
-- NG3: 本轮不实现第二套以上估算规则引擎，只为后续接入其他规则预留统一上下文接口。
-- NG4: 本轮不把 COSMIC 计数结果直接映射为固定人天公式。
+### Boundaries
+- 本次 Requirements 不修改业务功能、角色权限、评估流程或数据模型。
+- 本次 Requirements 不默认引入域名体系，也不把“新增域名访问方式”作为当前问题的唯一闭环路径。
+- 本次 Requirements 不承诺“仅在当前 HTTP/IP 入口补一个 HSTS 响应头”就能关闭第 3 项问题；HSTS 的整改仍需在后续阶段明确适用入口和验证路径。
+- 本次 Requirements 不允许通过牺牲现有 IP 直连可访问性来换取表面上的扫描通过。
+- 本次 Requirements 不包含浏览器根证书分发、受信任 CA 接入或“浏览器无告警访问”的闭环承诺。
 
-### Must-have Anchors
-- A1: “使用说明”必须围绕管理员配置动作展开，重点解释指标含义、适用边界和组织配置含义。
-- A2: 估算前必须按管理员当前维护的 COSMIC 配置构建规则分析结果和结构化上下文，并显式交给估算 Agent 使用。
-- A3: 规则上下文失败时必须按功能点降级并保留后台证据，不能静默回退。
-- A4: 估算仍须保留完整原始需求上下文，规则上下文只能补强，不能替代原始语义。
+## Open Decisions
 
-### Prohibition Anchors
-- P1: 禁止继续保留会让管理员误认为“修改页面粒度说明 = 直接修改拆分粒度”的文案。
-- P2: 禁止让启发式检测、关键词命中或短描述摘要直接替代工作量估算所需的完整语义上下文。
-- P3: 禁止把 COSMIC 内部结构直接焊死到估算 Agent 中，规则接入必须通过统一上下文层。
-
-### Success Anchors
-- S1: 管理员能从规则管理页快速理解各 COSMIC 配置项的意义及边界，不再被误导为拆分开关。
-- S2: 工作量估算链路能留下后台证据，证明“管理员配置的规则已在当前估算动作中被应用、降级或跳过”。
-- S3: COSMIC 作为首个规则接入时，估算仍保持完整上下文，不退化为只看短文本。
-
-### Boundary Alerts
-- B1: COSMIC 在实践中关注功能过程边界，但不能被简化为一个页面配置项就能决定拆分粒度。
-- B2: 为控制 token 成本增加的局部规则补强必须偏保守，避免大量额外 LLM 调用。
-- B3: 未来可能引入其他估算规则（如 CCEP），因此实现不能与 COSMIC 特有字段深耦合。
-
-### Unresolved Decisions
-- D1: 是否在未来版本单独引入“可配置拆分粒度”能力，本轮保持 deferred，不纳入交付范围。
-
-### Input Intake Summary
-- input_source: 用户多轮对话澄清 + 本地代码/历史文档核查
-- input_quality: L2
-- normalization_effort: 将“说明误导”“估算 Agent 需要真正消费 COSMIC 规则”“估算不能退化为只看短文本”的要求归并为单一需求主题，并补充本地实现现状作为背景证据。
-
-### Input Intake
-- input_maturity: L2
-- input_refs:
-  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-- input_owner: human
-- approval_basis: 用户确认本轮应先修正规则管理页“使用说明”的误导，并把 COSMIC 等估算规则接入为估算主链路的必经上下文，同时要求策略偏保守且不能让估算退化为只看短描述。
-- normalization_status: anchored
-
-### Testing Priority Rules
-- P0: must be automated for rule-context injection, degradation evidence, and core estimate flow correctness
-- P1: prefer automated for UI copy rendering and prompt/context composition correctness
-- P2: manual or equivalent verification may supplement wording sanity checks but does not replace automated core-flow coverage
+- decision_id: DEC-001
+  summary: HSTS 的最终复测入口与 HTTPS/443 暴露方式
+  status: resolved
+  impact: high
+  owner: human
+  context: 用户确认当前长期通过 IP 直接访问系统，且没有可依赖的内网域名；同时接受在没有更优路径时先采纳安全团队建议的 HSTS 目标值 `max-age=16070400`。Design 阶段已将第 3 项复测入口收口为前端 nginx 新增的 `https://<前端IP>:443` HTTPS 入口，并明确保留现有 `http://<前端IP>:8000` 兼容访问，不做自动重定向。
+  next_action: 后续实现按该入口补齐 HTTPS/443 暴露、证书挂载或自签名证书 fallback、HSTS 头和自动化验证命令。
 
 ## Requirements
 
 ### Proposal Coverage Map
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: G1: 优化规则管理页“使用说明”，只保留管理员完成 COSMIC 配置所需的必要说明，帮助其快速理解指标意义并按组织要求配置规则。
-  target_ref: REQ-001
+- docs/inputs/2026-04-24-security-headers-proposal.md#intent -> REQ-001, REQ-002, REQ-003, REQ-004
+- docs/inputs/2026-04-24-security-headers-proposal.md#clarifications -> REQ-002, REQ-003, REQ-004, REQ-005, DEC-001
+
+### Source Coverage
+- source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#intent
+  covered_by_reqs: [REQ-001, REQ-002, REQ-003, REQ-004]
+  open_clarifications: []
   status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: G2: 澄清产品能力边界，明确规则管理页配置的是 COSMIC 计量口径，而不是当前拆分粒度控制。
-  target_ref: REQ-001
+- source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  covered_by_reqs: [REQ-002, REQ-003, REQ-004, REQ-005]
+  open_clarifications: []
   status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: G3: 在估算主链路中引入统一的“估算规则上下文层”，让被选中的估算规则成为估算前的必经上下文。
-  target_ref: REQ-002
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: G4: 保持估算基于完整需求语义，禁止退化为只依赖功能点短描述或只言片语。
-  target_ref: REQ-004
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  anchor_ref: scope-priority: 本轮优先处理 COSMIC 使用说明的纠偏与能力边界澄清；拆分链路的 COSMIC 边界补强作为后续 Requirements / Design direction，不在 Proposal 阶段直接实现。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  anchor_ref: estimation-context: 工作量估算不能退化为只根据功能点短描述或只言片语估算；若未来引入局部 refine，估算仍须保留完整原始需求上下文。
-  target_ref: REQ-004
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  anchor_ref: conservative-policy: 后续若增加粗粒度检测，应采取偏保守策略，优先减少误伤和无意义的额外 LLM 调用。
-  target_ref: REQ-003
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  anchor_ref: capability-boundary: 当前 COSMIC 规则管理页用于解释和配置计量口径，不应继续暗示其直接控制当前功能点拆分行为。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  anchor_ref: future-scope: 是否要在未来单独引入“可配置拆分粒度”能力，可后续单独评估，不默认纳入 `v3.1` 当前范围。
-  target_ref: CLR-001
-  status: deferred
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: A1: “使用说明”必须围绕管理员配置动作展开，重点解释指标含义、适用边界和组织配置含义。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: A2: 估算前必须构建所选规则的结构化上下文，并显式交给估算 Agent 使用。
-  target_ref: REQ-002
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: A3: 规则上下文失败时必须按功能点降级并保留后台证据，不能静默回退。
-  target_ref: REQ-003
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: A4: 估算仍须保留完整原始需求上下文，规则上下文只能补强，不能替代原始语义。
-  target_ref: REQ-004
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: P1: 禁止继续保留会让管理员误认为“修改页面粒度说明 = 直接修改拆分粒度”的文案。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: P2: 禁止让启发式检测、关键词命中或短描述摘要直接替代工作量估算所需的完整语义上下文。
-  target_ref: REQ-004
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: P3: 禁止把 COSMIC 内部结构直接焊死到估算 Agent 中，规则接入必须通过统一上下文层。
-  target_ref: REQ-002
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: S1: 管理员能从规则管理页快速理解各 COSMIC 配置项的意义及边界，不再被误导为拆分开关。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: S2: 工作量估算链路能留下后台证据，证明“选中的估算规则已被应用、降级或跳过”。
-  target_ref: REQ-003
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: S3: COSMIC 作为首个规则接入时，估算仍保持完整上下文，不退化为只看短文本。
-  target_ref: REQ-004
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: B1: COSMIC 在实践中关注功能过程边界，但不能被简化为一个页面配置项就能决定拆分粒度。
-  target_ref: REQ-001
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: B2: 为控制 token 成本增加的局部规则补强必须偏保守，避免大量额外 LLM 调用。
-  target_ref: REQ-003
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: B3: 未来可能引入其他估算规则（如 CCEP），因此实现不能与 COSMIC 特有字段深耦合。
-  target_ref: REQ-002
-  status: covered
-- source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  anchor_ref: D1: 是否在未来版本单独引入“可配置拆分粒度”能力，本轮保持 deferred，不纳入交付范围。
-  target_ref: CLR-001
-  status: deferred
 
 ### Clarification Status
 - clr_id: CLR-001
-  source_ref: docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
-  status: deferred
-  impact: medium
-  owner: human
-  next_action: 若后续希望把“可配置拆分粒度”纳入正式范围，需要独立立项并重新定义产品语义、规则入口与验收方式，而不是继续借用当前 COSMIC 规则管理页说明。
-  deferred_exit_phase: Design
+  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  summary: 当前系统长期通过 IP 直连访问，且没有可依赖的内网域名
+  status: resolved
+  resolution: 后续 Requirements / Design 不得默认把“改成域名访问”当作当前整改前提，必须优先验证对 IP 访问的兼容性。
+- clr_id: CLR-002
+  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  summary: 第 3 项在没有更优路径时，可先采纳安全团队建议的 HSTS 目标头值
+  status: resolved
+  resolution: 当前 Requirements 默认目标值采用 `Strict-Transport-Security: max-age=16070400`；是否真正能在复测入口闭环，仍由 DEC-001 继续约束。
+- clr_id: CLR-003
+  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  summary: 整改不能把现有 Windows 浏览器输入 IP 的访问方式改坏
+  status: resolved
+  resolution: 兼容既有 IP 访问被提升为正式 requirement 和 acceptance，不作为口头约束保留。
+- clr_id: CLR-004
+  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  summary: 其他环境部署时若缺少现成 HTTPS 证书，允许安装/部署脚本自动生成带目标访问 IP SAN 的自签名证书
+  status: resolved
+  resolution: 当前 Requirements 明确允许“仅用于当前环境 HTTPS/HSTS 闭环”的自签名证书 fallback，但不把浏览器信任链、根证书分发或受信任 CA 接入纳入本轮范围。
 
-### Functional Requirements
+### Functional
 - REQ-001
-  - summary: 重写规则管理页 COSMIC 使用说明，只保留管理员配置 COSMIC 规则所需的必要说明，并明确该页面用于配置计量口径，不直接控制当前功能点拆分粒度。
-  - rationale: 当前“粗粒度 / 中等粒度 / 细粒度”等教学式表述会误导管理员对系统能力形成错误预期，必须纠偏为最小必要说明。
+  - summary: 系统必须为安全团队复测范围内的 Web 页面/接口建立统一安全响应头策略，至少统一下发 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  - rationale: 这三项是当前扫描直接命中的缺失头，且不依赖额外的域名/证书前提即可先形成明确的整改目标。
 
 - REQ-002
-  - summary: 在工作量估算主链路引入统一的估算规则上下文层；当任务触发工作量估算时，系统必须基于管理员当前维护的 COSMIC 配置对待估功能点执行分析，生成对应 rule context，并将其作为显式上下文注入估算 Agent。
-  - rationale: 当前规则分析与估算主链路脱节，配置页影响不到真实估算动作；只有把规则分析执行点收敛到点击估算时，才能证明估算 Agent 真实使用了管理员配置的规则，同时避免依赖过期的历史中间结果。
+  - summary: 本次整改不得静默破坏当前基于 IP 直接访问系统的使用方式；任何需要改变浏览器输入 IP 后访问行为的方案，都必须被显式识别为兼容性风险并在后续阶段单独验证。
+  - rationale: 用户已明确当前真实使用方式是 Windows 机器浏览器直接输入 IP，且整改不能把系统改坏；这属于硬约束而不是实现偏好。
 
 - REQ-003
-  - summary: COSMIC 作为首个接入的估算规则，必须在点击估算时基于当前管理员配置为每个待估功能点产出结构化 rule context，至少包含规则身份、状态、摘要、结构化载荷、失败原因；规则失败时按功能点降级并记录后台证据。
-  - rationale: 只有在当前估算动作中实时生成可追溯的结构化上下文和降级证据，才能证明规则不是摆设，并避免历史分析结果与当前功能点不一致。
+  - summary: 第 3 项 HSTS 的默认整改目标值采用 `Strict-Transport-Security: max-age=16070400`；若后续指定了用于复测的 HTTPS Web 服务器入口，则该入口在复测范围内的页面上必须统一返回该头值。
+  - rationale: 用户已接受在没有更优路径时先采纳安全团队建议的头值，但 Requirements 需要把“头值默认口径”和“适用入口条件”一起固化，避免后续只记住其中一半。
 
 - REQ-004
-  - summary: 估算 Agent 在消费 rule context 时，仍必须保留并使用完整原始需求上下文、系统画像和功能点描述；规则上下文只能作为补强输入，不能替代完整语义。
-  - rationale: 工作量估算主要依赖完整语义理解，若退化为只看短描述或只看规则摘要，会显著降低估算质量并违反用户明确要求。
+  - summary: 在对安全团队承诺关闭第 3 项问题之前，变更必须显式定义 HSTS 对应的复测入口、HTTPS/443 前提以及“不会破坏既有 IP 访问”的验证路径。
+  - rationale: HSTS 不是单纯补一个响应头即可闭环的问题；如果不先写清楚适用入口和验证路径，后续 Requirements / Design 很容易出现承诺过度或复测口径不一致。
 
-### Constraints / Prohibitions
-- 不新增管理员可配置的运行时拆分粒度开关。
-- 不重写现有功能点拆分主链路，只补充最小必要的估算前规则上下文注入。
-- 规则失败处理必须按功能点降级，不得整任务静默回退。
-- 后台证据至少能区分 `applied`、`degraded`、`skipped` 三类状态，并可追溯失败原因；`applied/degraded` 必须对应当前估算动作内执行得到的规则结果，而不是只消费历史残留字段。
-- 估算 Agent 对规则的消费必须通过统一 `rule_context` 接口完成，不能直接依赖 COSMIC 私有对象结构。
+- REQ-005
+  - summary: 若目标部署环境缺少预置的 `cert.pem` / `key.pem`，安装/部署脚本必须能够按指定访问 IP 生成仅供该环境使用的自签名证书，并确保生成证书的 subjectAltName 覆盖这些 IP；该能力只用于 HTTPS/HSTS 闭环，不代表浏览器信任链问题已被解决。
+  - rationale: 用户已明确要求同一安装脚本可复用于其他环境；若继续强依赖人工预置证书，会让 HSTS 复测路径在新环境中反复卡住。与此同时，本轮目标仍是最小闭环，不能把浏览器根证书分发或受信任 CA 接入一并混入。
 
-### Non-functional Requirements
-- 可追溯性：每个参与估算的功能点都能在后台证据中看到规则应用状态、规则摘要和失败原因（如有）。
-- 向后兼容：未选择估算规则或规则不可用时，现有估算主链路仍可继续执行，但必须有明确状态标识。
-- 成本约束：规则补强策略应偏保守，不引入明显不必要的额外 LLM 调用。
+### Constraints
+- 当前用户访问方式以浏览器直接输入 IP 为主，且当前没有可依赖的内网域名。
+- 默认头值口径如下：`X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Strict-Transport-Security: max-age=16070400`。
+- 第 3 项必须同时考虑响应头取值、HTTPS/443 入口前提和既有 IP 访问兼容性，不能只选其中一项承诺。
+- 自签名证书 fallback 仅用于目标环境 HTTPS/HSTS 落地；证书和私钥不得提交到版本控制，也不构成“浏览器可无告警访问”的承诺。
+- 若后续发现现网存在必须被 iframe 嵌入的明确业务场景，不得直接忽略该冲突，必须回写 spec 并与安全团队重新对齐 `X-Frame-Options` 口径。
+
+### Non-functional
+- 覆盖一致性：同一复测入口下的代表性首页、API 响应和静态资源响应必须表现出一致的安全头策略，而不是只在个别接口生效。
+- 兼容性：整改后的系统仍应保持用户通过现有 IP 地址直接打开页面的基本可用性。
+- 可验证性：后续 Testing / Deployment 阶段必须能通过自动化命令或等效证据明确展示响应头结果，而不是只靠口头说明。
+- 环境隔离：自动生成的自签名证书必须是环境本地生成、本地使用，不入库、不跨环境复用私钥。
 
 ## Acceptance
 
 - acc_id: ACC-001
   source_ref: REQ-001
-  expected_outcome: 规则管理页的 COSMIC 使用说明仅保留管理员理解和配置规则所需的必要说明，不再出现会让管理员理解为“当前可直接配置拆分粒度”的误导性表述，并明确该页面配置的是计量口径而非现网拆分控制。
-  priority: P1
-  priority_rationale: 这是当前用户最直接指出的误导问题，若不纠偏会持续传递错误产品语义。
-  status: pending
+  expected_outcome: 在安全团队复测入口中抽样的代表性首页、API 响应和静态资源响应都包含 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  priority: P0
+  priority_rationale: 这是当前扫描命中的直接整改项，也是后续复测最基础、最可判定的关闭条件。
+  status: approved
 
 - acc_id: ACC-002
   source_ref: REQ-002
-  expected_outcome: 当任务进入工作量估算时，系统会基于管理员当前维护的 COSMIC 配置先对当前待估功能点执行分析，生成统一 rule context，并把该上下文显式注入估算 Agent；若规则未启用或被显式跳过，则状态被明确标记为 skipped/degraded。
-  priority: P0
-  priority_rationale: 这是保证“规则不是摆设”的主链路要求，缺失则无法证明估算真正使用了规则。
-  status: pending
+  expected_outcome: 整改完成后，用户仍可在 Windows 浏览器中通过当前 IP 地址直接访问系统，不会因为整改被静默切换到必须依赖域名的新访问方式。
+  priority: P1
+  priority_rationale: 用户已将“不能把系统改坏”明确为硬约束；若访问方式被破坏，整改即使关闭扫描项也不可接受。
+  status: approved
 
 - acc_id: ACC-003
   source_ref: REQ-003
-  expected_outcome: COSMIC 规则能够在当前估算动作中基于管理员配置产出包含规则身份、状态、摘要、结构化载荷和失败原因的统一 rule context；当规则生成失败时，仅受影响的功能点会被标记为 degraded，并在后台证据中可追溯失败原因。
+  expected_outcome: 若最终确定了 HTTPS Web 服务器复测入口，则该入口在复测范围内的页面上统一返回 `Strict-Transport-Security: max-age=16070400`。
   priority: P0
-  priority_rationale: 没有统一结构和降级证据，就无法稳定扩展到其他规则，也无法区分“已使用”与“已跳过”。
-  status: pending
+  priority_rationale: 用户要求四项问题都以通过安全团队复测为目标，第 3 项的默认目标值必须能在最终复测入口被客观验证。
+  status: approved
 
 - acc_id: ACC-004
   source_ref: REQ-004
-  expected_outcome: 估算 Agent 接收到的上下文同时包含完整原始需求语义、系统画像上下文、功能点信息和 rule context，估算提示不退化为只依赖功能点短描述或规则摘要。
-  priority: P0
-  priority_rationale: 用户已明确指出“只靠只言片语估算”是大忌，这一约束必须成为核心验收项。
-  status: pending
+  expected_outcome: 在请求安全团队复测第 3 项之前，规格与后续设计/测试材料已经明确记录 HSTS 的复测入口、HTTPS/443 前提和 IP 访问兼容性验证方式，不存在口头默认或隐含前提。
+  priority: P1
+  priority_rationale: 若不先收口入口与验证路径，第 3 项最容易在实现、测试和复测阶段出现“各自理解不同”的问题。
+  status: approved
+
+- acc_id: ACC-005
+  source_ref: REQ-005
+  expected_outcome: 当目标环境未预置 `cert.pem` / `key.pem` 且操作人提供目标访问 IP 后，安装/部署脚本能够自动生成带这些 IP subjectAltName 的自签名证书，拉起 HTTPS/443 入口并保留“浏览器仍可能因自签名而提示风险”的书面说明。
+  priority: P1
+  priority_rationale: 这是让同一安装脚本可复用于其他环境的关键部署闭环，但它仍属于第 3 项的部署支撑能力，而不是新的业务功能。
+  status: approved
 
 ## Verification
 
@@ -296,33 +172,42 @@
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 前端渲染测试覆盖规则管理页“使用说明”文案，验证保留必要配置说明并去除误导性粒度表述。
-    - 如存在快速设置或辅助提示，同步验证其措辞不再暗示页面直接控制当前拆分粒度。
-  artifact_expectation: `frontend/src/__tests__/cosmicConfigPage.render.test.js` 或等效测试用例通过，并能证明文案边界已纠正。
+    - 通过自动化命令或等效自动化测试验证代表性页面、API 响应和静态资源响应均返回三项直接整改的安全响应头。
+    - 验证抽样范围覆盖最终安全团队复测所依赖的实际入口，而不是只覆盖本地单一子路径。
+  artifact_expectation: 基于 `curl -I`、自动化 HTTP 测试或等效集成脚本的验证记录，能明确展示三项响应头的实际返回结果。
 
 - vo_id: VO-002
   acceptance_ref: ACC-002
-  verification_type: automated
+  verification_type: manual
   verification_profile: focused
   obligations:
-    - API / 服务层测试验证 `/tasks/{task_id}/estimate` 在估算前会基于当前管理员配置触发 COSMIC 分析并构建统一 rule context。
-    - 验证 rule context 被纳入估算 Agent 入参，规则未启用或显式跳过时状态为 skipped/degraded。
-  artifact_expectation: `tests/test_task_reevaluate_api.py`、`tests/test_evaluation_contract_api.py` 或等效自动化测试通过，并覆盖规则上下文注入主链路。
+    - 在目标环境使用 Windows 浏览器直接输入当前 IP 地址访问系统，验证首页和核心使用链路仍可正常打开。
+    - 若整改引入 HTTPS/443 或其他入口调整，需验证用户输入 IP 后不会直接落入不可接受的中断状态。
+  artifact_expectation: 浏览器人工验证记录、截图或 Deployment / Testing 阶段的兼容性验证证据。
 
 - vo_id: VO-003
   acceptance_ref: ACC-003
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 后端测试验证 COSMIC 规则上下文的统一结构输出，包括 `rule_id`、`rule_name`、`status`、`summary_text`、`structured_payload`、`failure_reason`。
-    - 验证点击估算时确实调用基于管理员配置的 COSMIC 分析，规则失败时按功能点降级且后台证据可追溯失败原因。
-  artifact_expectation: 新增或更新后端测试通过，并覆盖 COSMIC rule context 生成与 degradation evidence。
+    - 在最终确定的 HTTPS 复测入口上自动检查 `Strict-Transport-Security` 头值是否精确等于 `max-age=16070400`。
+    - 验证该头覆盖安全团队复测范围内的代表性页面，而不是只在单个响应上偶发出现。
+  artifact_expectation: 指向最终 HTTPS 复测入口的自动化 HTTP 验证命令或脚本输出，能够显示 HSTS 头值。
 
 - vo_id: VO-004
   acceptance_ref: ACC-004
+  verification_type: manual
+  verification_profile: focused
+  obligations:
+    - 检查 `spec.md`、后续 `design.md`、`testing.md` 或 `deployment.md` 是否明确记录 HSTS 的复测入口、HTTPS/443 前提和 IP 访问兼容性验证方式。
+    - 在进入安全团队复测前确认不存在“入口未定、兼容性未测、却已承诺关闭第 3 项”的文档缺口。
+  artifact_expectation: 权威文档中的明确章节引用和审查记录，能够证明第 3 项的入口与验证路径已经书面收口。
+
+- vo_id: VO-005
+  acceptance_ref: ACC-005
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 测试验证估算 Agent 构造的上下文同时保留完整原始需求文本、系统画像上下文、功能点信息与 rule context。
-    - 验证估算提示词或等效输入不会退化为只依赖功能点短描述或规则摘要。
-  artifact_expectation: 新增或更新后端测试通过，并覆盖提示词 / 估算上下文组合行为。
+    - 通过自动化测试或等效脚本验证：当证书文件缺失时，部署脚本会生成新的 `cert.pem` / `key.pem`，且证书 subjectAltName 精确覆盖操作人指定的访问 IP。
+    - 验证生成逻辑不会覆盖已存在的人工证书，并且相关文档明确声明“自签名证书不解决浏览器信任链”。
+  artifact_expectation: 基于部署脚本测试、`openssl x509 -text` 或等效命令的证据，能展示证书文件生成结果与 IP SAN 内容。
