@@ -60,6 +60,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SECURITY_RESPONSE_HEADERS = {
+    "X-XSS-Protection": "1; mode=block",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
+
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
     """应用生命周期事件"""
@@ -101,6 +107,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for header_name, header_value in SECURITY_RESPONSE_HEADERS.items():
+        response.headers[header_name] = header_value
+    return response
 
 # 注册路由
 app.include_router(router)

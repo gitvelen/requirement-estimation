@@ -1,27 +1,32 @@
 wi_id: WI-001
-goal: "在不重写拆分链路的前提下，完成规则管理页说明纠偏，并让点击估算时按管理员 COSMIC 配置主动执行分析、通过统一 rule_context 接入估算主链路，保留按功能点可追溯的降级证据"
+goal: "在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，新增用于 HSTS 复测的 HTTPS/443 前端入口，并收口后端独立部署所需的环境变量样例与读取方式。"
 scope:
-  - "重写规则管理页 COSMIC 使用说明与快速设置文案，消除对现网拆分粒度控制的误导表达"
-  - "在 `/tasks/{task_id}/estimate` 链路按管理员当前 COSMIC 配置主动执行分析、构建统一 rule_context，并显式注入估算 Agent"
-  - "让 COSMIC 分析器在当前估算动作内输出统一 rule_context 结构，并在功能点级失败时记录 degraded/failure_reason"
-  - "扩展估算上下文 artifact 与相关测试，证明规则被应用、降级或跳过"
+  - "为 FastAPI HTTP 响应补齐 X-XSS-Protection、X-Frame-Options、X-Content-Type-Options"
+  - "为三个前端 nginx 配置补齐静态页/静态资源安全头，并为内网前端入口补齐 HTTPS/443 + HSTS"
+  - "调整内网前端 compose 和部署脚本以支持证书目录挂载、443 暴露与运行态校验"
+  - "当部署目录缺少 HTTPS 证书时，由部署脚本按指定访问 IP 自动生成带 IP SAN 的自签名证书"
+  - "补充对应的后端、nginx 配置和部署脚本测试"
+  - "补齐后端独立部署 `.env.backend.example` 的必需参数，并把示例值收口到贴近当前 IP 直连部署方式的口径"
+  - "让 `Settings()` 在直接运行后端时也能读取 `.env.backend` / `.env.backend.internal`，避免配置只能依赖外部注入"
 out_of_scope:
-  - "不修改 backend/agent/feature_breakdown_agent.py 或拆分 prompt"
-  - "不新增前台规则使用证据展示"
-  - "不修改系统识别、报告导出或 COSMIC 配置持久化接口"
+  - "不修改业务路由、数据模型、鉴权逻辑和前端业务页面"
+  - "不引入域名体系、受信任 CA 接入或浏览器根证书分发"
+  - "不在本轮强制把 http://IP:8000 自动重定向到 HTTPS"
 
 allowed_paths:
-  - frontend/src/pages/CosmicConfigPage.js
-  - frontend/src/__tests__/cosmicConfigPage.render.test.js
-  - backend/api/routes.py
-  - backend/agent/work_estimation_agent.py
-  - backend/utils/cosmic_analyzer.py
-  - backend/service/system_profile_service.py
-  - tests/test_task_reevaluate_api.py
-  - tests/test_evaluation_contract_api.py
-  - backend/tests/test_target_system_orchestrator.py
+  - backend/app.py
+  - backend/config/config.py
+  - .env.backend.example
+  - frontend/nginx.conf
+  - frontend/nginx.internal.conf
+  - frontend/nginx-remote.conf
+  - docker-compose.frontend.internal.yml
+  - deploy-frontend-internal.sh
+  - tests/test_frontend_nginx_upload_limit.py
+  - tests/test_deploy_frontend_internal_script.py
+  - tests/test_backend_security_headers.py
+  - tests/test_backend_config_env_files.py
   - testing.md
-  - meta.yaml
 forbidden_paths:
   - versions/**
   - spec.md
@@ -29,10 +34,6 @@ forbidden_paths:
   - work-items/**
   - contracts/**
   - deployment.md
-  - backend/agent/feature_breakdown_agent.py
-  - backend/prompts/prompt_templates.py
-  - backend/api/cosmic_routes.py
-  - frontend/src/components/**
 
 branch_execution:
   execution_group: null
@@ -40,30 +41,33 @@ branch_execution:
   owned_paths: []
   shared_paths: []
   shared_file_owner: parent-feature
-  merge_order: single-branch-only
+  merge_order: single-branch only
   conflict_policy: stop and update design before expanding shared scope
 
 phase_scope: Implementation
 
 input_refs:
-  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#intent
-  - docs/inputs/2026-04-22-cosmic-guidance-and-splitting-boundary.md#clarifications
+  - docs/inputs/2026-04-24-security-headers-proposal.md#intent
+  - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
 requirement_refs:
   - REQ-001
   - REQ-002
   - REQ-003
   - REQ-004
+  - REQ-005
 acceptance_refs:
   - ACC-001
   - ACC-002
   - ACC-003
   - ACC-004
+  - ACC-005
 verification_refs:
   - VO-001
   - VO-002
   - VO-003
   - VO-004
-derived_from: DS-001
+  - VO-005
+derived_from: design.md#work-item-derivation
 dependency_refs: []
 dependency_type: none
 contract_refs: []
@@ -72,20 +76,20 @@ evidence_refs: []
 
 verification_profile: focused
 required_verification:
-  - "npm test -- --runInBand frontend/src/__tests__/cosmicConfigPage.render.test.js"
-  - "pytest tests/test_task_reevaluate_api.py tests/test_evaluation_contract_api.py -q"
-  - "pytest backend/tests/test_target_system_orchestrator.py -q"
+  - "后端 HTTP 安全响应头自动化测试通过"
+  - "后端配置 env file 读取与 `.env.backend.example` 完整性测试通过"
+  - "前端 nginx 配置与内网部署脚本安全头/443 支持自动化测试通过"
+  - "部署脚本自签名证书自动生成与 IP SAN 覆盖自动化测试通过"
+  - "分支内完成至少一次 HTTP/HTTPS 响应头检查，并把证据记录到 testing.md"
 
 stop_conditions:
-  - "如果实现需要修改拆分 Agent 或拆分 prompt，立即停止并回到 design 对齐"
-  - "如果实现需要新增前台规则使用证据展示，立即停止并回写 spec/design"
-  - "如果统一 rule_context 设计无法兼容未来其他规则，需要先回写 design"
+  - "如果需要改变现有 IP 直连访问策略（例如强制 8000->443 重定向），停止并回写 spec/design"
+  - "如果实现需要修改业务路由、数据模型或前端业务页面，停止并重新界定范围"
 reopen_triggers:
-  - "发现 `functional_process_rules.granularity` 的字段语义必须重定义或移除"
-  - "发现规则上下文必须扩展为新的外部接口契约"
-  - "发现需要把 COSMIC 直接接入拆分链路而不是只接入估算链路"
+  - "如果 X-Frame-Options: DENY 被证实现网依赖 iframe 嵌入，重新开启 spec/design"
+  - "如果部署环境既无法提供 HTTPS/443 所需证书，又无法用自签名证书 fallback 闭环，重新开启 spec/design"
 hard_constraints:
-  - "禁止修改已有功能点拆分主链路"
-  - "COSMIC 分析必须在点击估算时执行，不能只消费历史遗留的 cosmic_analysis"
-  - "规则失败处理必须按功能点降级，不得整任务静默回退"
-  - "估算必须保留完整需求语义，rule_context 只能补强不能替代"
+  - "HSTS 只在 HTTPS/443 前端入口下发，现有 http://IP:8000 兼容访问必须保留"
+  - "API 的三个通用安全头由后端统一发，前端 nginx 不在 /api 代理层重复追加相同头值"
+  - "自动生成证书只允许在证书缺失时触发；若操作人已提供 cert.pem/key.pem，脚本不得覆盖"
+  - "自动生成证书必须覆盖操作人指定的访问 IP；该能力不等于浏览器信任链闭环"
