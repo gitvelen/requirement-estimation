@@ -166,6 +166,10 @@ class Settings(BaseSettings):
     # 简单鉴权（生产环境建议启用）
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
 
+    # CORS 与文档
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+    PUBLIC_API_DOCS_ENABLED: bool = _env_bool("PUBLIC_API_DOCS_ENABLED", True)
+
     # JWT配置
     JWT_SECRET: str = os.getenv("JWT_SECRET", "change_me")
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))
@@ -176,6 +180,9 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "case_sensitive": True
     }
+
+    def validate_runtime_security(self) -> None:
+        pass
 
 # 全局配置实例
 settings = Settings()

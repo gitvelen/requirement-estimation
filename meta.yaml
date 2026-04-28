@@ -27,9 +27,10 @@ active_work_items: []
 # - 单分支串行：每开始一个新 WI，添加到列表（如 [WI-001] -> [WI-001, WI-002]）
 # - 多分支并行：执行分支只包含自己的 WI，parent feature 分支包含所有并行 WI
 
-feature_branch: feature-v3.3 # parent feature 分支名（如 "feature/add-auth"）
+feature_branch: feature-v3.4 # parent feature 分支名（如 "feature/add-auth"）
 # 阻塞信息（仅当 status=blocked 时填写）
 blocked_reason: null # 阻塞原因描述
 blocked_by: null # 阻塞依赖（如 "WI-001" 或外部因素）
-updated_at: 2026-04-25 # 最后更新时间
+implementation_base_revision: f1ed0693820409878d8a11f618ac26acdd095fc8
+updated_at: 2026-04-28 # 最后更新时间
 updated_by: codespec-cli # 最后更新人

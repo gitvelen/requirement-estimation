@@ -64,3 +64,44 @@ def test_non_internal_nginx_configs_do_not_define_hsts():
     for config_path in NON_INTERNAL_NGINX_FILES:
         text = config_path.read_text(encoding="utf-8")
         assert "Strict-Transport-Security" not in text, f"unexpected HSTS in {config_path.name}"
+
+
+def _extract_ssl_server_block(text: str) -> str:
+    pattern = r"server\s*\{.*?listen\s+443\s+ssl;.*?\n\s*\}"
+    match = re.search(pattern, text, re.S)
+    assert match, "missing HTTPS server block"
+    return match.group()
+
+
+def test_internal_nginx_ssl_protocols_require_tls12_and_tls13():
+    ssl_block = _extract_ssl_server_block(INTERNAL_NGINX_FILE.read_text(encoding="utf-8"))
+
+    assert "ssl_protocols" in ssl_block, "missing ssl_protocols directive"
+    assert "TLSv1.2" in ssl_block
+    assert "TLSv1.3" in ssl_block
+
+
+def test_internal_nginx_ssl_protocols_exclude_legacy_tls():
+    ssl_block = _extract_ssl_server_block(INTERNAL_NGINX_FILE.read_text(encoding="utf-8"))
+
+    for legacy in ["SSLv2", "SSLv3"]:
+        assert legacy not in ssl_block, f"legacy protocol {legacy} should not be enabled"
+    # TLSv1 without .2/.3 suffix = TLSv1.0
+    for line in ssl_block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ssl_protocols"):
+            assert re.search(r"\bTLSv1\b(?!\.\d)", stripped) is None, "TLSv1.0 should not be in ssl_protocols"
+
+
+def test_internal_nginx_ssl_ciphers_are_configured():
+    ssl_block = _extract_ssl_server_block(INTERNAL_NGINX_FILE.read_text(encoding="utf-8"))
+
+    assert "ssl_ciphers" in ssl_block, "missing ssl_ciphers directive"
+    assert "ssl_prefer_server_ciphers on;" in ssl_block
+
+
+def test_internal_nginx_https_server_block_has_hsts_at_server_level():
+    ssl_block = _extract_ssl_server_block(INTERNAL_NGINX_FILE.read_text(encoding="utf-8"))
+
+    hsts_line = 'add_header Strict-Transport-Security "max-age=16070400" always;'
+    assert hsts_line in ssl_block, "HSTS missing in HTTPS server block"

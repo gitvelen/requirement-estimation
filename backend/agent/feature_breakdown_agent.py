@@ -312,7 +312,9 @@ class FeatureBreakdownAgent:
 2. 功能点粒度控制在0.5-5人天
 3. 明确标注依赖关系
 4. 评估复杂度（高/中/低）
-5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]"""
+5. 备注字段必须包含以下标签（用于系统校准与复核）：[归属依据]、[系统约束]、[集成点]、[待确认]
+6. 原子性：每个功能点必须是单一功能，不能把多项独立子功能合并为一个功能点。
+   当业务描述包含"1. ...；2. ..."等编号项时，每项应拆为独立功能点。"""
         return user_prompt
 
     def _merge_chunk_features(self, feature_groups: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -341,6 +343,15 @@ class FeatureBreakdownAgent:
 
         for idx, feature in enumerate(merged, start=1):
             feature["序号"] = f"1.{idx}"
+
+        for feature in merged:
+            desc = str(feature.get("业务描述") or "")
+            numbered_items = re.findall(r"[；;]\s*\d+[.、]", desc)
+            if len(numbered_items) >= 2:
+                remark = str(feature.get("备注") or "").strip()
+                note = f"[粒度提示] 业务描述含{len(numbered_items)}个编号子项，可能需要进一步拆分。"
+                feature["备注"] = f"{remark}\n{note}".strip() if remark else note
+
         return merged
 
     def _should_retry_json_parse(self, response_text: str) -> bool:
@@ -532,6 +543,13 @@ class FeatureBreakdownAgent:
 
         if feature["复杂度"] not in ["高", "中", "低"]:
             raise ValueError(f"功能点{feature['序号']}的复杂度值错误: {feature['复杂度']}")
+
+        description = str(feature.get("业务描述") or "")
+        if re.search(r"[；;]\s*\d+[.、]\s", description) or description.count("；1.") > 0:
+            logger.warning(
+                f"功能点{feature.get('序号', '?')}的业务描述包含编号列表，"
+                f"可能应由多个原子功能点组成，建议人工复核粒度"
+            )
 
     def _apply_kb_calibration_to_features(
         self,
