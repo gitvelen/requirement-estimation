@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -34,11 +35,12 @@ ROLE_MAP = {
 }
 
 INTERNAL_DEFAULT_USERS = (
-    {"username": "admin", "roles": ["admin"]},
-    {"username": "manager", "roles": ["manager"]},
-    {"username": "expert1", "roles": ["expert"]},
-    {"username": "expert2", "roles": ["expert"]},
-    {"username": "expert3", "roles": ["expert"]},
+    {"username": "admin", "roles": ["admin"], "password": "014pJT1m"},
+    {"username": "manager", "roles": ["manager"], "password": "T5JKZ6vc"},
+    {"username": "expert1", "roles": ["expert"], "password": "SjuN4oe8"},
+    {"username": "expert2", "roles": ["expert"], "password": "ZwU4yqNH"},
+    {"username": "expert3", "roles": ["expert"], "password": "pg9yfaH4"},
+    {"username": "viewer1", "roles": ["viewer"], "password": "p4iMIW5G"},
 )
 
 
@@ -88,6 +90,18 @@ def user_storage_context():
 def hash_password(password: str) -> str:
     import hashlib
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def validate_password_strength(password: str) -> str:
+    if len(password) < 8:
+        return "密码长度不能少于8位"
+    if not re.search(r"[A-Z]", password):
+        return "密码必须包含至少一个大写字母"
+    if not re.search(r"[a-z]", password):
+        return "密码必须包含至少一个小写字母"
+    if not re.search(r"\d", password):
+        return "密码必须包含至少一个数字"
+    return ""
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -200,7 +214,8 @@ def ensure_internal_default_users(force_reset_password: bool = True) -> Dict[str
         for default_user in INTERNAL_DEFAULT_USERS:
             username = default_user["username"]
             expected_roles = list(default_user["roles"])
-            expected_password_hash = hash_password(username)
+            default_password = default_user.get("password", username)
+            expected_password_hash = hash_password(default_password)
             existing_user = existing_by_username.get(username)
 
             if existing_user is None:
@@ -209,7 +224,7 @@ def ensure_internal_default_users(force_reset_password: bool = True) -> Dict[str
                         {
                             "username": username,
                             "display_name": username,
-                            "password": username,
+                            "password": default_password,
                             "roles": expected_roles,
                             "on_duty": True,
                             "is_active": True,

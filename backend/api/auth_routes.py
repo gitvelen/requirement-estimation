@@ -82,6 +82,9 @@ async def change_password(request: ChangePasswordRequest, current_user: Dict[str
             raise HTTPException(status_code=404, detail="用户不存在")
         if not user_service.verify_password(request.oldPassword, user.get("password_hash", "")):
             raise HTTPException(status_code=400, detail="旧密码不正确")
+        pwd_err = user_service.validate_password_strength(request.newPassword)
+        if pwd_err:
+            raise HTTPException(status_code=400, detail=pwd_err)
         user["password_hash"] = user_service.hash_password(request.newPassword)
     record_activity(current_user, "change_password", "修改密码")
     return {"code": 200, "message": "success"}

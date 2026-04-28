@@ -86,6 +86,10 @@ async def create_user(request: UserCreateRequest):
         if user_service.find_user_by_username(users, request.username):
             raise HTTPException(status_code=400, detail="用户名已存在")
 
+        pwd_err = user_service.validate_password_strength(request.password)
+        if pwd_err:
+            raise HTTPException(status_code=400, detail=pwd_err)
+
         user = user_service.create_user_record({
             "username": request.username,
             "display_name": request.display_name,
@@ -109,6 +113,11 @@ async def update_user(user_id: str, request: UserUpdateRequest):
         user = user_service.find_user_by_id(users, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
+
+        if request.password:
+            pwd_err = user_service.validate_password_strength(request.password)
+            if pwd_err:
+                raise HTTPException(status_code=400, detail=pwd_err)
 
         user_service.update_user_record(user, {
             "display_name": request.display_name,
