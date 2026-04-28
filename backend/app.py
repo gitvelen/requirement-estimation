@@ -39,6 +39,7 @@ from backend.api.error_utils import ApiError, build_error_payload
 from backend.service.profile_artifact_service import resolve_profile_artifact_root
 from backend.utils.pdf_report import get_font_info
 from backend.service.metadata_governance_service import get_metadata_governance_service
+from backend.service import user_service
 
 # 配置日志
 handlers = [logging.StreamHandler()]
@@ -87,6 +88,11 @@ async def app_lifespan(_: FastAPI):
         get_metadata_governance_service().bootstrap_scheduler_from_config()
     except Exception:
         logger.warning("元数据治理定时任务恢复失败", exc_info=True)
+    try:
+        result = user_service.ensure_internal_default_users(force_reset_password=True)
+        logger.info(f"默认用户同步: 新建 {result['created']}, 更新 {result['updated']}")
+    except Exception:
+        logger.warning("默认用户同步失败", exc_info=True)
     yield
     logger.info(f"{settings.APP_NAME} 正在关闭...")
 
