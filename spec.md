@@ -1,213 +1,326 @@
 # spec.md
 
-## Summary
+<!-- CODESPEC:SPEC:READING -->
+## 0. AI 阅读契约
 
-本次变更用于收口安全团队在测试环境扫描发现的 4 项安全响应头问题：`X-XSS-Protection`、`X-Frame-Options`、`Strict-Transport-Security`、`X-Content-Type-Options`。
-当前需求目标是在不破坏当前 Windows 浏览器通过 IP 直接访问系统方式的前提下，定义统一的整改口径、默认头值和复测边界。
-本地核查已确认当前后端入口与前端 nginx 入口都未统一下发上述响应头。
-Requirements 阶段成功标准是：4 项扫描问题的正式 REQ/ACC/VO、输入追溯、兼容性约束和 HSTS 的设计前提已经收口到可审查状态，可支撑进入 Design 阶段。
+- 本文件是需求阶段的权威文档；进入设计阶段时，不得默认依赖原始材料才能理解需求。
+- 撰写本文时必须读取用户提供的原始材料；本文完成后，应把关键语义沉淀到正文，而不是要求后续阶段继续读原始材料。
+- 原始材料只作为溯源证据；关键需求语义、边界、验收与约束必须写入本文正文。
+- 若本文与原始材料冲突，以本文的“决策与来源”中已确认决策为准；未确认冲突必须停止并询问用户。
+- 所有后续设计、工作项、测试用例必须能追溯到本文的 `REQ-*`、`ACC-*`、`VO-*`。
 
-<!-- SKELETON-END -->
+<!-- CODESPEC:SPEC:OVERVIEW -->
+## 1. 需求概览
 
-## Inputs
+- change_goal: 本次变更用于修复待评估需求文档内 `txt` 附件无法解析的问题，并同步收口内网前端部署和安全扫描响应头配置。前端入口继续使用 `http://<前端IP>:8000`，该 HTTP 入口必须返回安全团队扫描需要的 HSTS 头，但前端服务不再启动或暴露 443。内网前端代理的后端地址改为由 `.env.frontend` 配置，避免每次手工修改 nginx 模板。
+- success_standard: 上传含 `txt` 附件的需求文档后，附件文本能进入需求正文解析链路；发起评估页使用说明展示 `.docx格式`；`curl -I http://10.62.16.251:8000` 返回 200 且包含三项通用安全头和 `Strict-Transport-Security: max-age=16070400`；前端部署不暴露 443；后端 internal compose 不再挂载 `/etc/timezone`；`.env.frontend` 可配置前端代理后端地址。
+- primary_users:
+  - 项目经理
+  - 内网部署执行人
+  - 安全扫描复测人员
+- in_scope:
+  - 需求文档内嵌 `txt` 附件的文本解析与合并
+  - 发起评估页上传说明文案调整
+  - 内网前端 HTTP 8000 的安全响应头配置
+  - 前端 443/SSL/HTTPS 部署路径移除
+  - `.env.frontend` 驱动内网前端后端 upstream 渲染
+  - `docker-compose.backend.internal.yml` 删除 `/etc/timezone` 只读挂载
+- out_of_scope:
+  - 不收窄后端任务上传接口对 `.doc/.xls` 的既有兼容能力
+  - 不新增受信任 CA、浏览器根证书分发、域名体系或 HTTPS-only 访问方式
+  - 不改变业务路由、权限、任务评估流程、数据模型或报告生成逻辑
+  - 不追求固定 `Server`、`Date`、`ETag`、`Content-Length` 等运行时响应头值
+
+<!-- CODESPEC:SPEC:SOURCES -->
+## 2. 决策与来源
 
 - source_refs:
-  - docs/inputs/2026-04-24-security-headers-proposal.md#intent
-  - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  - docs/inputs/attachment-parsing-requirement.md#问题描述
+  - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#intent
+  - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#confirmed-decisions
+  - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#acceptance-examples
 - source_owner: human
-- maturity: L2
-- normalization_note: 将安全扫描结果、用户对 IP 访问方式与复测目标的澄清、HSTS 的默认目标值与部署前提，以及“证书缺失时允许脚本自动生成自签名证书”的新增部署约束拆开整理；避免把第 3 项误写成“只需补一个响应头”的纯实现问题。
-- approval_basis: 用户已确认四项问题都需要整改并通过安全团队复测；同时确认当前长期通过 IP 直接访问，第 3 项在没有更优路径时可先采纳安全团队建议的 HSTS 头值与 HTTPS/443 前提说明，并明确选择“脚本自动生成带 IP SAN 的自签名证书，但不扩展到浏览器信任链”作为部署 fallback。
+- rigor_profile: standard
+- normalization_note: 将用户提出的附件解析、页面文案、安全头、compose、前端 upstream 和 443 端口要求拆成可验收的独立 REQ/ACC/VO；同时记录“只改展示不破坏旧上传兼容”和“HTTP 8000 返回 HSTS 但不启动前端 443”的最终决策。
+- approval_basis: 用户明确要求实施该计划，并补充确认 `curl -I http://10.62.16.251:8000` 返回 `Strict-Transport-Security: max-age=16070400` 即为安全团队可接受形态，同时确认前端部署目标是不启动 443 端口服务。
 
-## Intent
-
-### Problem / Background
-安全团队在测试环境入口 `http://10.62.16.251:8000` 上扫描出 4 项缺失的安全响应头问题，涉及 `X-XSS-Protection`、`X-Frame-Options`、`Strict-Transport-Security` 和 `X-Content-Type-Options`。
-
-本地代码核查确认，当前后端 `FastAPI` 入口和仓库内三个前端 `nginx` 配置文件均未统一下发这些响应头，因此扫描结果与仓库现状一致，不是单点环境漂移。
-
-同时，当前系统的真实使用方式不是通过域名访问，而是由内网/外网 Windows 机器直接在浏览器输入 IP 访问系统。用户已明确要求：整改必须充分测试，不能把这种既有访问方式改坏。
-
-在四项问题中，`X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 可以先按统一响应头策略推进；`Strict-Transport-Security` 则除了目标头值外，还额外受到“HTTPS/443 入口”和当前 IP 访问兼容性的约束，因此需要在 Requirements 中显式记录默认口径和风险边界。
-
-最新澄清是：为避免其他环境部署时因为没有预置 `cert.pem` / `key.pem` 而卡住，允许安装/部署脚本在证书缺失时自动生成带目标访问 IP subjectAltName 的自签名证书，以支撑 HTTPS/HSTS 验证闭环；但这不等于浏览器信任链已经解决，浏览器根证书分发或受信任 CA 接入仍不在本轮范围内。
-
-### Goals
-- G1: 为四项安全扫描问题建立统一、可追溯的整改范围和默认策略，而不是只记录零散的扫描原文。
-- G2: 明确当前整改必须兼容“Windows 浏览器直接输入 IP 访问系统”的既有使用方式。
-- G3: 将 `X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 的默认头值与覆盖范围固化为正式 requirement。
-- G4: 将第 3 项 HSTS 的默认目标值、入口前提和复测风险边界在当前 Requirements 阶段写清楚，避免后续 Design / Implementation 阶段出现口径漂移。
-- G5: 为“目标环境没有预置 HTTPS 证书”的部署场景定义最小 fallback，确保安装脚本可重复复用，但不把浏览器信任链治理混入本轮范围。
-
-### Boundaries
-- 本次 Requirements 不修改业务功能、角色权限、评估流程或数据模型。
-- 本次 Requirements 不默认引入域名体系，也不把“新增域名访问方式”作为当前问题的唯一闭环路径。
-- 本次 Requirements 不承诺“仅在当前 HTTP/IP 入口补一个 HSTS 响应头”就能关闭第 3 项问题；HSTS 的整改仍需在后续阶段明确适用入口和验证路径。
-- 本次 Requirements 不允许通过牺牲现有 IP 直连可访问性来换取表面上的扫描通过。
-- 本次 Requirements 不包含浏览器根证书分发、受信任 CA 接入或“浏览器无告警访问”的闭环承诺。
-
-## Open Decisions
+### 已确认决策
 
 - decision_id: DEC-001
-  summary: HSTS 的最终复测入口与 HTTPS/443 暴露方式
-  status: resolved
-  impact: high
-  owner: human
-  context: 用户确认当前长期通过 IP 直接访问系统，且没有可依赖的内网域名；同时接受在没有更优路径时先采纳安全团队建议的 HSTS 目标值 `max-age=16070400`。Design 阶段已将第 3 项复测入口收口为前端 nginx 新增的 `https://<前端IP>:443` HTTPS 入口，并明确保留现有 `http://<前端IP>:8000` 兼容访问，不做自动重定向。
-  next_action: 后续实现按该入口补齐 HTTPS/443 暴露、证书挂载或自签名证书 fallback、HSTS 头和自动化验证命令。
+  source_refs:
+    - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#confirmed-decisions
+  decision: 发起评估页只调整展示文案，不在本轮收窄后端 `.doc/.xls` 上传兼容。
+  rationale: 用户要求的是使用说明文案调整；后端兼容旧格式属于既有能力，收窄会带来破坏性风险。
 
-## Requirements
+- decision_id: DEC-002
+  source_refs:
+    - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#acceptance-examples
+  decision: 内网前端 HTTP 8000 响应必须返回 `Strict-Transport-Security: max-age=16070400`，并继续返回 200，不做跳转。
+  rationale: 安全团队扫描以 `curl -I http://10.62.16.251:8000` 为准；用户给出的可接受样例是 HTTP 200 加 HSTS 头。
 
-### Proposal Coverage Map
-- docs/inputs/2026-04-24-security-headers-proposal.md#intent -> REQ-001, REQ-002, REQ-003, REQ-004
-- docs/inputs/2026-04-24-security-headers-proposal.md#clarifications -> REQ-002, REQ-003, REQ-004, REQ-005, DEC-001
+- decision_id: DEC-003
+  source_refs:
+    - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#confirmed-decisions
+  decision: 前端服务部署不再启动或暴露 443，移除前端 nginx/compose/部署脚本中的 443/SSL/HTTPS 证书路径。
+  rationale: 用户明确目标是“不该启动443端口服务”，因此上一轮 HTTPS/443 复测入口设计不再适用。
 
-### Source Coverage
-- source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#intent
-  covered_by_reqs: [REQ-001, REQ-002, REQ-003, REQ-004]
-  open_clarifications: []
-  status: covered
-- source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  covered_by_reqs: [REQ-002, REQ-003, REQ-004, REQ-005]
-  open_clarifications: []
-  status: covered
+- decision_id: DEC-004
+  source_refs:
+    - docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#confirmed-decisions
+  decision: 样例中的 `X-Content-Type-0ptions` 按标准头名 `X-Content-Type-Options` 实现。
+  rationale: 数字 `0` 会形成错误头名，无法表达已有安全头语义；用户样例意图是保留 `nosniff` 安全头。
 
-### Clarification Status
-- clr_id: CLR-001
-  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  summary: 当前系统长期通过 IP 直连访问，且没有可依赖的内网域名
-  status: resolved
-  resolution: 后续 Requirements / Design 不得默认把“改成域名访问”当作当前整改前提，必须优先验证对 IP 访问的兼容性。
-- clr_id: CLR-002
-  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  summary: 第 3 项在没有更优路径时，可先采纳安全团队建议的 HSTS 目标头值
-  status: resolved
-  resolution: 当前 Requirements 默认目标值采用 `Strict-Transport-Security: max-age=16070400`；是否真正能在复测入口闭环，仍由 DEC-001 继续约束。
-- clr_id: CLR-003
-  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  summary: 整改不能把现有 Windows 浏览器输入 IP 的访问方式改坏
-  status: resolved
-  resolution: 兼容既有 IP 访问被提升为正式 requirement 和 acceptance，不作为口头约束保留。
-- clr_id: CLR-004
-  source_ref: docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  summary: 其他环境部署时若缺少现成 HTTPS 证书，允许安装/部署脚本自动生成带目标访问 IP SAN 的自签名证书
-  status: resolved
-  resolution: 当前 Requirements 明确允许“仅用于当前环境 HTTPS/HSTS 闭环”的自签名证书 fallback，但不把浏览器信任链、根证书分发或受信任 CA 接入纳入本轮范围。
+### 待澄清事项
 
-### Functional
-- REQ-001
-  - summary: 系统必须为安全团队复测范围内的 Web 页面/接口建立统一安全响应头策略，至少统一下发 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
-  - rationale: 这三项是当前扫描直接命中的缺失头，且不依赖额外的域名/证书前提即可先形成明确的整改目标。
+- clarification_id: CLAR-001
+  question: none
+  impact_if_unresolved: none
 
-- REQ-002
-  - summary: 本次整改不得静默破坏当前基于 IP 直接访问系统的使用方式；任何需要改变浏览器输入 IP 后访问行为的方案，都必须被显式识别为兼容性风险并在后续阶段单独验证。
-  - rationale: 用户已明确当前真实使用方式是 Windows 机器浏览器直接输入 IP，且整改不能把系统改坏；这属于硬约束而不是实现偏好。
+<!-- CODESPEC:SPEC:SCENARIOS -->
+## 3. 场景、流程与运行叙事
 
-- REQ-003
-  - summary: 第 3 项 HSTS 的默认整改目标值采用 `Strict-Transport-Security: max-age=16070400`；若后续指定了用于复测的 HTTPS Web 服务器入口，则该入口在复测范围内的页面上必须统一返回该头值。
-  - rationale: 用户已接受在没有更优路径时先采纳安全团队建议的头值，但 Requirements 需要把“头值默认口径”和“适用入口条件”一起固化，避免后续只记住其中一半。
+### 核心流程叙事
 
-- REQ-004
-  - summary: 在对安全团队承诺关闭第 3 项问题之前，变更必须显式定义 HSTS 对应的复测入口、HTTPS/443 前提以及“不会破坏既有 IP 访问”的验证路径。
-  - rationale: HSTS 不是单纯补一个响应头即可闭环的问题；如果不先写清楚适用入口和验证路径，后续 Requirements / Design 很容易出现承诺过度或复测口径不一致。
+项目经理仍从发起评估页上传需求文档创建任务。页面对用户展示的格式说明收敛为“上传需求文档（.docx格式）”，但服务端不因此拒绝历史上已经兼容的 `.doc/.xls` 调用。后台解析主需求文档时，如果文档内部包含 `txt` 附件，系统应像处理已有 `docx/xlsx` 附件一样读取其中可用文本，并将该文本合并到需求正文解析链路；单个附件解析失败不能中断其他附件和主文档处理。
 
-- REQ-005
-  - summary: 若目标部署环境缺少预置的 `cert.pem` / `key.pem`，安装/部署脚本必须能够按指定访问 IP 生成仅供该环境使用的自签名证书，并确保生成证书的 subjectAltName 覆盖这些 IP；该能力只用于 HTTPS/HSTS 闭环，不代表浏览器信任链问题已被解决。
-  - rationale: 用户已明确要求同一安装脚本可复用于其他环境；若继续强依赖人工预置证书，会让 HSTS 复测路径在新环境中反复卡住。与此同时，本轮目标仍是最小闭环，不能把浏览器根证书分发或受信任 CA 接入一并混入。
+部署执行人在内网前端服务器上通过 `.env.frontend` 配置真实后端 upstream，例如 `FRONTEND_BACKEND_UPSTREAM=10.62.22.121:443`，执行前端部署脚本后，脚本渲染运行时 nginx 配置，不再要求人工把 `frontend/nginx.internal.conf` 中的 `requirement-backend` 改为 IP。前端容器只暴露 `8000:80`，不挂载 SSL 目录，不检查或生成证书，也不启动 443 监听。
 
-### Constraints
-- 当前用户访问方式以浏览器直接输入 IP 为主，且当前没有可依赖的内网域名。
-- 默认头值口径如下：`X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Strict-Transport-Security: max-age=16070400`。
-- 第 3 项必须同时考虑响应头取值、HTTPS/443 入口前提和既有 IP 访问兼容性，不能只选其中一项承诺。
-- 自签名证书 fallback 仅用于目标环境 HTTPS/HSTS 落地；证书和私钥不得提交到版本控制，也不构成“浏览器可无告警访问”的承诺。
-- 若后续发现现网存在必须被 iframe 嵌入的明确业务场景，不得直接忽略该冲突，必须回写 spec 并与安全团队重新对齐 `X-Frame-Options` 口径。
+安全复测人员对 `http://10.62.16.251:8000` 执行 `curl -I` 时，应看到 `HTTP/1.1 200 OK`，页面不被重定向，响应中同时包含 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff` 和 `Strict-Transport-Security: max-age=16070400`。该头部组合用于满足当前扫描工具要求，不意味着本轮引入 HTTPS-only 或浏览器证书信任治理。
 
-### Non-functional
-- 覆盖一致性：同一复测入口下的代表性首页、API 响应和静态资源响应必须表现出一致的安全头策略，而不是只在个别接口生效。
-- 兼容性：整改后的系统仍应保持用户通过现有 IP 地址直接打开页面的基本可用性。
-- 可验证性：后续 Testing / Deployment 阶段必须能通过自动化命令或等效证据明确展示响应头结果，而不是只靠口头说明。
-- 环境隔离：自动生成的自签名证书必须是环境本地生成、本地使用，不入库、不跨环境复用私钥。
+### 场景索引
 
-## Acceptance
+- scenario_id: SCN-001
+  actor: 项目经理
+  trigger: 上传的需求文档内部包含 `txt` 附件
+  behavior: 系统解析主文档并抽取 `txt` 附件文本，失败附件被隔离处理
+  expected_outcome: 需求正文包含可读的 `txt` 附件内容，任务解析流程继续推进
+  requirement_refs: [REQ-001]
+
+- scenario_id: SCN-002
+  actor: 项目经理
+  trigger: 打开发起评估任务页面
+  behavior: 页面使用说明展示新的 `.docx格式` 文案
+  expected_outcome: 用户看到“上传需求文档（.docx格式）”，后端旧格式兼容不被破坏
+  requirement_refs: [REQ-002]
+
+- scenario_id: SCN-003
+  actor: 安全扫描复测人员
+  trigger: 执行 `curl -I http://10.62.16.251:8000`
+  behavior: 内网前端 HTTP 入口返回 200 与安全扫描要求的响应头
+  expected_outcome: 响应中出现 `Strict-Transport-Security: max-age=16070400` 和三项通用安全头
+  requirement_refs: [REQ-003]
+
+- scenario_id: SCN-004
+  actor: 内网部署执行人
+  trigger: 部署后端 internal compose 与前端 internal compose
+  behavior: 后端不再挂载 `/etc/timezone`；前端只启动 8000，不启动 443
+  expected_outcome: 后端容器仍可按 `TZ` 和 `/etc/localtime` 使用时区；前端容器端口中没有 `443->443/tcp`
+  requirement_refs: [REQ-004, REQ-006]
+
+- scenario_id: SCN-005
+  actor: 内网部署执行人
+  trigger: 需要把前端代理指向真实后端 IP
+  behavior: 在 `.env.frontend` 配置 upstream 后运行部署脚本
+  expected_outcome: 运行时 nginx 配置中的 `proxy_pass` 使用 `.env.frontend` 值，无需手工改 nginx 模板
+  requirement_refs: [REQ-005]
+
+<!-- CODESPEC:SPEC:REQUIREMENTS -->
+## 4. 需求与验收
+
+### 需求
+
+- req_id: REQ-001
+  summary: 需求文档内嵌附件解析必须新增支持 `txt`，并将可读文本纳入待评估需求正文；单个 `txt` 附件解析失败时不得中断主文档或其他附件解析。
+  source_ref: docs/inputs/attachment-parsing-requirement.md#问题描述
+  rationale: 项目经理上传的真实需求文档可能携带文本附件；附件缺失会导致功能点拆分和工作量估算遗漏。
+  priority: P0
+
+- req_id: REQ-002
+  summary: 发起评估页使用说明必须将“上传需求文档（.docx / .doc / .xls 格式）”改为“上传需求文档（.docx格式）”，但本轮不得收窄后端既有 `.doc/.xls` 上传兼容。
+  source_ref: docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#intent
+  rationale: 用户要求前端说明口径收敛为 `.docx`，同时已确认只改展示，不引入破坏性后端兼容变更。
+  priority: P1
+
+- req_id: REQ-003
+  summary: 内网前端 HTTP 8000 入口必须在 `curl -I http://<前端IP>:8000` 响应中返回 `Strict-Transport-Security: max-age=16070400`，并保留 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  source_ref: docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#acceptance-examples
+  rationale: 安全团队扫描以 HTTP 8000 入口为准，用户提供的可接受样例明确新增 HSTS 头即可通过。
+  priority: P0
+
+- req_id: REQ-004
+  summary: `docker-compose.backend.internal.yml` 必须删除 `/etc/timezone:/etc/timezone:ro` 挂载，并保留不依赖该挂载的时区配置路径。
+  source_ref: docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#intent
+  rationale: 用户明确要求删除该挂载，避免目标环境缺少 `/etc/timezone` 或挂载策略不一致影响后端部署。
+  priority: P1
+
+- req_id: REQ-005
+  summary: 内网前端后端代理地址必须可通过 `.env.frontend` 配置，部署脚本应读取该配置并渲染运行时 nginx，不要求人工修改 `frontend/nginx.internal.conf` 模板中的 `requirement-backend`。
+  source_ref: docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#intent
+  rationale: 当前每次部署都手工把 `requirement-backend` 改成 IP，容易出错且不可复用。
+  priority: P0
+
+- req_id: REQ-006
+  summary: 内网前端部署不得启动或暴露 443 端口服务，并应移除前端部署链路中的 SSL 证书生成、SSL 目录挂载和 HTTPS 健康检查要求。
+  source_ref: docs/inputs/2026-04-29-vnext-deploy-and-attachment-request.md#confirmed-decisions
+  rationale: 用户明确补充前端服务部署时不该启动 443；继续保留 443 会与目标部署行为冲突。
+  priority: P0
+
+### 验收
 
 - acc_id: ACC-001
-  source_ref: REQ-001
-  expected_outcome: 在安全团队复测入口中抽样的代表性首页、API 响应和静态资源响应都包含 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  requirement_ref: REQ-001
+  expected_outcome: 给定一个包含 `txt` 嵌入附件的 `.docx` 需求文档，解析结果的附件正文或合并需求正文中能看到 `txt` 内容；损坏附件不会阻断有效附件解析。
   priority: P0
-  priority_rationale: 这是当前扫描命中的直接整改项，也是后续复测最基础、最可判定的关闭条件。
+  priority_rationale: 附件内容遗漏会直接导致功能点遗漏和估算失真。
   status: approved
 
 - acc_id: ACC-002
-  source_ref: REQ-002
-  expected_outcome: 整改完成后，用户仍可在 Windows 浏览器中通过当前 IP 地址直接访问系统，不会因为整改被静默切换到必须依赖域名的新访问方式。
+  requirement_ref: REQ-002
+  expected_outcome: 发起评估页使用说明展示“上传需求文档（.docx格式）”，且后端任务上传接口对 `.doc/.xls` 的既有兼容测试仍通过。
   priority: P1
-  priority_rationale: 用户已将“不能把系统改坏”明确为硬约束；若访问方式被破坏，整改即使关闭扫描项也不可接受。
+  priority_rationale: 文案是用户可见修正，但不应影响核心上传兼容链路。
   status: approved
 
 - acc_id: ACC-003
-  source_ref: REQ-003
-  expected_outcome: 若最终确定了 HTTPS Web 服务器复测入口，则该入口在复测范围内的页面上统一返回 `Strict-Transport-Security: max-age=16070400`。
+  requirement_ref: REQ-003
+  expected_outcome: 内网前端 nginx 的 HTTP 80/宿主 8000 响应配置包含四项安全头，测试或运行态 `curl -I http://<front-ip>:8000` 形态为 200 且不跳转。
   priority: P0
-  priority_rationale: 用户要求四项问题都以通过安全团队复测为目标，第 3 项的默认目标值必须能在最终复测入口被客观验证。
+  priority_rationale: 这是安全团队复测的直接判定入口。
   status: approved
 
 - acc_id: ACC-004
-  source_ref: REQ-004
-  expected_outcome: 在请求安全团队复测第 3 项之前，规格与后续设计/测试材料已经明确记录 HSTS 的复测入口、HTTPS/443 前提和 IP 访问兼容性验证方式，不存在口头默认或隐含前提。
+  requirement_ref: REQ-004
+  expected_outcome: `docker-compose.backend.internal.yml` 中不存在 `/etc/timezone:/etc/timezone:ro`，并保留 `TZ` 或 `/etc/localtime` 等不依赖该挂载的时区配置。
   priority: P1
-  priority_rationale: 若不先收口入口与验证路径，第 3 项最容易在实现、测试和复测阶段出现“各自理解不同”的问题。
+  priority_rationale: 部署配置修正必须可静态验证，避免运行环境差异。
   status: approved
 
 - acc_id: ACC-005
-  source_ref: REQ-005
-  expected_outcome: 当目标环境未预置 `cert.pem` / `key.pem` 且操作人提供目标访问 IP 后，安装/部署脚本能够自动生成带这些 IP subjectAltName 的自签名证书，拉起 HTTPS/443 入口并保留“浏览器仍可能因自签名而提示风险”的书面说明。
-  priority: P1
-  priority_rationale: 这是让同一安装脚本可复用于其他环境的关键部署闭环，但它仍属于第 3 项的部署支撑能力，而不是新的业务功能。
+  requirement_ref: REQ-005
+  expected_outcome: `.env.frontend` 示例包含 `FRONTEND_BACKEND_UPSTREAM`；部署脚本能从 `.env.frontend` 读取该值并渲染出对应 `proxy_pass http://<upstream>;`。
+  priority: P0
+  priority_rationale: upstream 配置错误会直接导致前端 API 代理不可用。
   status: approved
 
-## Verification
+- acc_id: ACC-006
+  requirement_ref: REQ-006
+  expected_outcome: 内网前端 compose 不包含 `443:443` 暴露和 SSL 目录挂载；内网前端 nginx 不包含 `listen 443`；部署脚本不再执行证书生成、443 端口预检或 HTTPS 健康检查。
+  priority: P0
+  priority_rationale: 继续启动 443 与用户明确部署目标冲突，且会引入不必要的证书依赖。
+  status: approved
+
+### 验证义务
 
 - vo_id: VO-001
   acceptance_ref: ACC-001
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 通过自动化命令或等效自动化测试验证代表性页面、API 响应和静态资源响应均返回三项直接整改的安全响应头。
-    - 验证抽样范围覆盖最终安全团队复测所依赖的实际入口，而不是只覆盖本地单一子路径。
-  artifact_expectation: 基于 `curl -I`、自动化 HTTP 测试或等效集成脚本的验证记录，能明确展示三项响应头的实际返回结果。
+    - 构造含 `txt` 嵌入附件的 `.docx` fixture 并验证解析结果包含附件文本
+    - 覆盖无效附件隔离路径，确认有效附件仍被解析
+  artifact_expectation: `python -m pytest tests/test_attachment_extraction.py tests/test_docx_parser.py -q`
 
 - vo_id: VO-002
   acceptance_ref: ACC-002
-  verification_type: manual
+  verification_type: automated
   verification_profile: focused
   obligations:
-    - 在目标环境使用 Windows 浏览器直接输入当前 IP 地址访问系统，验证首页和核心使用链路仍可正常打开。
-    - 若整改引入 HTTPS/443 或其他入口调整，需验证用户输入 IP 后不会直接落入不可接受的中断状态。
-  artifact_expectation: 浏览器人工验证记录、截图或 Deployment / Testing 阶段的兼容性验证证据。
+    - 验证发起评估页使用说明展示 `.docx格式`
+    - 验证后端旧格式上传兼容测试仍通过
+  artifact_expectation: `cd frontend && npm test -- --watchAll=false --runTestsByPath src/__tests__/uploadPage.targetSystem.test.js`；`python -m pytest tests/test_task_upload_legacy_doc_api.py -q`
 
 - vo_id: VO-003
   acceptance_ref: ACC-003
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 在最终确定的 HTTPS 复测入口上自动检查 `Strict-Transport-Security` 头值是否精确等于 `max-age=16070400`。
-    - 验证该头覆盖安全团队复测范围内的代表性页面，而不是只在单个响应上偶发出现。
-  artifact_expectation: 指向最终 HTTPS 复测入口的自动化 HTTP 验证命令或脚本输出，能够显示 HSTS 头值。
+    - 静态验证 `frontend/nginx.internal.conf` 的 HTTP server 返回四项安全头
+    - 验证配置不引入 HTTP 到 HTTPS 跳转要求
+  artifact_expectation: `python -m pytest tests/test_frontend_nginx_upload_limit.py -q`
 
 - vo_id: VO-004
   acceptance_ref: ACC-004
-  verification_type: manual
+  verification_type: automated
   verification_profile: focused
   obligations:
-    - 检查 `spec.md`、后续 `design.md`、`testing.md` 或 `deployment.md` 是否明确记录 HSTS 的复测入口、HTTPS/443 前提和 IP 访问兼容性验证方式。
-    - 在进入安全团队复测前确认不存在“入口未定、兼容性未测、却已承诺关闭第 3 项”的文档缺口。
-  artifact_expectation: 权威文档中的明确章节引用和审查记录，能够证明第 3 项的入口与验证路径已经书面收口。
+    - 静态验证 backend internal compose 不再包含 `/etc/timezone` 挂载
+    - 验证保留 `TZ` 或 `/etc/localtime` 时区配置路径
+  artifact_expectation: `python -m pytest tests/test_backend_config_env_files.py -q`
 
 - vo_id: VO-005
   acceptance_ref: ACC-005
   verification_type: automated
   verification_profile: focused
   obligations:
-    - 通过自动化测试或等效脚本验证：当证书文件缺失时，部署脚本会生成新的 `cert.pem` / `key.pem`，且证书 subjectAltName 精确覆盖操作人指定的访问 IP。
-    - 验证生成逻辑不会覆盖已存在的人工证书，并且相关文档明确声明“自签名证书不解决浏览器信任链”。
-  artifact_expectation: 基于部署脚本测试、`openssl x509 -text` 或等效命令的证据，能展示证书文件生成结果与 IP SAN 内容。
+    - 验证 `.env.frontend.example` 包含 `FRONTEND_BACKEND_UPSTREAM`
+    - 验证部署脚本优先读取 `.env.frontend` 并渲染运行时 nginx upstream
+  artifact_expectation: `python -m pytest tests/test_deploy_frontend_internal_script.py -q`
+
+- vo_id: VO-006
+  acceptance_ref: ACC-006
+  verification_type: automated
+  verification_profile: focused
+  obligations:
+    - 静态验证前端 internal compose 不暴露 443 且不挂载 SSL 目录
+    - 静态验证前端 internal nginx 不监听 443
+    - 静态验证部署脚本不再执行证书生成、443 端口预检或 HTTPS 检查
+  artifact_expectation: `python -m pytest tests/test_frontend_nginx_upload_limit.py tests/test_deploy_frontend_internal_script.py -q`
+
+<!-- CODESPEC:SPEC:CONSTRAINTS -->
+## 5. 运行约束
+
+- environment_constraints:
+  - 内网前端部署入口保持 `http://<front-ip>:8000`。
+  - `.env.frontend` 是前端 upstream 配置的目标文件；允许脚本兼容 `.env.frontend.internal` 作为旧部署回退。
+  - 后端 internal compose 不再依赖宿主机 `/etc/timezone` 文件存在。
+- security_constraints:
+  - HTTP 8000 响应头必须包含 `Strict-Transport-Security: max-age=16070400`、`X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
+  - `X-Content-Type-Options` 必须使用标准头名，不能写成带数字 `0` 的变体。
+  - 本轮不新增其他安全头策略，也不改变鉴权或跨域策略。
+- reliability_constraints:
+  - 单个内嵌附件解析失败时必须继续处理主文档和其他附件。
+  - 前端部署脚本在 upstream 缺失或非法时应失败并提示配置 `.env.frontend`，不能生成不可用代理配置。
+- performance_constraints:
+  - 继续沿用现有附件解析深度、大小和数量限制；本轮不扩大容量上限。
+- compatibility_constraints:
+  - 不改变后端 `.doc/.xls` 上传兼容能力。
+  - 不启动前端 443，不要求证书材料，不做 8000 到 HTTPS 的跳转。
+  - 不修改 release 包和本地运行时生成文件作为本轮交付来源。
+
+<!-- CODESPEC:SPEC:BUSINESS_CONTRACT -->
+## 6. 业务契约
+
+- terminology:
+  - term: 待评估需求文档附件
+    definition: 项目经理上传的主需求文档内部携带的嵌入文件，本轮新增关注 `txt`，并保持既有 `docx/xlsx` 等附件解析能力。
+  - term: 内网前端 HTTP 入口
+    definition: 由前端 nginx 容器对宿主机暴露的 `8000:80` 入口，是本轮安全扫描和人工复测的目标入口。
+  - term: 前端 upstream
+    definition: 前端 nginx `/api/` 代理使用的后端服务地址，由 `FRONTEND_BACKEND_UPSTREAM` 提供，格式为 `<host>:<port>`。
+- invariants:
+  - 项目经理上传任务的主流程不能因为单个附件解析失败而整体失败。
+  - 前端部署完成后，前端容器不应暴露 443。
+  - `frontend/nginx.internal.conf` 作为模板保留占位式后端名，实际 IP 由部署脚本渲染到运行时配置。
+- prohibitions:
+  - 禁止以实现本轮安全头为由强制启用 HTTPS-only 或 8000 跳转。
+  - 禁止把用户样例中的错误头名 `X-Content-Type-0ptions` 写入正式配置。
+  - 禁止删除或弱化既有 `.doc/.xls` 后端上传兼容能力。
+
+<!-- CODESPEC:SPEC:HANDOFF -->
+## 7. 设计交接
+
+- design_must_address:
+  - `txt` 类型识别、编码解码策略、二进制误判防护，以及附件失败隔离。
+  - HTTP 8000 安全头落在哪个 nginx server/location，确保首页与静态资源都能返回。
+  - 前端 443/SSL/证书逻辑删除范围，避免 compose、nginx、部署脚本或测试残留互相矛盾。
+  - `.env.frontend` upstream 读取优先级、渲染方式和非法配置失败路径。
+  - `docker-compose.backend.internal.yml` 删除 `/etc/timezone` 后的时区配置保留方式。
+- narrative_handoff:
+  - 设计阶段必须把“前端不启动 443，但 HTTP 8000 仍返回 HSTS 头用于扫描”的取舍写清楚。
+  - 设计阶段必须列出唯一 work item 的 allowed_paths，避免实现阶段越界修改 release 包或运行时生成文件。
+- suggested_slices:
+  - WI-001 覆盖附件解析、前端文案、nginx/compose/部署脚本和对应测试。
+- reopen_triggers:
+  - 如果安全团队改为要求真正 HTTPS HSTS 语义或要求 8000 跳转 HTTPS，必须回到需求阶段重定。
+  - 如果 `txt` 附件来自 OLE Native 封装而不能通过简单文件名/内容推断可靠恢复，必须回到需求阶段重新界定样本和解析策略。
+  - 如果需要收窄 `.doc/.xls` 上传兼容，必须回到需求阶段确认破坏性变更。

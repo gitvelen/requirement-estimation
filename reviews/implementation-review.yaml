@@ -1,4 +1,8 @@
 phase: Design
+target_phase: Implementation
 verdict: approved
 reviewed_by: codex
-reviewed_at: 2026-04-24
+reviewed_at: 2026-04-29
+notes:
+  - Design maps all REQ/ACC/VO/TC refs to WI-001.
+  - WI-001 has a bounded allowed_paths list and explicit forbidden paths.

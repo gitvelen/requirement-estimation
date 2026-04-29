@@ -1,4 +1,8 @@
-phase: Requirements
+phase: Requirement
+target_phase: Design
 verdict: approved
 reviewed_by: codex
-reviewed_at: 2026-04-24
+reviewed_at: 2026-04-29
+notes:
+  - Requirements are self-contained and traceable to stable docs/inputs sources.
+  - Planned TC coverage exists for every approved acceptance.

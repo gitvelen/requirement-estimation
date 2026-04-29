@@ -1,36 +1,39 @@
 # codespec 元数据文件
 # 记录当前变更的状态和执行上下文
 
-change_id: v3.1-next # 变更唯一标识
-base_version: v3.1 # 基线版本
-created_at: 2026-04-24 # 创建时间
-phase: Deployment # 当前阶段：Proposal | Requirements | Design | Implementation | Testing | Deployment
-status: completed # 当前状态：active | blocked | completed
+change_id: v3.2-next # 变更唯一标识
+base_version: v3.2 # 基线版本
+created_at: 2026-04-29 # 创建时间
+phase: Implementation # 当前阶段：Requirement | Design | Implementation | Testing | Deployment
+status: active # 当前状态：active | blocked | completed
 # status 语义：
 # - active: 当前阶段正常推进
 # - blocked: 当前阶段被阻塞（需要外部输入或依赖）
 # - completed: 整个变更已完成（只在 Deployment 阶段后使用）
 
+stable_version: null # 稳定版本号（complete-change 时设置，用于归档和 reopen 定位）
 # 工作项执行上下文
-# 单分支工作流：execution_group 和 execution_branch 为 null，focus_work_item 在 Implementation 阶段必须设置
-# 多分支并行：这三个字段都有值
-focus_work_item: null # 当前执行分支关注的 WI ID（如 "WI-001"），Implementation 阶段必须非 null
-execution_group: null # 并行执行组名（如 "parallel-impl"），仅用于文档化
-execution_branch: null # 当前执行分支名（如 "group/sanguoA"），仅用于文档化
-active_work_items: []
+# 单分支工作流：feature_branch 指向当前主执行分支，execution_group / execution_branch 为 null
+# 多分支并行：feature_branch 指向父 feature 分支，execution_group 非 null，execution_branch 记录当前 dossier 所在分支
+focus_work_item: WI-001 # 当前执行分支关注的 WI ID（如 "WI-001"），Implementation 阶段必须非 null
+execution_group: null # 并行执行组名（如 "parallel-impl"），由 `codespec set-execution-context` 写入
+execution_branch: null # 当前 dossier 所在 git 分支名（如 "group/sanguoA"），由 `codespec set-execution-context` 写入
+active_work_items:
+  - WI-001
+implementation_base_revision: refs/codespec/v3.2-next-implementation-base # 当前 Implementation 回路的 git 基线；进入 Testing 前按此基线检查累计变更
 # active_work_items 语义：
 # - Implementation 阶段：正在执行的 WI（单分支串行时累积，多分支并行时各分支独立）
 # - Testing 阶段：保留 Implementation 阶段的值，用于 verification gate 聚合所有需要验证的 work items
 # - Deployment 阶段（status=active）：保留 Testing 阶段的值，用于最终 verification / promotion gate
-# - Completed 状态（phase=Deployment, status=completed）：清空，表示当前已无活跃验证集合
+# - Completed 状态（当前项目目录中的 dossier）：清空，表示当前已无活跃验证集合
+# - Archived 状态（versions/<stable_version>/meta.yaml 快照）：保留 complete-change 时的值，用于版本追溯和 completed reopen 恢复
 # 累积规则：
 # - 单分支串行：每开始一个新 WI，添加到列表（如 [WI-001] -> [WI-001, WI-002]）
 # - 多分支并行：执行分支只包含自己的 WI，parent feature 分支包含所有并行 WI
 
-feature_branch: feature-v3.4 # parent feature 分支名（如 "feature/add-auth"）
+feature_branch: feature-v3.5 # 主执行分支 / parent feature 分支名（如 "feature/add-auth"）
 # 阻塞信息（仅当 status=blocked 时填写）
 blocked_reason: null # 阻塞原因描述
 blocked_by: null # 阻塞依赖（如 "WI-001" 或外部因素）
-implementation_base_revision: f1ed0693820409878d8a11f618ac26acdd095fc8
-updated_at: 2026-04-28 # 最后更新时间
+updated_at: 2026-04-29 # 最后更新时间
 updated_by: codespec-cli # 最后更新人

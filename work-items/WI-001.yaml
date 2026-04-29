@@ -1,30 +1,66 @@
 wi_id: WI-001
-goal: "在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，新增用于 HSTS 复测的 HTTPS/443 前端入口，并收口后端独立部署所需的环境变量样例与读取方式。"
+phase_scope: Implementation
+
+goal: "交付 vNext 附件解析与内网部署修正，使 txt 附件可解析、上传页文案收敛、HTTP 8000 安全头满足扫描、前端不启动 443、后端 compose 和 upstream 配置符合新部署口径。"
+derived_from: design.md#work-item-derivation
+
+requirement_refs:
+  - REQ-001
+  - REQ-002
+  - REQ-003
+  - REQ-004
+  - REQ-005
+  - REQ-006
+acceptance_refs:
+  - ACC-001
+  - ACC-002
+  - ACC-003
+  - ACC-004
+  - ACC-005
+  - ACC-006
+verification_refs:
+  - VO-001
+  - VO-002
+  - VO-003
+  - VO-004
+  - VO-005
+  - VO-006
+test_case_refs:
+  - TC-ACC-001-01
+  - TC-ACC-002-01
+  - TC-ACC-003-01
+  - TC-ACC-004-01
+  - TC-ACC-005-01
+  - TC-ACC-006-01
+
 scope:
-  - "为 FastAPI HTTP 响应补齐 X-XSS-Protection、X-Frame-Options、X-Content-Type-Options"
-  - "为三个前端 nginx 配置补齐静态页/静态资源安全头，并为内网前端入口补齐 HTTPS/443 + HSTS"
-  - "调整内网前端 compose 和部署脚本以支持证书目录挂载、443 暴露与运行态校验"
-  - "当部署目录缺少 HTTPS 证书时，由部署脚本按指定访问 IP 自动生成带 IP SAN 的自签名证书"
-  - "补充对应的后端、nginx 配置和部署脚本测试"
-  - "补齐后端独立部署 `.env.backend.example` 的必需参数，并把示例值收口到贴近当前 IP 直连部署方式的口径"
-  - "让 `Settings()` 在直接运行后端时也能读取 `.env.backend` / `.env.backend.internal`，避免配置只能依赖外部注入"
+  - "为通用文档解析和嵌入附件提取新增 txt 类型支持，并保持附件失败隔离。"
+  - "调整发起评估页展示文案为 .docx格式，但不收窄后端旧格式兼容。"
+  - "让内网前端 HTTP 8000 返回 HSTS 和三项通用安全头。"
+  - "删除前端 internal 部署链路中的 443/SSL/HTTPS 证书启动路径。"
+  - "让前端 internal 部署脚本从 .env.frontend 读取 FRONTEND_BACKEND_UPSTREAM 并渲染 runtime nginx。"
+  - "删除后端 internal compose 的 /etc/timezone 挂载，并保留时区配置路径。"
 out_of_scope:
-  - "不修改业务路由、数据模型、鉴权逻辑和前端业务页面"
-  - "不引入域名体系、受信任 CA 接入或浏览器根证书分发"
-  - "不在本轮强制把 http://IP:8000 自动重定向到 HTTPS"
+  - "不修改业务 API 语义、鉴权、任务状态机、报告生成或数据模型。"
+  - "不新增 HTTPS 入口、证书生成、证书挂载、CA 接入或浏览器信任链治理。"
+  - "不修改 release 包、本地 .env.frontend、frontend/nginx.internal.runtime.conf 或 frontend/ssl 运行时材料。"
+  - "不删除或弱化后端 .doc/.xls 上传兼容能力。"
 
 allowed_paths:
-  - backend/app.py
-  - backend/config/config.py
-  - .env.backend.example
-  - frontend/nginx.conf
+  - backend/service/document_parser.py
+  - backend/utils/embedded_attachment_extractor.py
+  - backend/utils/docx_parser.py
+  - frontend/src/pages/UploadPage.js
+  - frontend/src/__tests__/uploadPage.targetSystem.test.js
   - frontend/nginx.internal.conf
-  - frontend/nginx-remote.conf
   - docker-compose.frontend.internal.yml
+  - docker-compose.backend.internal.yml
   - deploy-frontend-internal.sh
+  - .env.frontend.example
+  - tests/test_attachment_extraction.py
+  - tests/test_docx_parser.py
   - tests/test_frontend_nginx_upload_limit.py
   - tests/test_deploy_frontend_internal_script.py
-  - tests/test_backend_security_headers.py
   - tests/test_backend_config_env_files.py
   - testing.md
 forbidden_paths:
@@ -34,62 +70,25 @@ forbidden_paths:
   - work-items/**
   - contracts/**
   - deployment.md
+  - release/**
+  - frontend/nginx.internal.runtime.conf
+  - frontend/ssl/**
 
-branch_execution:
-  execution_group: null
-  execution_branch: null
-  owned_paths: []
-  shared_paths: []
-  shared_file_owner: parent-feature
-  merge_order: single-branch only
-  conflict_policy: stop and update design before expanding shared scope
-
-phase_scope: Implementation
-
-input_refs:
-  - docs/inputs/2026-04-24-security-headers-proposal.md#intent
-  - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-requirement_refs:
-  - REQ-001
-  - REQ-002
-  - REQ-003
-  - REQ-004
-  - REQ-005
-acceptance_refs:
-  - ACC-001
-  - ACC-002
-  - ACC-003
-  - ACC-004
-  - ACC-005
-verification_refs:
-  - VO-001
-  - VO-002
-  - VO-003
-  - VO-004
-  - VO-005
-derived_from: design.md#work-item-derivation
 dependency_refs: []
 dependency_type: none
 contract_refs: []
 
-evidence_refs: []
-
-verification_profile: focused
 required_verification:
-  - "后端 HTTP 安全响应头自动化测试通过"
-  - "后端配置 env file 读取与 `.env.backend.example` 完整性测试通过"
-  - "前端 nginx 配置与内网部署脚本安全头/443 支持自动化测试通过"
-  - "部署脚本自签名证书自动生成与 IP SAN 覆盖自动化测试通过"
-  - "分支内完成至少一次 HTTP/HTTPS 响应头检查，并把证据记录到 testing.md"
+  - "python -m pytest tests/test_attachment_extraction.py tests/test_docx_parser.py -q"
+  - "python -m pytest tests/test_frontend_nginx_upload_limit.py tests/test_deploy_frontend_internal_script.py tests/test_backend_config_env_files.py tests/test_task_upload_legacy_doc_api.py -q"
+  - "cd frontend && npm test -- --watchAll=false --runTestsByPath src/__tests__/uploadPage.targetSystem.test.js"
 
 stop_conditions:
-  - "如果需要改变现有 IP 直连访问策略（例如强制 8000->443 重定向），停止并回写 spec/design"
-  - "如果实现需要修改业务路由、数据模型或前端业务页面，停止并重新界定范围"
+  - "目标、边界、验收或测试用例不清楚"
+  - "需要修改 forbidden_paths 或超出 allowed_paths"
+  - "实现需要改变 spec.md / design.md 的产品或架构口径"
+  - "需要启动前端 443 或引入 HTTPS 证书路径"
 reopen_triggers:
-  - "如果 X-Frame-Options: DENY 被证实现网依赖 iframe 嵌入，重新开启 spec/design"
-  - "如果部署环境既无法提供 HTTPS/443 所需证书，又无法用自签名证书 fallback 闭环，重新开启 spec/design"
-hard_constraints:
-  - "HSTS 只在 HTTPS/443 前端入口下发，现有 http://IP:8000 兼容访问必须保留"
-  - "API 的三个通用安全头由后端统一发，前端 nginx 不在 /api 代理层重复追加相同头值"
-  - "自动生成证书只允许在证书缺失时触发；若操作人已提供 cert.pem/key.pem，脚本不得覆盖"
-  - "自动生成证书必须覆盖操作人指定的访问 IP；该能力不等于浏览器信任链闭环"
+  - "安全团队要求真实 HTTPS HSTS 语义、443 入口或 HTTP 到 HTTPS 跳转"
+  - "txt 附件样本无法通过后缀或内容可靠识别，需要补充样本和策略"
+  - "需要收窄 .doc/.xls 上传兼容或修改任务上传 API 语义"
