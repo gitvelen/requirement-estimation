@@ -11,7 +11,7 @@
 <!-- CODESPEC:DESIGN:OVERVIEW -->
 ## 1. 设计概览
 
-- solution_summary: 本轮采用单个垂直 WI 完成附件解析、上传页文案、nginx/compose/部署脚本和测试收口。后端文档解析器新增 `txt` 类型解析，附件提取器把 `.txt` 后缀或可识别文本负载交给统一解析回调。内网前端保留 HTTP 8000 作为唯一前端入口，HTTP 响应直接返回 HSTS 与三项通用安全头，同时移除前端 443/SSL/HTTPS 启动链路。
+- solution_summary: 本轮采用单个垂直 WI 完成附件解析、上传页文案、nginx/compose/部署脚本和测试收口。后端文档解析器新增 `txt` 类型解析，附件提取器把 `.txt` 后缀或可识别文本负载交给统一解析回调。后端内网镜像显式提供 `soffice`，保证既有 `.doc` 旧格式解析能力在部署环境中可用。内网前端保留 HTTP 8000 作为唯一前端入口，HTTP 响应直接返回 HSTS 与三项通用安全头，同时移除前端 443/SSL/HTTPS 启动链路。
 - minimum_viable_design: 需求集中在既有上传解析链路与内网部署配置，没有新增业务数据模型或公开 API；直接扩展现有解析器、nginx 模板和部署脚本是最小改动。将 upstream 配置读取放在现有 `deploy-frontend-internal.sh` 渲染步骤内，可以复用已有 runtime nginx 生成方式。
 - non_goals:
   - 不新增 HTTPS 入口、证书生成、证书挂载或浏览器信任链治理。
@@ -31,7 +31,7 @@
   acceptance_refs: [ACC-002]
   verification_refs: [VO-002]
   test_case_refs: [TC-ACC-002-01]
-  design_response: 只修改 `UploadPage` 中的展示文案，不改上传白名单和后端校验；前端测试断言新文案，后端旧格式测试作为兼容回归。
+  design_response: 只修改 `UploadPage` 中的展示文案，不改上传白名单和后端校验；后端内网镜像安装 LibreOffice Writer 并校验 `soffice` 可用，支撑既有 `.doc` 旧格式转换；前端测试断言新文案，后端旧格式测试和镜像依赖静态测试作为兼容回归。
 
 - requirement_ref: REQ-003
   acceptance_refs: [ACC-003]
@@ -100,6 +100,7 @@
 - external_dependencies:
   - Docker Compose 用于 internal 部署。
   - nginx 用于前端静态资源和 `/api/` 代理。
+  - LibreOffice `soffice` 用于后端 `.doc` 旧格式文档转文本。
   - Python 标准库文本解码能力用于 `txt` 解析。
 - tooling:
   - pytest 覆盖后端解析、nginx 配置和部署脚本。
@@ -114,6 +115,7 @@
   - `backend/utils/embedded_attachment_extractor.py`
   - `frontend/src/pages/UploadPage.js`
   - `frontend/nginx.internal.conf`
+  - `Dockerfile.internal`
   - `docker-compose.frontend.internal.yml`
   - `docker-compose.backend.internal.yml`
   - `deploy-frontend-internal.sh`
@@ -160,6 +162,7 @@
 ## 6. 横切设计
 
 - environment_config:
+  - `Dockerfile.internal` 基于 Debian 内网基础镜像安装 `libreoffice-writer`，并在构建期执行 `command -v soffice` 作为旧格式解析依赖检查。
   - `.env.frontend` 可配置 `FRONTEND_BACKEND_UPSTREAM=10.62.22.121:443`。
   - `docker-compose.frontend.internal.yml` 只暴露 `8000:80`，不再要求 `FRONTEND_SSL_DIR`。
   - `docker-compose.backend.internal.yml` 保留 `TZ=${TZ:-Asia/Shanghai}` 和 `/etc/localtime:/etc/localtime:ro`。
@@ -168,6 +171,7 @@
   - `/api/` 代理块不重复追加后端已经返回的三项通用安全头，避免代理层与后端头值冲突。
   - 文本附件解析使用大小/数量/递归深度既有边界，并通过解码失败隔离避免单附件拖垮任务。
 - reliability_design:
+  - `.doc` 旧格式解析继续通过 `soffice` 在隔离临时目录内转换；缺失 `soffice` 属于部署镜像缺陷，应在镜像构建期暴露，而不是等任务后台解析失败。
   - `txt` 解码按 `utf-8-sig`、`utf-8`、`gb18030`、`gbk` 顺序尝试；全部失败或文本质量过低时抛出解析错误并进入附件错误记录。
   - 部署脚本在 upstream 缺失、非法或仍为容器名时失败，避免生成不可用 runtime nginx。
   - 移除 HTTPS 检查后，部署验证只检查 HTTP 8000 和容器内 `nginx -t`。
@@ -218,7 +222,7 @@
   dependency_refs: []
   dependency_type: none
   contract_refs: []
-  notes_on_boundary: 允许修改解析器、上传页、internal nginx/compose/部署脚本、env 示例和对应测试；禁止改业务 API 语义、release 包、本地运行时生成文件或已归档版本。
+  notes_on_boundary: 允许修改解析器、上传页、internal nginx/compose/Dockerfile/部署脚本、env 示例和对应测试；禁止改业务 API 语义、release 包、本地运行时生成文件或已归档版本。
 
 ### 验证设计
 
@@ -230,8 +234,8 @@
 
 - test_case_ref: TC-ACC-002-01
   acceptance_ref: ACC-002
-  approach: 前端测试断言新文案；后端旧格式上传测试作为回归，确认没有收窄兼容。
-  evidence: `cd frontend && npm test -- --watchAll=false --runTestsByPath src/__tests__/uploadPage.targetSystem.test.js`；`python -m pytest tests/test_task_upload_legacy_doc_api.py -q`
+  approach: 前端测试断言新文案；后端旧格式上传测试作为回归，确认没有收窄兼容；后端内网 Dockerfile 静态测试确认镜像安装并校验 `soffice`。
+  evidence: `cd frontend && npm test -- --watchAll=false --runTestsByPath src/__tests__/uploadPage.targetSystem.test.js`；`python -m pytest tests/test_task_upload_legacy_doc_api.py tests/test_backend_config_env_files.py -q`
   required_stage: implementation
 
 - test_case_ref: TC-ACC-003-01

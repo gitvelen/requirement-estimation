@@ -36,6 +36,7 @@ test_case_refs:
 scope:
   - "为通用文档解析和嵌入附件提取新增 txt 类型支持，并保持附件失败隔离。"
   - "调整发起评估页展示文案为 .docx格式，但不收窄后端旧格式兼容。"
+  - "让后端 internal 镜像提供 soffice，保证 .doc 旧格式解析在部署环境中可用。"
   - "让内网前端 HTTP 8000 返回 HSTS 和三项通用安全头。"
   - "删除前端 internal 部署链路中的 443/SSL/HTTPS 证书启动路径。"
   - "让前端 internal 部署脚本从 .env.frontend 读取 FRONTEND_BACKEND_UPSTREAM 并渲染 runtime nginx。"
@@ -53,6 +54,7 @@ allowed_paths:
   - frontend/src/pages/UploadPage.js
   - frontend/src/__tests__/uploadPage.targetSystem.test.js
   - frontend/nginx.internal.conf
+  - Dockerfile.internal
   - docker-compose.frontend.internal.yml
   - docker-compose.backend.internal.yml
   - deploy-frontend-internal.sh
