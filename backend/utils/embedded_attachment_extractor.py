@@ -51,10 +51,34 @@ def _sheet_rows_to_text(sheet_rows: Dict[str, List[List[Any]]], *, max_lines: in
     return "\n".join(lines).strip()
 
 
+def _is_ole_payload(payload: bytes) -> bool:
+    return payload.startswith(b"\xd0\xcf\x11\xe0") and olefile.isOleFile(payload)
+
+
+def _looks_like_text_payload(payload: bytes) -> bool:
+    if not payload or b"\x00" in payload[:1024]:
+        return False
+
+    sample = payload[:4096]
+    decoded = ""
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            decoded = sample.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if not decoded.strip():
+        return False
+
+    control_count = sum(1 for ch in decoded if ord(ch) < 32 and ch not in "\r\n\t")
+    return control_count / max(len(decoded), 1) <= 0.05
+
+
 class EmbeddedAttachmentExtractor:
     """从 OOXML/OLE 宿主中提取嵌入附件，并递归解析支持格式。"""
 
-    SUPPORTED_TYPES = {"doc", "docx", "xlsx", "pptx", "pdf"}
+    SUPPORTED_TYPES = {"doc", "docx", "xlsx", "pptx", "pdf", "txt"}
     OOXML_EMBEDDING_PREFIXES = (
         "word/embeddings/",
         "xl/embeddings/",
@@ -132,7 +156,7 @@ class EmbeddedAttachmentExtractor:
         seen_hashes: Set[str],
     ) -> List[Dict[str, Any]]:
         direct_rows = None
-        if olefile.isOleFile(payload):
+        if _is_ole_payload(payload):
             with olefile.OleFileIO(payload) as ole:
                 direct_rows = self._extract_xls_rows_from_ole(ole)
 
@@ -149,7 +173,7 @@ class EmbeddedAttachmentExtractor:
                         "depth": depth,
                     }]
 
-        if olefile.isOleFile(payload):
+        if _is_ole_payload(payload):
             with olefile.OleFileIO(payload) as ole:
                 if ole.exists(("WordDocument",)):
                     word_blob = ole.openstream(("WordDocument",)).read()
@@ -198,7 +222,7 @@ class EmbeddedAttachmentExtractor:
         if inferred:
             return [(Path(payload_name).name, payload, inferred)]
 
-        if olefile.isOleFile(payload):
+        if _is_ole_payload(payload):
             candidates = self._extract_from_ole(payload_name, payload)
             if candidates:
                 return candidates
@@ -289,6 +313,8 @@ class EmbeddedAttachmentExtractor:
             return ".pptx"
         if payload_type == "pdf":
             return ".pdf"
+        if payload_type == "txt":
+            return ".txt"
         return ""
 
     def _infer_type(self, name: str, payload: bytes) -> Optional[str]:
@@ -314,6 +340,9 @@ class EmbeddedAttachmentExtractor:
 
         if payload.startswith(b"\xd0\xcf\x11\xe0"):
             return None
+
+        if _looks_like_text_payload(payload):
+            return "txt"
 
         return None
 

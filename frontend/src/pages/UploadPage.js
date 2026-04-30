@@ -174,7 +174,7 @@ const UploadPage = () => {
             <InboxOutlined />
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
-          <p className="ant-upload-hint">支持 .docx / .doc / .xls 格式的需求文档，文件大小不超过10MB</p>
+          <p className="ant-upload-hint">支持 .docx格式的需求文档，文件大小不超过10MB</p>
         </Upload.Dragger>
 
         <div style={{ marginTop: 24, textAlign: 'center' }}>
@@ -192,7 +192,7 @@ const UploadPage = () => {
         <div style={{ marginTop: 24 }}>
           <h3>使用说明</h3>
           <ul>
-            <li>上传需求文档（.docx / .doc / .xls 格式）</li>
+            <li>上传需求文档（.docx格式）</li>
             <li>系统将自动解析需求内容并拆分功能点</li>
             <li>AI完成初评后进入草稿状态，可继续编辑</li>
           </ul>

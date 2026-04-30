@@ -80,6 +80,29 @@ def test_parse_merges_embedded_attachment_text_into_requirement_content(tmp_path
     assert "附件正文" in result["requirement_content"]
 
 
+def test_parse_merges_embedded_txt_attachment_text_into_requirement_content(tmp_path):
+    host = Document()
+    host.add_paragraph("需求名称")
+    host.add_paragraph("测试需求")
+    host.add_paragraph("需求内容说明")
+    host.add_paragraph("功能描述")
+    host.add_paragraph("主文档正文")
+    host.add_paragraph("领导审核意见")
+
+    host_buf = BytesIO()
+    host.save(host_buf)
+
+    merged_bytes = _inject_docx_embedding(host_buf.getvalue(), "notes.txt", "txt附件正文".encode("utf-8"))
+    file_path = tmp_path / "with-txt.docx"
+    file_path.write_bytes(merged_bytes)
+
+    result = DocxParser().parse(str(file_path))
+
+    assert "主文档正文" in result["requirement_content"]
+    assert "txt附件正文" in result["requirement_content"]
+    assert "【附件: notes.txt】" in result["requirement_content"]
+
+
 def test_parse_keeps_processing_when_one_attachment_is_invalid(tmp_path):
     host = Document()
     host.add_paragraph("需求名称")

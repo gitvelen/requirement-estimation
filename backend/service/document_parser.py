@@ -51,7 +51,8 @@ class DocumentParser:
         "xls": "application/vnd.ms-excel",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pdf": "application/pdf",
-        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "txt": "text/plain",
     }
 
     def __init__(self):
@@ -95,6 +96,8 @@ class DocumentParser:
             return self._parse_pdf(file_content)
         if file_type == "pptx":
             return self._parse_pptx(file_content)
+        if file_type == "txt":
+            return self._parse_txt(file_content)
         raise ValueError(f"未实现的文件类型: {file_type}")
 
     def parse(
@@ -417,6 +420,36 @@ class DocumentParser:
         except Exception as e:
             logger.error(f"PPTX解析失败: {str(e)}")
             raise
+
+    def _parse_txt(self, file_content: bytes) -> Dict[str, Any]:
+        """
+        解析 TXT 文件。
+
+        文本附件常见于需求文档内嵌材料，按常见中文编码顺序尝试解码。
+        """
+        last_error: Optional[Exception] = None
+        text = ""
+        for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+            try:
+                text = file_content.decode(encoding)
+                break
+            except UnicodeDecodeError as exc:
+                last_error = exc
+
+        if not text:
+            raise ValueError("TXT解析失败：无法识别文本编码") from last_error
+
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("TXT解析失败：文本内容为空")
+
+        sample = stripped[:4096]
+        control_count = sum(1 for ch in sample if ord(ch) < 32 and ch not in "\r\n\t")
+        if sample and control_count / len(sample) > 0.05:
+            raise ValueError("TXT解析失败：文本内容包含过多控制字符")
+
+        logger.info(f"TXT解析成功，字符数: {len(stripped)}")
+        return {"text": stripped}
 
     def _parse_doc(self, file_content: bytes, filename: str) -> Dict[str, Any]:
         """
