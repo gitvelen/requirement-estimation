@@ -1,9 +1,11 @@
 import os
 import sys
 from datetime import datetime
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
+from docx import Document
 
 ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
@@ -70,6 +72,19 @@ def _build_docx_upload():
     return (
         "requirements.docx",
         b"fake-docx-content",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+def _build_real_docx_upload():
+    document = Document()
+    document.add_paragraph("需求内容说明")
+    document.add_paragraph("真实 DOCX 内容")
+    buffer = BytesIO()
+    document.save(buffer)
+    return (
+        "requirements.docx",
+        buffer.getvalue(),
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
@@ -157,6 +172,38 @@ def test_create_task_accepts_legacy_doc_upload(client):
         task = next(iter(data.values()))
 
     assert task["filename"] == "requirements.doc"
+
+
+def test_create_task_accepts_real_docx_when_magic_reports_zip(client, monkeypatch):
+    monkeypatch.setattr(task_routes, "MAGIC_AVAILABLE", True)
+    monkeypatch.setattr(task_routes.magic, "from_buffer", lambda *_args, **_kwargs: "application/zip")
+
+    manager = _seed_user("pm_target_docx_zip", "pwd123", ["manager"])
+    _seed_systems(
+        [
+            {
+                "id": "sys_pay",
+                "name": "支付系统",
+                "abbreviation": "PAY",
+                "status": "运行中",
+                "extra": {"owner_id": manager["id"], "owner_username": "pm_target_docx_zip"},
+            }
+        ]
+    )
+    token = _login(client, "pm_target_docx_zip", "pwd123")
+
+    response = client.post(
+        "/api/v1/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": _build_real_docx_upload()},
+        data={
+            "name": "真实DOCX任务",
+            "target_system_mode": "specific",
+            "target_system_name": "支付系统",
+        },
+    )
+
+    assert response.status_code == 200
 
 
 def test_create_task_rejects_specific_system_outside_manager_scope(client):

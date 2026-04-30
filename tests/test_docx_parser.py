@@ -53,6 +53,35 @@ def test_parse_uses_first_non_header_table_cell_for_basic_info(tmp_path):
     assert result["requirement_summary"] == "针对经营分析与绩效考核要求，管会集市进行系统优化"
 
 
+def test_parse_extracts_requirement_content_from_merged_table_cell(tmp_path):
+    document = Document()
+    table = document.add_table(rows=2, cols=4)
+
+    for cell in table.rows[0].cells:
+        cell.text = "需求内容说明"
+
+    merged = table.rows[1].cells[0].merge(table.rows[1].cells[-1])
+    merged.text = (
+        "需求功能要点描述\n"
+        "押品系统新增配置复核需求\n"
+        "新增岗位：配置复核岗；\n"
+        "二、押品系统相关优化\n"
+        "1.不动产接口字段类型调整。\n"
+        "7.押品系统新增DNS改造功能"
+    )
+
+    file_path = tmp_path / "merged-table-content.docx"
+    document.save(file_path)
+
+    result = DocxParser().parse(str(file_path))
+
+    assert "新增岗位：配置复核岗" in result["requirement_content"]
+    assert "二、押品系统相关优化" in result["requirement_content"]
+    assert "1.不动产接口字段类型调整" in result["requirement_content"]
+    assert "7.押品系统新增DNS改造功能" in result["requirement_content"]
+    assert result["requirement_content"].count("押品系统新增配置复核需求") == 1
+
+
 def test_parse_merges_embedded_attachment_text_into_requirement_content(tmp_path):
     host = Document()
     host.add_paragraph("需求名称")

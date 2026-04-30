@@ -17,6 +17,8 @@ class DocxParser:
     def __init__(self):
         """初始化解析器"""
         self.target_section = "需求内容说明"
+        self.content_markers = ("需求内容说明", "需求功能要点描述")
+        self.section_end_markers = ("领导审核意见", "相关业务材料", "附件", "审批流程")
         self.document_parser = DocumentParser()
         logger.info("DocxParser初始化完成")
 
@@ -50,7 +52,7 @@ class DocxParser:
             content_section = self._extract_content_section(paragraphs)
 
             # 如果没有找到需求内容说明，尝试从表格中提取
-            if not content_section or len(content_section) < 10:
+            if not content_section:
                 content_section = self._extract_content_from_tables(tables_data)
 
             merged_content = self._merge_attachment_content(file_path, content_section)
@@ -172,34 +174,69 @@ class DocxParser:
         Returns:
             str: 需求内容说明文本
         """
-        content_parts = []
-        found_section = False
-        section_end_markers = ["领导审核意见", "相关业务材料", "附件", "审批流程"]
-
-        for para in paragraphs:
-            # 查找需求内容说明章节
-            if self.target_section in para or "需求功能要点描述" in para:
-                found_section = True
-                continue
-
-            # 如果找到了章节，开始收集内容
-            if found_section:
-                # 检查是否到达章节结尾
-                if any(marker in para for marker in section_end_markers):
-                    break
-
-                # 过滤空行和标题行
-                if para and not para.startswith("附件") and not para.startswith("审批"):
-                    content_parts.append(para)
-
-        content = "\n".join(content_parts)
+        content = self._extract_marked_content_from_lines(paragraphs)
 
         # 如果没有找到需求内容说明章节，尝试从表格中提取
-        if not content or len(content) < 10:
+        if not content:
             logger.info("未找到需求内容说明章节，尝试从表格提取")
 
         logger.debug(f"需求内容说明提取完成，长度: {len(content)}")
         return content
+
+    def _extract_marked_content_from_lines(self, lines: List[str]) -> str:
+        content_parts = []
+        found_section = False
+
+        for line in lines:
+            para = str(line or "").strip()
+            if not para:
+                continue
+
+            marker_remainder = self._content_marker_remainder(para)
+            if marker_remainder is not None:
+                found_section = True
+                if marker_remainder:
+                    content_parts.append(marker_remainder)
+                continue
+
+            if not found_section:
+                continue
+
+            if any(marker in para for marker in self.section_end_markers):
+                break
+
+            if not para.startswith("附件") and not para.startswith("审批"):
+                content_parts.append(para)
+
+        return "\n".join(self._dedupe_preserve_order(content_parts))
+
+    def _content_marker_remainder(self, text: str) -> Optional[str]:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return None
+
+        for marker in self.content_markers:
+            if marker not in normalized:
+                continue
+            remainder = normalized.split(marker, 1)[1].strip()
+            return remainder.lstrip(":：").strip()
+
+        return None
+
+    def _is_marker_only(self, text: str) -> bool:
+        normalized = str(text or "").strip().strip(":：")
+        return normalized in self.content_markers
+
+    def _dedupe_preserve_order(self, values: List[str]) -> List[str]:
+        result = []
+        seen = set()
+        for value in values:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
     def _extract_content_from_tables(self, tables: List[List[List[str]]]) -> str:
         """
@@ -211,8 +248,20 @@ class DocxParser:
         Returns:
             str: 需求内容文本
         """
-        content_parts = []
+        detailed_parts = []
+        for table in tables:
+            for row in table:
+                content = self._extract_content_from_table_row(row)
+                if content:
+                    detailed_parts.append(content)
 
+        detailed_parts = self._dedupe_preserve_order(detailed_parts)
+        if detailed_parts:
+            content = "\n".join(detailed_parts)
+            logger.info(f"从表格提取需求功能要点，长度: {len(content)}")
+            return content
+
+        content_parts = []
         for table in tables:
             for row in table:
                 if len(row) >= 2:
@@ -227,6 +276,33 @@ class DocxParser:
         content = "\n".join(content_parts)
         logger.info(f"从表格提取需求内容，长度: {len(content)}")
         return content
+
+    def _extract_content_from_table_row(self, row: List[str]) -> str:
+        cells = self._dedupe_preserve_order([str(cell or "").strip() for cell in row])
+        if not cells:
+            return ""
+
+        for cell in cells:
+            content = self._extract_marked_content_from_lines(cell.splitlines())
+            if content:
+                return content
+
+        marker_index = None
+        for idx, cell in enumerate(cells):
+            if self._content_marker_remainder(cell) is not None:
+                marker_index = idx
+                break
+
+        if marker_index is None:
+            return ""
+
+        values = []
+        for cell in cells[marker_index + 1:]:
+            if self._is_marker_only(cell):
+                continue
+            values.append(cell)
+
+        return "\n".join(self._dedupe_preserve_order(values))
 
     def _merge_attachment_content(self, file_path: str, base_content: str) -> str:
         try:

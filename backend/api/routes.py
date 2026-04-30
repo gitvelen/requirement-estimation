@@ -10,7 +10,9 @@ import logging
 import socket
 import threading
 import ipaddress
+import zipfile
 from contextlib import contextmanager
+from io import BytesIO
 try:
     import fcntl
     FCNTL_AVAILABLE = True
@@ -54,6 +56,31 @@ try:
 except ImportError:
     MAGIC_AVAILABLE = False
     logger.warning("python-magic 未安装，将跳过MIME类型检测")
+
+
+def _is_valid_docx_payload(content: bytes) -> bool:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            names = set(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
+    return "[Content_Types].xml" in names and "word/document.xml" in names
+
+
+def _is_supported_task_file_mime(ext: str, mime_type: str, content: bytes) -> bool:
+    if mime_type == "application/octet-stream":
+        return True
+
+    allowed_mimes = {
+        ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+        ".doc": {"application/msword", "application/vnd.ms-word"},
+        ".xls": {"application/vnd.ms-excel"},
+    }
+    if mime_type in (allowed_mimes.get(ext) or set()):
+        return True
+    if ext == ".docx" and mime_type in {"application/zip", "application/x-zip"}:
+        return _is_valid_docx_payload(content)
+    return False
 
 # 创建路由器
 router = APIRouter(prefix=settings.API_PREFIX, tags=["需求评估"])
@@ -1045,12 +1072,7 @@ async def upload_requirement(
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                allowed_mimes = {
-                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-                    ".doc": {"application/msword", "application/vnd.ms-word"},
-                    ".xls": {"application/vnd.ms-excel"},
-                }
-                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
+                if not _is_supported_task_file_mime(ext, mime_type, content):
                     raise HTTPException(
                         status_code=400,
                         detail=f"无效的文件类型: {mime_type}，仅支持.docx/.doc/.xls文件"
@@ -1177,12 +1199,7 @@ async def evaluate_requirement(
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                allowed_mimes = {
-                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-                    ".doc": {"application/msword", "application/vnd.ms-word"},
-                    ".xls": {"application/vnd.ms-excel"},
-                }
-                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
+                if not _is_supported_task_file_mime(ext, mime_type, content):
                     raise HTTPException(
                         status_code=400,
                         detail=f"无效的文件类型: {mime_type}，仅支持.docx/.doc/.xls文件"
@@ -2821,12 +2838,7 @@ async def create_task_v2(
         if MAGIC_AVAILABLE:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
-                allowed_mimes = {
-                    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-                    ".doc": {"application/msword", "application/vnd.ms-word"},
-                    ".xls": {"application/vnd.ms-excel"},
-                }
-                if mime_type not in (allowed_mimes.get(ext) or set()) and mime_type != "application/octet-stream":
+                if not _is_supported_task_file_mime(ext, mime_type, content):
                     return build_error_response(
                         request=request,
                         status_code=400,

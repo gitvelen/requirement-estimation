@@ -76,6 +76,21 @@ def _seed_adjustment_memory():
     )
 
 
+def test_breakdown_prompt_requires_source_item_coverage_and_no_invented_features():
+    agent = FeatureBreakdownAgent(knowledge_service=None)
+
+    prompt = agent._build_breakdown_prompt(
+        requirement_content="1.不动产接口字段类型调整。\n2.押品系统新增DNS改造功能。",
+        system_name="押品管理",
+        system_type="主系统",
+        memory_context={},
+        knowledge_context="",
+    )
+
+    assert "原文编号项" in prompt
+    assert "不得新增原文未明确提出的独立功能点" in prompt
+
+
 def test_breakdown_with_context_applies_low_risk_adjustment_patterns(monkeypatch):
     _seed_profile()
     _seed_adjustment_memory()
