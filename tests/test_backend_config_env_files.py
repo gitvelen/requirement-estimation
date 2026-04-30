@@ -80,3 +80,26 @@ def test_backend_env_example_covers_deploy_required_keys():
     assert env_entries["JWT_EXPIRE_MINUTES"] == "120"
     assert env_entries["TZ"] == "Asia/Shanghai"
     assert "10." in env_entries["ALLOWED_ORIGINS"] or "8." in env_entries["ALLOWED_ORIGINS"]
+
+
+def test_backend_internal_compose_removes_timezone_mount_but_keeps_timezone_config():
+    compose_text = Path("docker-compose.backend.internal.yml").read_text(encoding="utf-8")
+
+    assert "/etc/timezone:/etc/timezone:ro" not in compose_text
+    assert "/etc/localtime:/etc/localtime:ro" in compose_text
+    assert "TZ=${TZ:-Asia/Shanghai}" in compose_text
+
+
+def test_backend_internal_dockerfile_installs_soffice_for_legacy_doc_support():
+    dockerfile_text = Path("Dockerfile.internal").read_text(encoding="utf-8")
+
+    assert "apt-get update" in dockerfile_text
+    assert "libreoffice-writer" in dockerfile_text
+    assert "command -v soffice" in dockerfile_text
+    assert "rm -rf /var/lib/apt/lists/*" in dockerfile_text
+
+
+def test_backend_internal_compose_uses_absolute_upload_dir_for_legacy_doc_support():
+    compose_text = Path("docker-compose.backend.internal.yml").read_text(encoding="utf-8")
+
+    assert "UPLOAD_DIR=/app/uploads" in compose_text

@@ -20,9 +20,9 @@ services:
       - ./uploads:/app/uploads
       - ./backend/config:/app/backend/config
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - UPLOAD_DIR=/app/uploads
       - UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
       - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped

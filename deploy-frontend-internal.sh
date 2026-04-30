@@ -19,13 +19,7 @@ COMPOSE_FILE="docker-compose.frontend.internal.yml"
 NGINX_CONF_PATH="$PROJECT_DIR/frontend/nginx.internal.conf"
 RUNTIME_NGINX_CONF="$PROJECT_DIR/frontend/nginx.internal.runtime.conf"
 BUILD_DIR="$PROJECT_DIR/frontend/build"
-FRONTEND_SSL_DIR="${FRONTEND_SSL_DIR:-$PROJECT_DIR/frontend/ssl}"
-SSL_CERT_PATH="$FRONTEND_SSL_DIR/cert.pem"
-SSL_KEY_PATH="$FRONTEND_SSL_DIR/key.pem"
 BACKEND_UPSTREAM=""
-CERT_IP_LIST=""
-CERT_PRIMARY_IP=""
-GENERATED_SSL_CERT=0
 
 echo_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -58,144 +52,15 @@ normalize_upstream_value() {
     printf "%s" "$normalized"
 }
 
-is_valid_ipv4() {
-    local ip="$1"
-    local octet
+read_env_file_value() {
+    local file_path="$1"
+    local key="$2"
 
-    if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-        return 1
-    fi
-
-    IFS='.' read -r -a octets <<< "$ip"
-    for octet in "${octets[@]}"; do
-        if [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-            return 1
-        fi
-    done
-}
-
-resolve_certificate_ip_list() {
-    local value="${FRONTEND_CERT_IPS:-}"
-    local raw_ip
-    local ip
-    local normalized_ips=()
-
-    if [ -z "$value" ] && [ -f "$PROJECT_DIR/.env.frontend.internal" ]; then
-        value="$(grep '^FRONTEND_CERT_IPS=' "$PROJECT_DIR/.env.frontend.internal" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '\r')"
-    fi
-
-    value="$(strip_wrapping_quotes "$value")"
-    value="$(printf "%s" "$value" | tr -d '[:space:]')"
-
-    if [ -z "$value" ]; then
-        echo_error "未提供 FRONTEND_CERT_IPS，无法自动生成 HTTPS 证书"
-        echo_error "请通过以下任一方式提供目标访问 IP："
-        echo_error "1) 临时环境变量：FRONTEND_CERT_IPS=10.62.16.251 bash deploy-frontend-internal.sh"
-        echo_error "2) 多 IP：FRONTEND_CERT_IPS=10.62.16.251,8.153.194.178 bash deploy-frontend-internal.sh"
-        echo_error "3) 持久配置文件：$PROJECT_DIR/.env.frontend.internal"
-        exit 1
-    fi
-
-    IFS=',' read -r -a raw_ips <<< "$value"
-    for raw_ip in "${raw_ips[@]}"; do
-        ip="$(strip_wrapping_quotes "$raw_ip")"
-        [ -z "$ip" ] && continue
-        if ! is_valid_ipv4 "$ip"; then
-            echo_error "FRONTEND_CERT_IPS 中包含非法 IPv4 地址: $ip"
-            exit 1
-        fi
-        normalized_ips+=("$ip")
-    done
-
-    if [ "${#normalized_ips[@]}" -eq 0 ]; then
-        echo_error "FRONTEND_CERT_IPS 未解析到任何有效 IPv4 地址"
-        exit 1
-    fi
-
-    CERT_PRIMARY_IP="${normalized_ips[0]}"
-    CERT_IP_LIST="$(IFS=,; printf "%s" "${normalized_ips[*]}")"
-}
-
-generate_self_signed_certificate() {
-    local tmp_openssl_conf
-    local ip
-    local index=1
-
-    resolve_certificate_ip_list
-
-    mkdir -p "$FRONTEND_SSL_DIR"
-    tmp_openssl_conf="$(mktemp)"
-
-    {
-        echo "[req]"
-        echo "default_bits = 2048"
-        echo "prompt = no"
-        echo "default_md = sha256"
-        echo "distinguished_name = req_distinguished_name"
-        echo "x509_extensions = v3_req"
-        echo
-        echo "[req_distinguished_name]"
-        echo "CN = ${CERT_PRIMARY_IP}"
-        echo
-        echo "[v3_req]"
-        echo "subjectAltName = @alt_names"
-        echo
-        echo "[alt_names]"
-        IFS=',' read -r -a cert_ips <<< "$CERT_IP_LIST"
-        for ip in "${cert_ips[@]}"; do
-            echo "IP.${index} = ${ip}"
-            index=$((index + 1))
-        done
-    } > "$tmp_openssl_conf"
-
-    echo_warn "未检测到 HTTPS 证书，开始为当前环境生成自签名证书"
-    echo_warn "证书覆盖 IP: $CERT_IP_LIST"
-
-    (
-        umask 077
-        openssl req -x509 -nodes -days "${FRONTEND_CERT_DAYS:-365}" -newkey rsa:2048 \
-            -keyout "$SSL_KEY_PATH" \
-            -out "$SSL_CERT_PATH" \
-            -config "$tmp_openssl_conf" >/dev/null 2>&1
-    )
-
-    rm -f "$tmp_openssl_conf"
-
-    if [ ! -f "$SSL_CERT_PATH" ] || [ ! -f "$SSL_KEY_PATH" ]; then
-        echo_error "自签名证书生成失败"
-        exit 1
-    fi
-
-    GENERATED_SSL_CERT=1
-    echo_info "已生成自签名证书：$SSL_CERT_PATH"
-}
-
-ensure_https_certificate_materials() {
-    local cert_exists=0
-    local key_exists=0
-
-    if ! command -v openssl &> /dev/null; then
-        echo_error "openssl 未安装，无法校验或生成 HTTPS 证书"
-        exit 1
-    fi
-
-    export FRONTEND_SSL_DIR
-
-    [ -f "$SSL_CERT_PATH" ] && cert_exists=1
-    [ -f "$SSL_KEY_PATH" ] && key_exists=1
-
-    if [ "$cert_exists" -eq 1 ] && [ "$key_exists" -eq 1 ]; then
-        echo_info "检测到现有 HTTPS 证书，直接复用"
+    if [ ! -f "$file_path" ]; then
         return 0
     fi
 
-    if [ "$cert_exists" -eq 1 ] || [ "$key_exists" -eq 1 ]; then
-        echo_error "HTTPS 证书目录状态不完整：cert.pem / key.pem 必须同时存在或同时缺失"
-        echo_error "如需自动生成，请先移除残缺证书文件后重试"
-        exit 1
-    fi
-
-    generate_self_signed_certificate
+    grep -E "^${key}=" "$file_path" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '\r'
 }
 
 ###############################################################################
@@ -220,28 +85,6 @@ check_prerequisites() {
     fi
 
     echo_info "前置条件检查通过"
-}
-
-###############################################################################
-# 检查 HTTPS/443 前置条件
-###############################################################################
-
-check_https_prerequisites() {
-    echo_info "检查 HTTPS/443 前置条件..."
-
-    ensure_https_certificate_materials
-
-    if ss -ltn | grep -q ':443'; then
-        if docker ps --format '{{.Names}} {{.Ports}}' | grep -q '^requirement-frontend .*:443->443/tcp'; then
-            echo_warn "检测到 requirement-frontend 当前占用 443，允许继续替换"
-        else
-            echo_error "检测到 443 端口已被其他进程占用，停止部署"
-            ss -ltn | grep ':443' || true
-            exit 1
-        fi
-    fi
-
-    echo_info "HTTPS/443 前置条件检查通过"
 }
 
 ###############################################################################
@@ -316,8 +159,12 @@ prepare_build_files() {
 resolve_backend_upstream() {
     local value="${FRONTEND_BACKEND_UPSTREAM:-}"
 
-    if [ -z "$value" ] && [ -f "$PROJECT_DIR/.env.frontend.internal" ]; then
-        value="$(grep '^FRONTEND_BACKEND_UPSTREAM=' "$PROJECT_DIR/.env.frontend.internal" 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '\r')"
+    if [ -z "$value" ]; then
+        value="$(read_env_file_value "$PROJECT_DIR/.env.frontend" "FRONTEND_BACKEND_UPSTREAM")"
+    fi
+
+    if [ -z "$value" ]; then
+        value="$(read_env_file_value "$PROJECT_DIR/.env.frontend.internal" "FRONTEND_BACKEND_UPSTREAM")"
     fi
 
     if [ -z "$value" ] && [ -f "$NGINX_CONF_PATH" ]; then
@@ -329,14 +176,15 @@ resolve_backend_upstream() {
     if [ -z "$BACKEND_UPSTREAM" ]; then
         echo_error "未解析到后端地址，请通过以下任一方式设置 FRONTEND_BACKEND_UPSTREAM："
         echo_error "1) 临时环境变量：FRONTEND_BACKEND_UPSTREAM=10.62.22.121:443 bash deploy-frontend-internal.sh"
-        echo_error "2) 持久配置文件：$PROJECT_DIR/.env.frontend.internal"
+        echo_error "2) 持久配置文件：$PROJECT_DIR/.env.frontend"
+        echo_error "3) 兼容旧配置文件：$PROJECT_DIR/.env.frontend.internal"
         exit 1
     fi
 
     if [ "$BACKEND_UPSTREAM" = "requirement-backend:443" ] || [ "$BACKEND_UPSTREAM" = "requirement-backend" ]; then
         echo_error "当前后端地址为容器名 requirement-backend，前后端分离部署不可达"
         echo_error "请改为后端服务器可达地址，例如：10.62.22.121:443"
-        echo_error "也可写入 $PROJECT_DIR/.env.frontend.internal 后重试"
+        echo_error "也可写入 $PROJECT_DIR/.env.frontend 后重试"
         exit 1
     fi
 
@@ -389,7 +237,6 @@ check_nginx_config() {
     # 使用离线 nginx 镜像进行语法预检，避免错误配置上线
     if ! docker run --rm \
         -v "$RUNTIME_NGINX_CONF:/etc/nginx/nginx.conf:ro" \
-        -v "$FRONTEND_SSL_DIR:/etc/nginx/ssl:ro" \
         -v "$BUILD_DIR:/usr/share/nginx/html:ro" \
         nginx:latest nginx -t; then
         echo_error "nginx 配置语法校验失败"
@@ -499,14 +346,8 @@ verify_service() {
         exit 1
     fi
 
-    if ! curl -k -f https://localhost:443 &> /dev/null; then
-        echo_error "HTTPS 入口验证失败，查看日志..."
-        docker logs requirement-frontend
-        exit 1
-    fi
-
-    if ! curl -k -I https://localhost:443 2>/dev/null | grep -qi 'Strict-Transport-Security: max-age=16070400'; then
-        echo_error "HTTPS 入口缺少 HSTS 响应头"
+    if ! curl -I http://localhost:8000 2>/dev/null | grep -qi 'Strict-Transport-Security: max-age=16070400'; then
+        echo_error "HTTP 8000 入口缺少 HSTS 响应头"
         docker logs requirement-frontend
         exit 1
     fi
@@ -519,23 +360,13 @@ verify_service() {
 ###############################################################################
 
 show_result() {
-    local display_ip="10.62.16.251"
-
-    if [ -n "${FRONTEND_CERT_IPS:-}" ]; then
-        display_ip="$(printf "%s" "$FRONTEND_CERT_IPS" | tr -d '[:space:]' | cut -d ',' -f1)"
-    elif [ -n "$CERT_PRIMARY_IP" ]; then
-        display_ip="$CERT_PRIMARY_IP"
-    fi
+    local display_ip="${FRONTEND_PUBLIC_IP:-10.62.16.251}"
 
     echo_info "========================================"
     echo_info "部署完成！"
     echo_info "========================================"
     echo_info "前端服务地址：http://${display_ip}:8000"
-    echo_info "HTTPS 复测地址：https://${display_ip}:443"
     echo_info "后端代理地址：http://$BACKEND_UPSTREAM"
-    if [ "$GENERATED_SSL_CERT" -eq 1 ]; then
-        echo_warn "当前 HTTPS 证书由脚本自动生成，为自签名证书；浏览器仍可能提示不受信任"
-    fi
     echo_info ""
     echo_info "常用命令："
     echo_info "  查看日志：docker logs -f requirement-frontend"
@@ -553,7 +384,6 @@ main() {
     prepare_build_files
     check_nginx_image
     render_runtime_nginx_config
-    check_https_prerequisites
     check_nginx_config
     stop_old_service
     start_service

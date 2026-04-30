@@ -69,6 +69,18 @@ def test_document_parser_extracts_embedded_xlsx_text_from_plain_embedding():
     assert any("支付渠道" in text and "微信支付" in text for text in attachment_texts)
 
 
+def test_document_parser_extracts_embedded_txt_text_from_plain_embedding():
+    parser = DocumentParser()
+    host_bytes = _build_docx_bytes("主文档正文")
+    embedded_bytes = "文本附件正文\n第二行补充说明".encode("utf-8")
+    payload = _inject_docx_embedding(host_bytes, "attachment.txt", embedded_bytes)
+
+    parsed = parser.parse(payload, filename="host.docx", file_type="docx")
+
+    attachments = parsed.get("attachments") or []
+    assert any(item.get("type") == "txt" and "文本附件正文" in item.get("text", "") for item in attachments)
+
+
 def test_document_parser_limits_recursive_attachment_depth():
     parser = DocumentParser()
     level3 = _build_docx_bytes("第三层正文")

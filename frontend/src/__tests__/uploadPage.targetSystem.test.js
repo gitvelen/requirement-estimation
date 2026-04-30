@@ -82,6 +82,7 @@ describe('UploadPage target system selection', () => {
     renderPage();
 
     const targetSystemLabel = await screen.findByText('待评估系统');
+    expect(screen.getByText('上传需求文档（.docx格式）')).toBeInTheDocument();
     const taskNameLabel = screen.getByText('任务名称（可选）');
     expect(targetSystemLabel.compareDocumentPosition(taskNameLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 

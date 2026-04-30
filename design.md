@@ -1,397 +1,269 @@
 # design.md
 
-## Default Read Layer
+<!-- CODESPEC:DESIGN:READING -->
+## 0. AI 阅读契约
 
-**说明**：本章节是 Design 阶段当前结论的快照索引，用于快速浏览目标、边界和 WI 追溯；详细描述以后文正文为准。
+- 本文件与 `work-items/*.yaml` 是 Implementation 阶段的默认权威输入。
+- 实现阶段默认不读取原始材料；只有需求冲突、设计无法解释实现、或需要重开时才回读 `spec.md` / 原始材料。
+- 所有架构决策、模块、接口、页面、数据结构、外部交互、测试策略和工作项必须追溯到 `REQ-*`、`ACC-*`、`VO-*`、`TC-*`。
+- 若实现需要越出本文或当前 WI 的边界，必须停止并回写设计或需求，不得隐性扩 scope。
 
-### Goal / Scope Link
-- requirement_refs:
-  - REQ-001
-  - REQ-002
-  - REQ-003
-  - REQ-004
-  - REQ-005
-- acceptance_refs:
-  - ACC-001
-  - ACC-002
-  - ACC-003
-  - ACC-004
-  - ACC-005
-- verification_refs:
-  - VO-001
-  - VO-002
-  - VO-003
-  - VO-004
-  - VO-005
-- spec_alignment_check:
-  - spec_ref: REQ-001
-    aligned: true
-    notes: 三项通用安全头按“API 由后端、静态页由前端 nginx”统一补齐，避免只在局部页面生效。
-  - spec_ref: REQ-002
-    aligned: true
-    notes: 保留现有 `http://<前端IP>:8000` 访问方式，不做 `8000 -> 443` 自动重定向。
-  - spec_ref: REQ-003
-    aligned: true
-    notes: HSTS 只在新增的 `https://<前端IP>:443` 前端 HTTPS 入口下发，头值固定为 `max-age=16070400`。
-  - spec_ref: REQ-004
-    aligned: true
-    notes: 设计明确了 HSTS 的复测入口、TLS 终止点、证书目录和兼容性验证路径。
-  - spec_ref: REQ-005
-    aligned: true
-    notes: 设计允许部署脚本在证书缺失时生成带目标访问 IP SAN 的自签名证书，但不扩展到浏览器信任链分发。
+<!-- CODESPEC:DESIGN:OVERVIEW -->
+## 1. 设计概览
 
-### Architecture Boundary
-- system_context: 当前安全扫描入口为 `http://10.62.16.251:8000`，由内网前端 nginx 承接页面与 `/api/` 代理；仓库中仍保留后端独立暴露的历史部署路径。
-- impacted_capabilities:
-  - 前端页面与静态资源的统一安全头下发
-  - 后端 API 的统一安全头下发
-  - 内网前端 HTTPS/443 入口与 HSTS 复测能力
-  - 内网前端部署脚本的证书/端口预检与运行态校验
-  - 内网前端证书缺失时的自签名 IP 证书 fallback
-- not_impacted_capabilities:
-  - 业务路由、鉴权逻辑、数据模型、任务评估流程
-  - 域名体系、受信任 CA 接入与浏览器根证书分发
-  - 现有 `http://IP:8000` 基本访问方式
-- impacted_shared_surfaces:
-  - backend/app.py
-  - frontend/nginx.conf
-  - frontend/nginx.internal.conf
-  - frontend/nginx-remote.conf
-  - docker-compose.frontend.internal.yml
-  - deploy-frontend-internal.sh
-  - tests/test_frontend_nginx_upload_limit.py
-  - tests/test_deploy_frontend_internal_script.py
-  - tests/test_backend_security_headers.py
-- major_constraints:
-  - HSTS 只允许在 HTTPS/TLS 终止点下发，不能在纯 HTTP 入口上做伪闭环。
-  - 现有 `http://IP:8000` 必须保留可访问，不得以安全头整改为名强制改用域名或 HTTPS。
-  - `/api/` 代理链路不得重复追加与后端同名的三项通用安全头。
-  - 自动生成的证书只允许作为环境内自签名 fallback，必须覆盖操作人指定的访问 IP，且不应覆盖已提供的正式证书。
-  - 本轮不扩展到 CSP、Referrer-Policy、Permissions-Policy 等其他安全头。
-- contract_required: false
-- compatibility_constraints:
-  - 旧的 HTTP/IP 访问方式继续可用。
-  - 新增 HTTPS/443 仅作为第 3 项 HSTS 的复测入口，不替换现有入口。
-  - 仓库不内置证书；证书优先由部署环境提供，缺失时才由脚本在目标环境本地生成。
+- solution_summary: 本轮采用单个垂直 WI 完成附件解析、上传页文案、nginx/compose/部署脚本和测试收口。后端文档解析器新增 `txt` 类型解析，附件提取器把 `.txt` 后缀或可识别文本负载交给统一解析回调。后端内网镜像显式提供 `soffice`，保证既有 `.doc` 旧格式解析能力在部署环境中可用。内网前端保留 HTTP 8000 作为唯一前端入口，HTTP 响应直接返回 HSTS 与三项通用安全头，同时移除前端 443/SSL/HTTPS 启动链路。
+- minimum_viable_design: 需求集中在既有上传解析链路与内网部署配置，没有新增业务数据模型或公开 API；直接扩展现有解析器、nginx 模板和部署脚本是最小改动。将 upstream 配置读取放在现有 `deploy-frontend-internal.sh` 渲染步骤内，可以复用已有 runtime nginx 生成方式。
+- non_goals:
+  - 不新增 HTTPS 入口、证书生成、证书挂载或浏览器信任链治理。
+  - 不改变后端任务上传接口对 `.doc/.xls` 的既有兼容行为。
+  - 不改 release 包、运行时生成配置或本地环境文件作为交付来源。
 
-### Work Item Derivation
-- wi_id: WI-001
-  input_refs:
-    - docs/inputs/2026-04-24-security-headers-proposal.md#intent
-    - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
-  requirement_refs:
-    - REQ-001
-    - REQ-002
-    - REQ-003
-    - REQ-004
-    - REQ-005
-  goal: 在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，并新增用于 HSTS 复测的 HTTPS/443 前端入口。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  verification_refs:
-    - VO-001
-    - VO-002
-    - VO-003
-    - VO-004
-    - VO-005
-  dependency_refs: []
-  contract_needed: false
-  notes_on_boundary: 允许修改后端入口、三个前端 nginx 配置、内网前端 compose/部署脚本和对应测试，并允许在部署脚本内补充最小自签名证书 fallback；不允许扩散到业务逻辑、前端业务页面、域名体系、受信任 CA 接入或浏览器根证书分发。
+<!-- CODESPEC:DESIGN:TRACE -->
+## 2. 需求追溯
 
-### Design Slice Index
-- DS-001:
-  - appendix_ref: none
-  - scope: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增 `https://<前端IP>:443` 前端入口承接 HSTS 复测；若目标环境缺少预置证书，则由部署脚本生成带 IP SAN 的自签名证书，同时保留现有 `http://<前端IP>:8000` 兼容访问。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
+- requirement_ref: REQ-001
+  acceptance_refs: [ACC-001]
+  verification_refs: [VO-001]
+  test_case_refs: [TC-ACC-001-01]
+  design_response: 在 `DocumentParser` 中新增 `_parse_txt`，并把 `txt` 加入支持类型；在 `EmbeddedAttachmentExtractor` 中把 `txt` 纳入类型推断和回调解析，解析失败记录到既有 `attachment_errors`。
 
-## Summary
+- requirement_ref: REQ-002
+  acceptance_refs: [ACC-002]
+  verification_refs: [VO-002]
+  test_case_refs: [TC-ACC-002-01]
+  design_response: 只修改 `UploadPage` 中的展示文案，不改上传白名单和后端校验；后端内网镜像安装 LibreOffice Writer 并校验 `soffice` 可用，支撑既有 `.doc` 旧格式转换；前端测试断言新文案，后端旧格式测试和镜像依赖静态测试作为兼容回归。
 
-本次设计采用“后端统一补 API 头 + 前端 nginx 补静态页头 + 新增 HTTPS/443 前端入口承接 HSTS + 证书缺失时由部署脚本生成自签名 IP 证书”的最小闭环方案。
-其中 `X-XSS-Protection`、`X-Frame-Options`、`X-Content-Type-Options` 通过 `FastAPI` 中间件和前端 nginx 静态响应双层收口，覆盖当前两类真实入口：前端页面/静态资源，以及后端 API/后端直连部署。
-第 3 项 HSTS 不再停留在抽象讨论，设计上明确由内网前端 nginx 作为 TLS 终止点，对外新增 `https://<前端IP>:443` 复测入口，并在该入口统一返回 `Strict-Transport-Security: max-age=16070400`；若部署环境没有现成证书，则由部署脚本生成仅供该环境使用、覆盖目标访问 IP 的自签名证书。
-为避免破坏现有使用方式，本轮保留 `http://<前端IP>:8000` 兼容访问，不做 `8000` 到 `443` 的自动重定向；这也是当前在“通过安全复测”和“不改坏用户访问”之间的最小可行平衡。
+- requirement_ref: REQ-003
+  acceptance_refs: [ACC-003]
+  verification_refs: [VO-003]
+  test_case_refs: [TC-ACC-003-01]
+  design_response: 在 `frontend/nginx.internal.conf` 的 HTTP server 和静态资源 location 增加 HSTS 头；保留 200 响应与现有 HTTP 入口，不添加跳转。
 
-## Goal / Scope Link
+- requirement_ref: REQ-004
+  acceptance_refs: [ACC-004]
+  verification_refs: [VO-004]
+  test_case_refs: [TC-ACC-004-01]
+  design_response: 删除 `docker-compose.backend.internal.yml` 的 `/etc/timezone` 挂载，保留 `/etc/localtime` 和 `TZ=${TZ:-Asia/Shanghai}`。
 
-### Scope Summary
-- 为后端所有 HTTP API 响应补齐 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
-- 为三个前端 nginx 配置中的静态页面和静态资源响应补齐相同的三项通用安全头。
-- 为内网前端部署补齐 HTTPS/443 入口、证书挂载或自签名证书 fallback，以及 HSTS 响应头，以承接第 3 项复测。
-- 保留现有 `http://<前端IP>:8000` 使用方式，不在本轮强制跳转或替换成 HTTPS-only 入口。
+- requirement_ref: REQ-005
+  acceptance_refs: [ACC-005]
+  verification_refs: [VO-005]
+  test_case_refs: [TC-ACC-005-01]
+  design_response: 更新 `.env.frontend.example` 增加 `FRONTEND_BACKEND_UPSTREAM`；部署脚本按环境变量、`.env.frontend`、`.env.frontend.internal`、nginx 模板的顺序解析 upstream，并继续渲染 runtime nginx。
 
-### spec_alignment_check
-- spec_ref: REQ-001
-  aligned: true
-  notes: 设计按页面、静态资源、API 三类响应明确补齐三项通用安全头，并避免只有单点入口生效。
-- spec_ref: REQ-002
-  aligned: true
-  notes: 明确保留 `http://<前端IP>:8000`，不做自动跳转，以兼容当前 Windows 浏览器直接输入 IP 的访问方式。
-- spec_ref: REQ-003
-  aligned: true
-  notes: HSTS 头值固定为 `Strict-Transport-Security: max-age=16070400`，只在最终 HTTPS 复测入口统一返回。
-- spec_ref: REQ-004
-  aligned: true
-  notes: 设计正文和 WI 已明确记录复测入口、443/TLS 前提、证书来源及兼容性验证方法。
-- spec_ref: REQ-005
-  aligned: true
-  notes: 若部署目录缺少证书，脚本会按操作人指定 IP 生成自签名证书并显式保留“浏览器信任链未解决”的限制说明。
+- requirement_ref: REQ-006
+  acceptance_refs: [ACC-006]
+  verification_refs: [VO-006]
+  test_case_refs: [TC-ACC-006-01]
+  design_response: 删除内网前端 nginx 的 443 server，删除 compose 的 `443:443` 和 SSL 目录挂载，删除部署脚本中的证书生成、443 端口预检与 HTTPS 健康检查。
 
-## Technical Approach
+<!-- CODESPEC:DESIGN:DECISIONS -->
+## 3. 架构决策
 
-- 设计决策 1：通用安全头的责任边界按“API 由后端，静态页由前端”拆分。
-  - `backend/app.py` 新增统一 HTTP 中间件，为所有 HTTP API 响应补齐 `X-XSS-Protection: 1; mode=block`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`。
-  - 前端 nginx 仅在静态页面和静态资源响应上补齐这三项头，`/api/` 代理链路不重复追加，直接透传后端响应头，避免同名响应头重复。
-  - 这样既能覆盖当前通过前端入口访问的页面/静态资源，也能覆盖后端独立暴露的历史部署口径。
+- decision_id: ADR-001
+  requirement_refs: [REQ-001]
+  decision: 在既有 `DocumentParser` / `EmbeddedAttachmentExtractor` 内扩展 `txt` 类型，而不是新增独立附件解析服务。
+  alternatives_considered:
+    - 新增专用 txt 附件服务；放弃原因是当前附件提取已有递归、大小和错误隔离框架，新增服务会重复边界控制。
+    - 在 `DocxParser` 中特殊处理 txt；放弃原因是系统画像、知识导入等路径也复用 `DocumentParser`，类型支持应沉到通用解析层。
+  rationale: 复用现有 parse callback 可让 `txt` 附件自动进入已有递归、去重和错误收集机制。
+  consequences:
+    - 需要用编码尝试和文本比例校验降低二进制误判风险。
+    - `DocxParser` 无需理解附件类型，只继续合并 `attachments[].text`。
 
-- 设计决策 2：HSTS 只在 HTTPS 终止点下发，不在当前 HTTP/IP 入口上做伪闭环。
-  - 关闭 `DEC-001` 的具体方案为：内网前端 nginx 新增 `listen 443 ssl;` 的 HTTPS `server`，以它作为安全团队第 3 项的复测入口。
-  - `Strict-Transport-Security: max-age=16070400` 只在该 HTTPS `server` 上统一追加，并覆盖首页、静态资源和代理 API 响应。
-  - 现有 `http://<前端IP>:8000` 保留，不在本轮自动重定向到 HTTPS，以避免改变当前 Windows 浏览器直接输入 IP 的操作习惯。
+- decision_id: ADR-002
+  requirement_refs: [REQ-003, REQ-006]
+  decision: 仅保留 HTTP 8000 前端入口，并在该 HTTP 响应上返回 HSTS 头；完全移除前端 443/SSL 启动链路。
+  alternatives_considered:
+    - 保留 443 仅不暴露宿主端口；放弃原因是仍会在容器内启动 443 服务并保留证书依赖。
+    - 保留上一版 HTTPS/HSTS 复测入口；放弃原因是用户明确要求前端不该启动 443。
+  rationale: 用户给出的安全扫描验收样例以 `curl -I http://10.62.16.251:8000` 为准，且要求不启动 443。
+  consequences:
+    - HSTS 头在 HTTP 响应中只满足当前扫描工具头部检查，不代表浏览器标准 HSTS 生效路径。
+    - 后续如果安全团队要求真实 HTTPS HSTS 语义，必须重开需求和设计。
 
-- 设计决策 3：证书优先由部署层提供；若缺失，则由部署脚本生成带 IP SAN 的自签名证书。
-  - 仓库内不存放证书；内网前端部署脚本优先读取固定证书目录中的 `cert.pem` 和 `key.pem`，挂载到容器内 `/etc/nginx/ssl/`。
-  - 若证书文件缺失，脚本使用 `openssl` 在目标环境生成新的自签名证书和私钥，subjectAltName 必须覆盖操作人指定的访问 IP；建议通过 `FRONTEND_CERT_IPS=<ip1,ip2,...>` 显式传入，避免误用宿主机私网地址。
-  - `docker-compose.frontend.internal.yml` 增加 `443:443` 暴露和证书目录挂载。
-  - `deploy-frontend-internal.sh` 在停旧服务前先检查：`openssl` 是否可用、证书是否已存在或可按指定 IP 自动生成、443 端口是否可用、渲染后的 nginx 配置在离线镜像里可通过 `nginx -t`；任一失败都停止，避免把现有 8000 服务替换成不可用状态。
-  - 该 fallback 只为 HTTPS/HSTS 落地与安装脚本复用服务，不承诺浏览器信任链闭环；若需要浏览器无告警访问，仍需单独引入受信任 CA 或根证书分发。
+- decision_id: ADR-003
+  requirement_refs: [REQ-005]
+  decision: upstream 继续通过部署脚本渲染 runtime nginx，配置来源新增 `.env.frontend`。
+  alternatives_considered:
+    - 在 nginx 模板中直接使用环境变量；放弃原因是默认 nginx 不会自动展开配置文件变量，仍需 entrypoint 或模板渲染。
+    - 要求部署人员继续手工改 nginx；放弃原因是这正是本轮要消除的易错点。
+  rationale: 现有部署脚本已经有 runtime nginx 渲染机制，扩展读取来源最小且可测试。
+  consequences:
+    - `.env.frontend` 中 upstream 缺失或非法时脚本必须明确失败。
+    - `.env.frontend.internal` 仅作为旧部署回退，避免迁移期断裂。
 
-- 设计决策 4：配置文件按部署角色分层，不把 HSTS 强绑到所有 nginx 变体。
-  - `frontend/nginx.conf`、`frontend/nginx-remote.conf`、`frontend/nginx.internal.conf` 都补齐三项通用安全头，保持不同前端交付方式的基线一致。
-  - 只有内网前端运行时配置和其部署脚本/compose 负责新增 HTTPS/443 与 HSTS，因为当前安全扫描入口就是 `10.62.16.251:8000`，HSTS 闭环也只需先在该路径落地。
-  - `docker-compose.yml`、`docker-compose.frontend.yml` 等未被当前复测直接依赖的交付路径，本轮不强制新增 `443` 暴露，避免把设计扩散成全环境重构。
+### 技术栈选择
 
-## Architecture Boundary
+- runtime: Python 3.10 / FastAPI 后端，React 18 / Ant Design 前端，nginx 前端静态服务。
+- storage: 文件系统配置与上传目录；本轮不新增数据库、缓存或迁移。
+- external_dependencies:
+  - Docker Compose 用于 internal 部署。
+  - nginx 用于前端静态资源和 `/api/` 代理。
+  - LibreOffice `soffice` 用于后端 `.doc` 旧格式文档转文本。
+  - Python 标准库文本解码能力用于 `txt` 解析。
+- tooling:
+  - pytest 覆盖后端解析、nginx 配置和部署脚本。
+  - react-scripts test 覆盖上传页文案。
 
-- system_context: 当前内网主入口是 `http://10.62.16.251:8000 -> frontend/nginx.internal.conf -> proxy_pass http://10.62.22.121:443`；同时仓库仍保留后端直接对外暴露的历史部署路径。
-- impacted_capabilities:
-  - 前端页面和静态资源统一下发三项通用安全头
-  - 后端 API 统一下发三项通用安全头
-  - 内网前端 HTTPS/443 + HSTS 复测入口
-  - 部署脚本的证书、端口与配置校验
-  - 部署脚本的自签名证书 fallback 与 IP SAN 生成功能
-- not_impacted_capabilities:
-  - 业务路由、鉴权逻辑、数据模型、任务评估流程
-  - 前端业务页面与交互逻辑
-  - 域名治理、受信任 CA 接入、浏览器信任链分发
-- impacted_shared_surfaces:
-  - backend/app.py
-  - frontend/nginx.conf
-  - frontend/nginx.internal.conf
-  - frontend/nginx-remote.conf
-  - docker-compose.frontend.internal.yml
-  - deploy-frontend-internal.sh
-  - tests/test_frontend_nginx_upload_limit.py
-  - tests/test_deploy_frontend_internal_script.py
-  - tests/test_backend_security_headers.py
-- not_impacted_shared_surfaces:
-  - 前端业务组件和页面源码
-  - 后端业务路由与数据访问层
-  - 其他未被当前安全复测入口直接依赖的交付路径
-- major_constraints:
-  - HSTS 必须只在 HTTPS/TLS 终止点返回。
-  - 三项通用安全头必须覆盖复测范围内的代表性首页、静态资源和 API。
-  - `/api/` 代理层不得重复追加由后端统一下发的三项通用安全头。
-  - 现有 `http://<前端IP>:8000` 不得因本轮整改变成不可用。
-- contract_required: false
-- compatibility_constraints:
-  - 内网用户继续通过 IP 直接访问系统。
-  - 新增 `https://<前端IP>:443` 作为补充入口，而非替换原入口。
-  - 未引入新的外部接口契约或数据迁移要求。
+<!-- CODESPEC:DESIGN:STRUCTURE -->
+## 4. 系统结构
 
-## Boundaries & Impacted Surfaces
-
-- system_context: 当前内网主入口是 `http://10.62.16.251:8000 -> frontend/nginx.internal.conf -> proxy_pass http://10.62.22.121:443`；同时仓库仍保留后端直接对外暴露的历史部署路径。
+- system_context: 项目经理上传需求文档后，后端 `DocxParser` 调用通用 `DocumentParser` 抽取内嵌附件并合并正文；内网前端由 nginx 暴露 `8000:80`，并把 `/api/` 代理到后端 upstream。
 - impacted_surfaces:
-  - `backend/app.py`：新增统一 HTTP 安全响应头中间件。
-  - `frontend/nginx.conf`：补静态页/静态资源安全头基线。
-  - `frontend/nginx.internal.conf`：补静态页安全头，并为运行时渲染保留 HTTPS/HSTS 入口骨架。
-  - `frontend/nginx-remote.conf`：补静态页/静态资源安全头基线，保持远程前端部署口径一致。
-  - `docker-compose.frontend.internal.yml`：新增 `443:443` 暴露和证书目录挂载。
-  - `deploy-frontend-internal.sh`：新增 HTTPS 证书存在性/自动生成、`openssl`/端口预检、运行时配置渲染和 HTTP/HTTPS 双路径验证。
-  - `tests/test_frontend_nginx_upload_limit.py`、`tests/test_deploy_frontend_internal_script.py`、新增后端安全头测试：覆盖配置与脚本回归。
-- out_of_scope:
-  - 业务路由、鉴权逻辑、数据模型、任务评估流程。
-  - 域名体系、受信任 CA 接入、浏览器根证书分发。
-  - 强制把 `http://<前端IP>:8000` 重定向到 HTTPS。
-  - `Content-Security-Policy`、`Referrer-Policy`、`Permissions-Policy` 等本轮未进入需求范围的其他安全头。
+  - `backend/service/document_parser.py`
+  - `backend/utils/embedded_attachment_extractor.py`
+  - `frontend/src/pages/UploadPage.js`
+  - `frontend/nginx.internal.conf`
+  - `Dockerfile.internal`
+  - `docker-compose.frontend.internal.yml`
+  - `docker-compose.backend.internal.yml`
+  - `deploy-frontend-internal.sh`
+  - `.env.frontend.example`
+  - 相关 pytest 与前端测试
+- unchanged_surfaces:
+  - 任务创建 API、鉴权、角色权限、任务状态机、报告生成逻辑保持不变。
+  - `frontend/nginx.conf` 和 `frontend/nginx-remote.conf` 不新增 HSTS 或 443 变更。
+  - 本地 `.env.frontend` 不纳入仓库修改。
+- data_flow:
+  - 上传文档字节进入 `DocumentParser.parse`，主文档中的 `word/embeddings/*` 被 `EmbeddedAttachmentExtractor` 遍历；`.txt` 附件通过类型推断进入 `_parse_txt`，输出 `{"text": ...}` 后被 flatten 并加入 `attachments`。
+  - 前端部署脚本解析 `FRONTEND_BACKEND_UPSTREAM`，生成 `frontend/nginx.internal.runtime.conf`，compose 挂载该 runtime 配置到 nginx 容器。
+  - HTTP 请求进入 nginx 80 server，首页/静态资源返回安全头，`/api/` 继续代理到后端且不在代理块重复注入后端已有通用安全头。
+- external_interactions:
+  - name: 安全扫描工具
+    direction: inbound
+    protocol: HTTP
+    failure_handling: 若 `curl -I http://<front-ip>:8000` 缺少任一安全头或返回跳转，视为部署验证失败。
+  - name: 后端服务 upstream
+    direction: outbound
+    protocol: HTTP
+    failure_handling: upstream 缺失、仍为 `requirement-backend` 或包含空格时，部署脚本停止并提示配置 `.env.frontend`。
 
-## Execution Model
+<!-- CODESPEC:DESIGN:CONTRACTS -->
+## 5. 契约设计
 
-- mode: single-branch
-- rationale: 本轮改动集中在同一条“入口响应头与部署接线”链路上，核心共享面只有 `backend/app.py`、前端 nginx 配置、内网前端 compose/脚本与对应测试。拆成多个分支只会增加共享文件冲突和权威文档同步成本，不会带来真实并行收益。
+- api_contracts:
+  - contract_ref: none
+    requirement_refs: [REQ-001, REQ-002]
+    summary: 不新增或修改公开 API；任务上传接口的 `.doc/.xls` 兼容行为保持原状。
+- data_contracts:
+  - contract_ref: none
+    requirement_refs: [REQ-001]
+    summary: `DocumentParser` 对 `txt` 返回 `{"text": "<decoded text>"}`，由既有 `_flatten_to_text` 合并到附件正文；不新增持久化字段。
+  - contract_ref: none
+    requirement_refs: [REQ-005]
+    summary: `.env.frontend.example` 新增 `FRONTEND_BACKEND_UPSTREAM=<host>:<port>`，部署脚本将其标准化为无 scheme、无尾部斜杠的 upstream。
+- compatibility_policy:
+  - 后端上传白名单和旧格式解析保持不变。
+  - 前端部署从支持 80/443 双入口收敛为仅 80；所有证书相关配置从前端部署链路移除。
+  - `.env.frontend.internal` 作为回退读取，降低旧部署文件迁移风险。
 
-## Work Item Mapping
+<!-- CODESPEC:DESIGN:CROSS_CUTTING -->
+## 6. 横切设计
 
-- wi_id: WI-001
-  requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
-  acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  summary: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增前端 HTTPS/443 入口承接 HSTS 复测，同时补齐后端部署环境变量样例与读取能力，保留现有 HTTP/IP 兼容访问。
+- environment_config:
+  - `Dockerfile.internal` 基于 Debian 内网基础镜像安装 `libreoffice-writer`，并在构建期执行 `command -v soffice` 作为旧格式解析依赖检查。
+  - `.env.frontend` 可配置 `FRONTEND_BACKEND_UPSTREAM=10.62.22.121:443`。
+  - `docker-compose.frontend.internal.yml` 只暴露 `8000:80`，不再要求 `FRONTEND_SSL_DIR`。
+  - `docker-compose.backend.internal.yml` 保留 `TZ=${TZ:-Asia/Shanghai}` 和 `/etc/localtime:/etc/localtime:ro`。
+- security_design:
+  - HTTP 80 server 统一返回 `Strict-Transport-Security: max-age=16070400` 与三项通用安全头。
+  - `/api/` 代理块不重复追加后端已经返回的三项通用安全头，避免代理层与后端头值冲突。
+  - 文本附件解析使用大小/数量/递归深度既有边界，并通过解码失败隔离避免单附件拖垮任务。
+- reliability_design:
+  - `.doc` 旧格式解析继续通过 `soffice` 在隔离临时目录内转换；缺失 `soffice` 属于部署镜像缺陷，应在镜像构建期暴露，而不是等任务后台解析失败。
+  - `txt` 解码按 `utf-8-sig`、`utf-8`、`gb18030`、`gbk` 顺序尝试；全部失败或文本质量过低时抛出解析错误并进入附件错误记录。
+  - 部署脚本在 upstream 缺失、非法或仍为容器名时失败，避免生成不可用 runtime nginx。
+  - 移除 HTTPS 检查后，部署验证只检查 HTTP 8000 和容器内 `nginx -t`。
+- observability_design:
+  - 文档解析继续沿用现有 logger 记录解析成功数量和附件错误。
+  - 部署脚本输出解析出的后端代理目标和 HTTP 服务验证结果，作为现场排障证据。
+- performance_design:
+  - 继续沿用现有附件递归深度、单附件大小和附件数量限制；`txt` 解码为内存内操作，不新增异步队列或外部服务。
 
-## Work Item Execution Strategy
+<!-- CODESPEC:DESIGN:WORK_ITEMS -->
+## 7. 工作项与验证
 
-### Dependency Analysis
-dependency_graph:
-  WI-001:
-    depends_on: []
-    blocks: []
-    confidence: high
-
-### Parallel Recommendation
-parallel_groups:
-  - group: G1
-    work_items: [WI-001]
-    can_parallel: false
-    rationale: 通用安全头、HSTS 入口、compose/部署脚本和测试都围绕同一条入口链路，拆成多个 WI 只会增加共享文件冲突。
-
-### Branch Strategy Recommendation
-recommended_branch_count: 1
-rationale: |
-  本轮是一次围绕“安全响应头 + HSTS 复测入口”的集中改动，单 WI 单分支最容易保持 `spec -> design -> work-item -> tests -> code` 一致。
-  尤其 `backend/app.py`、`frontend/nginx.internal.conf`、`docker-compose.frontend.internal.yml` 和 `deploy-frontend-internal.sh` 存在强耦合，串行推进更稳妥。
-
-alternative_if_parallel_needed: |
-  若后续安全团队要求把其他交付路径也一并补齐 HTTPS/443，可在下一轮把“内网扫描入口闭环”和“其他部署变体收口”拆成新 WI。
-  当前不建议预拆。
-
-**Note**: The above three sections (Dependency Analysis, Parallel Recommendation, Branch Strategy Recommendation)
-are suggestions only, not enforced by gates. User decides the actual execution strategy.
-
-### Shared Surface Analysis
-potentially_conflicting_files:
-  - path: backend/app.py
-    reason: 后端三项通用安全头的唯一统一入口。
-    recommendation: 只在应用级统一中间件补齐，不在各路由局部重复加头。
-  - path: backend/config/config.py
-    reason: 后端运行参数与 env file 读取优先级集中在这里。
-    recommendation: 只补 `.env.backend` / `.env.backend.internal` 读取和部署所需配置暴露，不改变业务默认行为。
-  - path: frontend/nginx.internal.conf
-    reason: 既承接现有 `8000` 入口，也要新增 `443` HTTPS/HSTS 入口。
-    recommendation: 在同一配置内同时明确 HTTP 兼容入口、HTTPS 复测入口和 `/api/` 代理边界。
-  - path: docker-compose.frontend.internal.yml
-    reason: `443` 暴露和证书目录挂载都集中在这里。
-    recommendation: 只增加当前 HSTS 闭环所需的最小挂载和端口，不顺带重构其他部署拓扑。
-  - path: deploy-frontend-internal.sh
-    reason: 需要在停旧服务前完成证书、端口和 nginx 配置预检。
-    recommendation: 预检失败时直接停止，避免替换后才发现 443 路径不可用。
-  - path: .env.backend.example
-    reason: 独立部署示例文件需要与当前后端实际读取的参数集合保持一致。
-    recommendation: 仅保留当前代码/部署脚本真实依赖的键，并把示例值写成贴近当前 IP 直连部署方式的样式。
-
-conflict_risk_assessment:
-  high_risk:
-    - frontend/nginx.internal.conf
-    - deploy-frontend-internal.sh
-  medium_risk:
-    - backend/app.py
-    - docker-compose.frontend.internal.yml
-    - backend/config/config.py
-  low_risk:
-    - .env.backend.example
-    - frontend/nginx.conf
-    - frontend/nginx-remote.conf
-    - tests/test_frontend_nginx_upload_limit.py
-    - tests/test_deploy_frontend_internal_script.py
-    - tests/test_backend_security_headers.py
-    - tests/test_backend_config_env_files.py
-
-## Design Slice Index
-
-- DS-001:
-  - appendix_ref: none
-  - scope: 为 API、静态页和内网扫描入口补齐安全响应头，并通过新增 `https://<前端IP>:443` 前端入口承接 HSTS 复测；若目标环境缺少预置证书，则由部署脚本生成带 IP SAN 的自签名证书，同时保留现有 `http://<前端IP>:8000` 兼容访问，并补齐后端独立部署 env 样例与 `Settings()` 对 `.env.backend` / `.env.backend.internal` 的直接读取。
-  - requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005]
-  - acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
-  - verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005]
-
-## Work Item Derivation
+### 工作项映射
 
 - wi_id: WI-001
-  input_refs:
-    - docs/inputs/2026-04-24-security-headers-proposal.md#intent
-    - docs/inputs/2026-04-24-security-headers-proposal.md#clarifications
+  requirement_refs: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006]
+  acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005, ACC-006]
+  verification_refs: [VO-001, VO-002, VO-003, VO-004, VO-005, VO-006]
+  test_case_refs: [TC-ACC-001-01, TC-ACC-002-01, TC-ACC-003-01, TC-ACC-004-01, TC-ACC-005-01, TC-ACC-006-01]
+  summary: 单一垂直切片，完成 txt 附件解析、上传页文案、HTTP 安全头、前端 443 移除、compose 和 upstream 配置。
+
+### 工作项派生
+
+- wi_id: WI-001
   requirement_refs:
     - REQ-001
     - REQ-002
     - REQ-003
     - REQ-004
     - REQ-005
-  goal: 在不改变业务行为的前提下，为 API、静态页和内网扫描入口补齐安全响应头，新增用于 HSTS 复测的 HTTPS/443 前端入口，并收口后端独立部署所需的环境变量样例与读取方式。
-  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005]
+    - REQ-006
+  goal: 交付 vNext 附件解析与内网部署修正，使 txt 附件可解析、上传页文案收敛、HTTP 8000 安全头满足扫描、前端不启动 443、后端 compose 和 upstream 配置符合新部署口径。
+  covered_acceptance_refs: [ACC-001, ACC-002, ACC-003, ACC-004, ACC-005, ACC-006]
   verification_refs:
     - VO-001
     - VO-002
     - VO-003
     - VO-004
     - VO-005
+    - VO-006
+  test_case_refs:
+    - TC-ACC-001-01
+    - TC-ACC-002-01
+    - TC-ACC-003-01
+    - TC-ACC-004-01
+    - TC-ACC-005-01
+    - TC-ACC-006-01
   dependency_refs: []
-  contract_needed: false
-  notes_on_boundary: 允许修改 `backend/app.py`、`backend/config/config.py`、`.env.backend.example`、三个前端 nginx 配置、内网前端 compose/部署脚本和对应测试，并允许在部署脚本内新增最小自签名证书 fallback；不允许扩散到业务路由、前端业务页面、数据结构、域名体系、受信任 CA 接入或浏览器根证书分发。
-  work_item_alignment: keep equal to work-items/WI-001.yaml acceptance_refs
+  dependency_type: none
+  contract_refs: []
+  notes_on_boundary: 允许修改解析器、上传页、internal nginx/compose/Dockerfile/部署脚本、env 示例和对应测试；禁止改业务 API 语义、release 包、本地运行时生成文件或已归档版本。
 
-## Contract Needs
+### 验证设计
 
-- contract_id: none
-  required: false
-  reason: 本轮不引入新的外部接口契约，只在既有 HTTP 入口、nginx 配置和部署接线内补齐安全响应头与运行态校验。
-  consumers: []
+- test_case_ref: TC-ACC-001-01
+  acceptance_ref: ACC-001
+  approach: 先写失败测试构造含 `.txt` 嵌入附件的 docx，验证 `DocumentParser` 和 `DocxParser` 都能暴露附件文本；再实现 txt 类型解析。
+  evidence: `python -m pytest tests/test_attachment_extraction.py tests/test_docx_parser.py -q`
+  required_stage: implementation
 
-## Implementation Readiness Baseline
+- test_case_ref: TC-ACC-002-01
+  acceptance_ref: ACC-002
+  approach: 前端测试断言新文案；后端旧格式上传测试作为回归，确认没有收窄兼容；后端内网 Dockerfile 静态测试确认镜像安装并校验 `soffice`。
+  evidence: `cd frontend && npm test -- --watchAll=false --runTestsByPath src/__tests__/uploadPage.targetSystem.test.js`；`python -m pytest tests/test_task_upload_legacy_doc_api.py tests/test_backend_config_env_files.py -q`
+  required_stage: implementation
 
-### Environment Configuration Matrix
-- 后端验证继续使用现有 pytest + FastAPI TestClient，不引入新的外部依赖。
-- 后端配置补充 `Settings()` 读取 `.env.backend` / `.env.backend.internal` 的自动化测试，并用示例文件键集合测试锁定 `.env.backend.example` 的完整性。
-- nginx 配置验证沿用现有配置测试方式，扩展断言页面/静态资源安全头和 `/api/` 代理边界。
-- 内网前端部署脚本测试沿用现有脚本测试结构，增加 `443` 暴露、证书目录挂载、自签名证书生成和 `nginx -t` 预检断言。
+- test_case_ref: TC-ACC-003-01
+  acceptance_ref: ACC-003
+  approach: 静态测试解析 internal nginx，确认 HTTP server 和静态资源配置包含 HSTS 与三项通用安全头，且没有 HTTPS 跳转要求。
+  evidence: `python -m pytest tests/test_frontend_nginx_upload_limit.py -q`
+  required_stage: implementation
 
-### Security Baseline
-- HSTS 只在 `https://<前端IP>:443` 下发，不在 `http://<前端IP>:8000` 返回。
-- 三项通用安全头必须在后端 API 和前端静态资源路径上都可见。
-- 证书优先从部署环境提供的目录挂载；若脚本自动生成自签名证书，则也只允许在目标环境本地生成、本地使用，不入库、不落地到版本控制。
-- 自动生成的自签名证书不解决浏览器信任链，相关风险需在测试/部署证据中显式记录。
+- test_case_ref: TC-ACC-004-01
+  acceptance_ref: ACC-004
+  approach: 静态测试 backend internal compose，不再包含 `/etc/timezone` 挂载，同时保留时区配置路径。
+  evidence: `python -m pytest tests/test_backend_config_env_files.py -q`
+  required_stage: implementation
 
-### Data / Migration Strategy
-- 本轮不涉及数据库或持久化结构迁移。
-- 本轮不新增业务数据字段；变化集中在 HTTP 响应头、nginx 配置和部署脚本接线。
+- test_case_ref: TC-ACC-005-01
+  acceptance_ref: ACC-005
+  approach: 脚本级测试创建临时 `.env.frontend` 并调用 upstream 解析和 runtime nginx 渲染，确认 `proxy_pass` 使用 env 值。
+  evidence: `python -m pytest tests/test_deploy_frontend_internal_script.py -q`
+  required_stage: implementation
 
-### Operability / Health Checks
-- `deploy-frontend-internal.sh` 需要在停旧服务前完成 `openssl` 可用性检查、证书存在性或自动生成、`443` 端口可用性和运行时 `nginx -t` 校验。
-- 部署后需保留 `http://localhost:8000` 可访问验证，以及 `https://localhost:443`/目标 IP 的 HSTS 头验证命令。
-- 预检失败或运行态校验失败时必须中止替换，避免把现有 `8000` 入口改坏。
+- test_case_ref: TC-ACC-006-01
+  acceptance_ref: ACC-006
+  approach: 静态测试 internal compose、nginx 和部署脚本，确认 443/SSL/HTTPS 证书路径被移除。
+  evidence: `python -m pytest tests/test_frontend_nginx_upload_limit.py tests/test_deploy_frontend_internal_script.py -q`
+  required_stage: implementation
 
-### Backup / Restore
-- 回滚方式是回退 nginx 配置、compose 和部署脚本，不涉及数据回滚。
-- 若 `443` 路径不可用，允许回退到仅保留原有 `8000` 服务的状态，但第 3 项 HSTS 需重新开启设计决策。
+### 重开触发器
 
-### UX / Experience Readiness
-- 用户继续在 Windows 浏览器中通过 IP 直接输入现有地址访问系统。
-- 本轮不引入“必须改用域名”或“必须信任新证书后才能继续工作”的流程变更承诺；如部署环境使用脚本自动生成的自签名证书，浏览器证书信任问题需要在测试/部署证据中显式记录，而不是在设计里假设自动解决。
-
-## Verification Design
-
-- ACC-001:
-  - approach: 使用 `FastAPI TestClient` 验证 API 响应头，使用配置测试验证三个 nginx 配置中的静态页/静态资源安全头均存在。
-  - evidence: 后端安全头测试通过；`tests/test_frontend_nginx_upload_limit.py` 或等效 nginx 配置测试扩展后通过。
-- ACC-002:
-  - approach: 部署脚本和人工验证双轨收口。脚本侧验证 `http://localhost:8000` 仍可访问；人工侧在 Windows 浏览器继续用当前 IP 打开首页，确认不需要切换到域名或强制 HTTPS。
-  - evidence: `deploy-frontend-internal.sh` 的验证步骤、脚本测试，以及后续 `testing.md`/`deployment.md` 中的浏览器验证记录。
-- ACC-003:
-  - approach: 使用 `curl -k -I https://<前端IP>:443` 和 `curl -k -I https://<前端IP>:443/api/v1/health` 检查 HSTS 头；同时用脚本测试验证内网部署支持 `443` 暴露、证书挂载和运行时 nginx 配置校验。
-  - evidence: `tests/test_deploy_frontend_internal_script.py` 扩展后通过；运行态 HTTP 头检查命令输出保留为测试/部署证据。
-- ACC-004:
-  - approach: 通过本设计文档、`work-items/WI-001.yaml` 和后续部署检查项明确记录 HSTS 的复测入口、TLS 终止边界、证书目录和“不做 `8000 -> 443` 重定向”的兼容策略。
-  - evidence: `design.md`、`work-items/WI-001.yaml` 和后续 `deployment.md` 的对应章节可直接引用，无需依赖口头说明。
-- ACC-005:
-  - approach: 使用脚本测试验证“证书缺失 -> 自动生成 `cert.pem` / `key.pem` -> 证书包含指定 IP SAN -> HTTPS 健康检查继续可用”的闭环；同时在部署文档保留“自签名证书不解决浏览器信任链”的说明。
-  - evidence: `tests/test_deploy_frontend_internal_script.py` 的新增断言、`openssl x509 -text` 等价输出，以及 `deployment.md` 中对浏览器信任限制的记录。
-
-## Failure Paths / Reopen Triggers
-
-- 如果安全团队坚持原始 `http://10.62.16.251:8000` 本身必须返回 HSTS，或必须自动重定向到 HTTPS，需重新开启 spec/design，因为这会改变当前“保留 `8000` 兼容入口”的既定边界。
-- 如果 `X-Frame-Options: DENY` 被证实现网依赖 iframe/门户嵌入，需重新开启 spec/design，并与安全团队重新对齐取值。
-- 如果前端服务器无法提供 `443` 端口、`openssl` 或正确的访问 IP 信息，导致 HTTPS/443 入口或自签名证书 fallback 不可落地，需重新开启 spec/design，重新选择第 3 项闭环路径。
-- 如果后续要求把浏览器信任链下发、受信任 CA 接入或域名治理也纳入本次交付，需重新开启 spec/design，因为这已超出当前最小闭环范围。
-
-## Appendix Map
-
-- none
+- 如果安全团队要求真实 HTTPS HSTS 语义、443 入口或 HTTP 到 HTTPS 跳转，必须重开 Requirement/Design。
+- 如果 txt 附件样本无法通过后缀或内容可靠识别，需要补充样本并重开解析策略。
+- 如果实现需要改变任务上传 API 白名单、鉴权、任务状态或报告输出语义，必须重开 Design。
