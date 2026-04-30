@@ -306,7 +306,7 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client, monkey
     service = ks.get_knowledge_service()
 
     def broken_parse(*_args, **_kwargs):
-        raise RuntimeError("旧格式解析工具不可用：soffice未安装")
+        raise RuntimeError("旧格式解析工具不可用：aspose-words 未安装或不可导入")
 
     monkeypatch.setattr(service.document_parser, "parse", broken_parse)
 
@@ -320,7 +320,7 @@ def test_knowledge_import_parse_failure_exposes_reason_in_message(client, monkey
     assert response.status_code == 400
     payload = response.json()
     assert payload["error_code"] == "KNOW_002"
-    assert "soffice未安装" in str(payload.get("message") or "")
+    assert "aspose-words 未安装或不可导入" in str(payload.get("message") or "")
 
 
 def test_knowledge_import_accepts_legacy_doc(client, monkeypatch):

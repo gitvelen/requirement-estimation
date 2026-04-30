@@ -455,7 +455,7 @@ class DocumentParser:
         """
         解析 DOC（Word 97-2003）文件
 
-        通过 headless libreoffice 转换为纯文本（满足 REQ-NF-007：隔离目录/超时/清理）。
+        通过 aspose-words-foss 提取纯文本（满足 REQ-NF-007：隔离目录/超时/清理）。
         """
         from backend.utils.old_format_parser import doc_bytes_to_text
 
@@ -466,7 +466,7 @@ class DocumentParser:
         """
         解析 XLS（Excel 97-2003）文件
 
-        通过 headless libreoffice 转换为 xlsx 后复用 openpyxl 解析（满足 REQ-NF-007：隔离目录/超时/清理）。
+        通过 xlrd 直接提取表格内容（满足 REQ-NF-007：隔离目录/超时/清理）。
         """
         from backend.utils.old_format_parser import xls_bytes_to_sheet_rows
 

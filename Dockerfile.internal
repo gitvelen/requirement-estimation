@@ -4,16 +4,9 @@ FROM uv-mineru-opencv:0.1.0
 
 # 定义构建参数
 ARG UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
+ARG ASPOSE_WORDS_PACKAGE=aspose-words
 ENV UV_INDEX_URL=${UV_INDEX_URL}
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 旧版 Word(.doc) 解析依赖 soffice 转换为文本；中文字体用于降低中文文档转换缺字风险
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        libreoffice-writer \
-        fonts-noto-cjk \
-    && rm -rf /var/lib/apt/lists/* \
-    && command -v soffice
+ENV ASPOSE_WORDS_PACKAGE=${ASPOSE_WORDS_PACKAGE}
 
 # 创建用户
 RUN groupadd -r appuser || true
@@ -26,7 +19,9 @@ WORKDIR /app
 COPY --chown=appuser:appuser pyproject.toml uv.lock ./
 
 # 使用 uv sync 安装依赖（不用 --frozen，让 uv 重新解析）
-RUN uv sync --no-dev --index-url ${UV_INDEX_URL}
+# aspose Word 解析包由内网私服提供，版本不在仓库 lock 中固定
+RUN uv sync --no-dev --index-url ${UV_INDEX_URL} \
+    && uv pip install --python /app/.venv/bin/python --index-url ${UV_INDEX_URL} ${ASPOSE_WORDS_PACKAGE}
 
 # 复制项目文件
 COPY --chown=appuser:appuser . .

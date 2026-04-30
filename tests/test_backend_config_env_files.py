@@ -90,13 +90,15 @@ def test_backend_internal_compose_removes_timezone_mount_but_keeps_timezone_conf
     assert "TZ=${TZ:-Asia/Shanghai}" in compose_text
 
 
-def test_backend_internal_dockerfile_installs_soffice_for_legacy_doc_support():
+def test_backend_internal_dockerfile_avoids_apt_get_for_legacy_doc_support():
     dockerfile_text = Path("Dockerfile.internal").read_text(encoding="utf-8")
 
-    assert "apt-get update" in dockerfile_text
-    assert "libreoffice-writer" in dockerfile_text
-    assert "command -v soffice" in dockerfile_text
-    assert "rm -rf /var/lib/apt/lists/*" in dockerfile_text
+    assert "apt-get" not in dockerfile_text
+    assert "libreoffice-writer" not in dockerfile_text
+    assert "soffice" not in dockerfile_text
+    assert "ARG ASPOSE_WORDS_PACKAGE=aspose-words" in dockerfile_text
+    assert "uv pip install" in dockerfile_text
+    assert "--index-url ${UV_INDEX_URL} ${ASPOSE_WORDS_PACKAGE}" in dockerfile_text
 
 
 def test_backend_internal_compose_uses_absolute_upload_dir_for_legacy_doc_support():
