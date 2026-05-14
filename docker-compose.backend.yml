@@ -23,6 +23,8 @@ services:
       - .env.backend
     environment:
       - PYTHONUNBUFFERED=1
+      - REPORT_DIR=/app/data
+      - UPLOAD_DIR=/app/uploads
       - TZ=${TZ:-Asia/Shanghai}
     restart: unless-stopped
     networks:

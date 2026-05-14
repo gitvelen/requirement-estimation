@@ -28,6 +28,7 @@ import axios from 'axios';
 import usePermission from '../hooks/usePermission';
 import Loading from '../components/Loading';
 import { formatDateTime } from '../utils/time';
+import { formatEstimateTotal, sumEstimateValues } from '../utils/estimateSummary';
 
 const { Text, Paragraph } = Typography;
 const metricCardStyle = {
@@ -371,6 +372,27 @@ const ReportPage = () => {
     },
   ];
 
+  const resolveFeatureDetailEstimate = (record) => {
+    const expected = toNumberOrNull(record?.expected);
+    return expected ?? toNumberOrNull(record?.estimation_days) ?? toNumberOrNull(record?.original_estimate);
+  };
+
+  const renderFeatureSummary = (rows) => {
+    const total = sumEstimateValues(rows, resolveFeatureDetailEstimate);
+    return (
+      <Table.Summary>
+        <Table.Summary.Row>
+          <Table.Summary.Cell index={0} colSpan={3}>
+            <Text strong>汇总</Text>
+          </Table.Summary.Cell>
+          <Table.Summary.Cell index={3}>
+            <Text strong>{formatEstimateTotal(total)}</Text>
+          </Table.Summary.Cell>
+        </Table.Summary.Row>
+      </Table.Summary>
+    );
+  };
+
   const renderFeatureExpandedRow = (record) => {
     const optimistic = toNumberOrNull(record?.optimistic);
     const mostLikely = toNumberOrNull(record?.most_likely);
@@ -648,6 +670,7 @@ const ReportPage = () => {
             expandedRowRender: renderFeatureExpandedRow,
           }}
           locale={{ emptyText: '暂无功能点明细' }}
+          summary={renderFeatureSummary}
         />
       </Card>
 
