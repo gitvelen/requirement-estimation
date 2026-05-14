@@ -30,6 +30,14 @@ def test_deploy_script_validates_llm_env_keys_and_runtime_injection():
     assert "docker exec requirement-backend printenv EMBEDDING_API_BASE" in script_text
 
 
+def test_deploy_script_supports_non_interactive_admin_continue():
+    script_text = (ROOT_DIR / "deploy-backend-internal.sh").read_text(encoding="utf-8")
+
+    assert "DEPLOY_ASSUME_YES" in script_text
+    assert "DEPLOY_ASSUME_YES=1，自动继续" in script_text
+    assert "read -p \"是否继续？(y/n): \"" in script_text
+
+
 def test_internal_deploy_protects_existing_runtime_dirs_in_place():
     script_text = (ROOT_DIR / "deploy-backend-internal.sh").read_text(encoding="utf-8")
     compose_text = (ROOT_DIR / "docker-compose.backend.internal.yml").read_text(encoding="utf-8")

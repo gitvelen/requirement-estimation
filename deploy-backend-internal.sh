@@ -87,10 +87,14 @@ check_prerequisites() {
     # 检查是否为 root 用户
     if [ "$EUID" -ne 0 ]; then
         echo_warn "建议使用 root 用户执行此脚本"
-        read -p "是否继续？(y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
+        if [ "${DEPLOY_ASSUME_YES:-0}" = "1" ]; then
+            echo_warn "DEPLOY_ASSUME_YES=1，自动继续"
+        else
+            read -p "是否继续？(y/n): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
         fi
     fi
 

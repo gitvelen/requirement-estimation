@@ -253,7 +253,7 @@ deploy_services() {
 
     if backend_enabled; then
         echo_info "部署后端..."
-        bash deploy-backend-internal.sh
+        DEPLOY_ASSUME_YES=1 bash deploy-backend-internal.sh
     else
         echo_warn "DEPLOY_BACKEND=0，已跳过后端部署"
     fi
