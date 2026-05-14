@@ -10,6 +10,9 @@ def test_internal_zip_deploy_script_safely_updates_project_dir():
     assert "ZIP_PATH=\"${1:-/home/admin/requirement-estimation-main.zip}\"" in script_text
     assert "unzip -q \"$ZIP_PATH\"" in script_text
     assert "-name deploy-backend-internal.sh" in script_text
+    assert "require_root" in script_text
+    assert "EUID" in script_text
+    assert "sudo" in script_text
 
     assert "runtime_has_data" in script_text
     assert "backup_runtime_dirs" in script_text
