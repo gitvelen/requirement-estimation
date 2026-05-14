@@ -14,8 +14,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-PROJECT_DIR="/home/admin/requirement-estimation"
+PROJECT_DIR="${PROJECT_DIR:-/home/admin/requirement-estimation}"
 COMPOSE_FILE="docker-compose.backend.internal.yml"
+BACKUP_DIR="$PROJECT_DIR/.deploy-backups"
 
 echo_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -45,6 +46,33 @@ read_env_value() {
 
     raw_value="$(grep "^${key}=" "$env_file" | tail -n 1 | cut -d '=' -f2- | tr -d '\r')"
     strip_wrapping_quotes "$raw_value"
+}
+
+dir_has_data() {
+    local target_dir="$1"
+    [ -d "$target_dir" ] && [ -n "$(find "$target_dir" -mindepth 1 -print -quit)" ]
+}
+
+runtime_has_data() {
+    dir_has_data "$PROJECT_DIR/data" \
+        || dir_has_data "$PROJECT_DIR/uploads" \
+        || dir_has_data "$PROJECT_DIR/logs"
+}
+
+backup_runtime_dirs() {
+    local backup_file="$BACKUP_DIR/runtime_$(date +%Y%m%d_%H%M%S).tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    tar czf "$backup_file" -C "$PROJECT_DIR" data uploads logs
+    echo_info "已备份运行数据：$backup_file"
+}
+
+prepare_runtime_dirs() {
+    mkdir -p "$PROJECT_DIR/data" "$PROJECT_DIR/uploads" "$PROJECT_DIR/logs" "$PROJECT_DIR/backend/config" "$BACKUP_DIR"
+    if runtime_has_data; then
+        backup_runtime_dirs
+    else
+        echo_info "首次部署或运行数据目录为空，创建 data/uploads/logs"
+    fi
 }
 
 ###############################################################################
@@ -186,13 +214,13 @@ start_service() {
 
     cd "$PROJECT_DIR"
 
-    # 创建必要目录并对齐属主到项目目录 owner/group
-    mkdir -p data logs uploads backend/config
+    # 创建/保护运行目录并对齐属主到项目目录 owner/group
+    prepare_runtime_dirs
 
     local ref_uid_gid
     local ref_owner
     local dir
-    local target_dirs=(data logs uploads backend/config)
+    local target_dirs=(data logs uploads backend/config .deploy-backups)
     if [ -e "$PROJECT_DIR/backend" ]; then
         ref_uid_gid="$(stat -c '%u:%g' "$PROJECT_DIR/backend")"
         ref_owner="$(stat -c '%U:%G' "$PROJECT_DIR/backend")"
@@ -203,7 +231,7 @@ start_service() {
 
     if [ "$EUID" -eq 0 ]; then
         chown -R "$ref_uid_gid" "${target_dirs[@]}" 2>/dev/null || \
-            echo_warn "目录属主自动对齐失败，请手动执行: chown -R $ref_uid_gid data logs uploads backend/config"
+            echo_warn "目录属主自动对齐失败，请手动执行: chown -R $ref_uid_gid ${target_dirs[*]}"
     else
         local mismatch=0
         for dir in "${target_dirs[@]}"; do
@@ -218,7 +246,7 @@ start_service() {
     fi
 
     chmod -R u+rwX,g+rwX "${target_dirs[@]}" 2>/dev/null || \
-        echo_warn "目录权限自动修复失败，请手动执行: chmod -R u+rwX,g+rwX data logs uploads backend/config"
+        echo_warn "目录权限自动修复失败，请手动执行: chmod -R u+rwX,g+rwX ${target_dirs[*]}"
     echo_info "目录属主参考：$ref_owner"
 
     # 初始化内网默认账号（用户名=密码，容器内执行，不依赖宿主机 python3）
@@ -313,6 +341,7 @@ show_result() {
     echo_info "========================================"
     echo_info "后端服务地址：http://10.62.22.121:443"
     echo_info "健康检查：curl http://10.62.22.121:443/api/v1/health"
+    echo_info "运行数据目录：$PROJECT_DIR/data, $PROJECT_DIR/uploads, $PROJECT_DIR/logs"
     echo_info ""
     echo_info "常用命令："
     echo_info "  查看日志：docker logs -f requirement-backend"

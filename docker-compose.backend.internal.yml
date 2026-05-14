@@ -22,6 +22,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - REPORT_DIR=/app/data
       - UPLOAD_DIR=/app/uploads
       - UV_INDEX_URL=http://pypi.ppr.dev:8081/repository/shrbank-pypi-group/simple
       - TZ=${TZ:-Asia/Shanghai}

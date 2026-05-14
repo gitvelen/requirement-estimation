@@ -24,3 +24,24 @@ def test_standalone_compose_files_share_app_network():
     assert "networks:" in frontend_compose
     assert "- app-network" in frontend_compose
     assert "app-network:" in frontend_compose
+
+
+def test_deploy_backend_script_protects_existing_runtime_dirs_in_place():
+    script_text = (ROOT_DIR / "deploy-backend.sh").read_text(encoding="utf-8")
+    compose_text = (ROOT_DIR / "docker-compose.backend.yml").read_text(encoding="utf-8")
+
+    assert "runtime_has_data" in script_text
+    assert "backup_runtime_dirs" in script_text
+    assert ".deploy-backups" in script_text
+    assert "! -name data" in script_text
+    assert "! -name uploads" in script_text
+    assert "! -name logs" in script_text
+    assert "rm -rf \"$RELEASE_DIR/data\" \"$RELEASE_DIR/uploads\" \"$RELEASE_DIR/logs\"" in script_text
+    assert "RUNTIME_ROOT=" not in script_text
+    assert "REQUIREMENT_DATA_DIR" not in script_text
+
+    assert "./data:/app/data" in compose_text
+    assert "./uploads:/app/uploads" in compose_text
+    assert "./logs:/app/logs" in compose_text
+    assert "REPORT_DIR=/app/data" in compose_text
+    assert "UPLOAD_DIR=/app/uploads" in compose_text

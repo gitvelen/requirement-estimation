@@ -18,6 +18,7 @@ import {
 import { QuestionCircleOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import ExpandableText from '../components/ExpandableText';
+import { formatEstimateTotal, sumEstimateValues } from '../utils/estimateSummary';
 
 const { Text, Paragraph } = Typography;
 
@@ -191,6 +192,13 @@ const EvaluationPage = () => {
 
   const highDeviationSet = useMemo(() => new Set(highDeviationFeatures), [highDeviationFeatures]);
 
+  const resolveDisplayedEstimateValue = (record) => {
+    const estimate = resolveFeatureEstimate(record);
+    const draftValue = draftValues[record.id];
+    const submittedValue = record.myEvaluation !== null && record.myEvaluation !== undefined ? record.myEvaluation : undefined;
+    return draftValue !== undefined ? draftValue : (submittedValue !== undefined ? submittedValue : estimate.baseline);
+  };
+
   const handleSaveDraft = async (featureId, value) => {
     try {
       await axios.post(`/api/v1/evaluation/${taskId}/draft`, {
@@ -246,7 +254,7 @@ const EvaluationPage = () => {
     const baselineValue = estimate.baseline;
     const draftValue = draftValues[record.id];
     const submittedValue = record.myEvaluation !== null && record.myEvaluation !== undefined ? record.myEvaluation : undefined;
-    const displayValue = draftValue !== undefined ? draftValue : (submittedValue !== undefined ? submittedValue : baselineValue);
+    const displayValue = resolveDisplayedEstimateValue(record);
     const isEdited = (draftValue !== undefined && draftValue !== baselineValue)
       || (draftValue === undefined && submittedValue !== undefined && submittedValue !== baselineValue);
 
@@ -444,6 +452,29 @@ const EvaluationPage = () => {
     ...(visibleColumns.includes('备注') ? [remarkColumn] : []),
   ];
 
+  const renderEstimateSummary = (rows) => {
+    const total = sumEstimateValues(rows, resolveDisplayedEstimateValue);
+    const estimateColumnIndex = resolvedColumns.findIndex((column) => column.key === 'estimate');
+    const labelColSpan = Math.max(estimateColumnIndex, 1);
+    const trailingColSpan = Math.max(resolvedColumns.length - estimateColumnIndex - 1, 0);
+
+    return (
+      <Table.Summary>
+        <Table.Summary.Row>
+          <Table.Summary.Cell index={0} colSpan={labelColSpan}>
+            <Text strong>当前列表汇总</Text>
+          </Table.Summary.Cell>
+          <Table.Summary.Cell index={labelColSpan}>
+            <Text strong>{formatEstimateTotal(total)}</Text>
+          </Table.Summary.Cell>
+          {trailingColSpan > 0 && (
+            <Table.Summary.Cell index={labelColSpan + 1} colSpan={trailingColSpan} />
+          )}
+        </Table.Summary.Row>
+      </Table.Summary>
+    );
+  };
+
   const renderCompletenessTabLabel = (systemName) => {
     const info = completenessMap[systemName] || {};
     const score = Number(info.completeness_score);
@@ -568,6 +599,7 @@ const EvaluationPage = () => {
                   pagination={false}
                   scroll={{ x: 1400 }}
                   rowClassName={(record) => (highDeviationSet.has(record.id) ? 'row-high-deviation' : '')}
+                  summary={renderEstimateSummary}
                 />
               ),
             }))}

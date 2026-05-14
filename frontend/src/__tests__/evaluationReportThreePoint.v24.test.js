@@ -196,6 +196,11 @@ describe('Evaluation/Report three-point estimate v2.4', () => {
     const featureText = await screen.findByText('证件校验');
     expect(featureText).toBeInTheDocument();
     expect(screen.getAllByText('2.58').length).toBeGreaterThan(0);
+    expect(screen.getByText('当前列表汇总')).toBeInTheDocument();
+    expect(screen.getByText('4.08')).toBeInTheDocument();
+    const summaryLabelCell = screen.getByText('当前列表汇总').closest('td');
+    expect(summaryLabelCell).toHaveAttribute('colspan', '7');
+    expect(summaryLabelCell?.nextElementSibling).toHaveTextContent('4.08');
 
     const featureRow = featureText.closest('tr');
     const expandIcon = featureRow?.querySelector('.ant-table-row-expand-icon');
@@ -263,6 +268,8 @@ describe('Evaluation/Report three-point estimate v2.4', () => {
     const reportFeatureText = await screen.findByText('证件校验');
     expect(reportFeatureText).toBeInTheDocument();
     expect(screen.getAllByText('2.58').length).toBeGreaterThan(0);
+    expect(screen.getByText('汇总')).toBeInTheDocument();
+    expect(screen.getByText('4.08')).toBeInTheDocument();
 
     const reportFeatureRow = reportFeatureText.closest('tr');
     const expandIcon = reportFeatureRow?.querySelector('.ant-table-row-expand-icon');

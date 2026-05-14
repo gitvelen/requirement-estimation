@@ -45,6 +45,14 @@ const featureRow = {
   预估人天: 1,
 };
 
+const featureRow2 = {
+  序号: '1.2',
+  功能模块: '支付接入',
+  功能点: '支付退款同步',
+  业务描述: '同步支付退款状态',
+  预估人天: '2.5',
+};
+
 describe('EditPage target system lock', () => {
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
@@ -64,7 +72,7 @@ describe('EditPage target system lock', () => {
         return Promise.resolve({
           data: {
             data: {
-              systems_data: { 支付系统: [featureRow] },
+              systems_data: { 支付系统: [featureRow, featureRow2] },
               modifications: [],
               confirmed: false,
               ai_system_analysis: {
@@ -88,6 +96,8 @@ describe('EditPage target system lock', () => {
 
     expect(await screen.findByText('单系统锁定')).toBeInTheDocument();
     expect(screen.getByText('添加功能点')).toBeInTheDocument();
+    expect(screen.getByText('汇总')).toBeInTheDocument();
+    expect(screen.getByText('3.5')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /系统操作/i })).not.toBeInTheDocument();
   });
 

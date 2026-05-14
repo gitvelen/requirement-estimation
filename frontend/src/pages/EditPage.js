@@ -6,6 +6,7 @@ import axios from 'axios';
 import ExpandableText from '../components/ExpandableText';
 import usePermission from '../hooks/usePermission';
 import { extractErrorMessage } from '../utils/errorMessage';
+import { formatEstimateTotal, sumEstimateValues } from '../utils/estimateSummary';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -687,6 +688,29 @@ const EditPage = () => {
     columns[4],
   ];
 
+  const renderEstimateSummary = (rows) => {
+    const total = sumEstimateValues(rows, (row) => row?.['预估人天']);
+    const estimateColumnIndex = resolvedColumns.findIndex((column) => column.key === '预估人天');
+    const labelColSpan = Math.max(estimateColumnIndex, 1);
+    const trailingColSpan = Math.max(resolvedColumns.length - estimateColumnIndex - 1, 0);
+
+    return (
+      <Table.Summary>
+        <Table.Summary.Row>
+          <Table.Summary.Cell index={0} colSpan={labelColSpan}>
+            <Text strong>汇总</Text>
+          </Table.Summary.Cell>
+          <Table.Summary.Cell index={labelColSpan}>
+            <Text strong>{formatEstimateTotal(total)}</Text>
+          </Table.Summary.Cell>
+          {trailingColSpan > 0 && (
+            <Table.Summary.Cell index={labelColSpan + 1} colSpan={trailingColSpan} />
+          )}
+        </Table.Summary.Row>
+      </Table.Summary>
+    );
+  };
+
 
   if (loading) {
     return <Card loading={true}>加载中...</Card>;
@@ -797,6 +821,7 @@ const EditPage = () => {
               rowKey={(record, index) => index}
               pagination={false}
               scroll={{ x: 1200 }}
+              summary={renderEstimateSummary}
             />
           ),
         }))}

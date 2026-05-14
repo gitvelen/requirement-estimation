@@ -56,20 +56,67 @@ if ! ssh -o ConnectTimeout=5 root@${BACKEND_SERVER} "echo 'SSH连接成功'" > /
 fi
 print_info "SSH连接测试成功"
 
-# 2. 从GitHub克隆代码到后端服务器
+# 2. 从GitHub克隆代码到后端服务器，并保护运行数据目录
 print_info "步骤 2/7: 从GitHub克隆master分支到后端服务器"
 ssh root@${BACKEND_SERVER} << 'EOF'
-# 如果目录已存在，先备份
-if [ -d "/root/requirement-estimation-system" ]; then
-    echo "备份现有目录..."
-    mv /root/requirement-estimation-system /root/requirement-estimation-system.backup.$(date +%Y%m%d_%H%M%S)
+set -e
+
+PROJECT_NAME="requirement-estimation-system"
+REMOTE_DIR="/root/${PROJECT_NAME}"
+RELEASE_DIR="/tmp/${PROJECT_NAME}.release.$$"
+BACKUP_DIR="$REMOTE_DIR/.deploy-backups"
+
+dir_has_data() {
+    local target_dir="$1"
+    [ -d "$target_dir" ] && [ -n "$(find "$target_dir" -mindepth 1 -print -quit)" ]
+}
+
+runtime_has_data() {
+    dir_has_data "$REMOTE_DIR/data" \
+        || dir_has_data "$REMOTE_DIR/uploads" \
+        || dir_has_data "$REMOTE_DIR/logs"
+}
+
+backup_runtime_dirs() {
+    local backup_file="$BACKUP_DIR/runtime_$(date +%Y%m%d_%H%M%S).tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    tar czf "$backup_file" -C "$REMOTE_DIR" data uploads logs
+    echo "已备份运行数据：$backup_file"
+}
+
+prepare_runtime_dirs() {
+    mkdir -p "$REMOTE_DIR/data" "$REMOTE_DIR/uploads" "$REMOTE_DIR/logs" "$BACKUP_DIR"
+    if runtime_has_data; then
+        backup_runtime_dirs
+    else
+        echo "首次部署或运行数据目录为空，创建 data/uploads/logs"
+    fi
+}
+
+rm -rf "$RELEASE_DIR"
+echo "从GitHub克隆master分支到临时目录..."
+git clone -b master https://github.com/gitvelen/requirement-estimation-system.git "$RELEASE_DIR"
+rm -rf "$RELEASE_DIR/data" "$RELEASE_DIR/uploads" "$RELEASE_DIR/logs" "$RELEASE_DIR/.deploy-backups"
+
+if [ -d "$REMOTE_DIR" ]; then
+    cd "$REMOTE_DIR"
+    docker-compose -f docker-compose.backend.yml down 2>/dev/null || true
+    prepare_runtime_dirs
+    find . -mindepth 1 -maxdepth 1 \
+        ! -name data \
+        ! -name uploads \
+        ! -name logs \
+        ! -name .deploy-backups \
+        -exec rm -rf {} +
+else
+    mkdir -p "$REMOTE_DIR"
 fi
 
-# 克隆master分支
-echo "从GitHub克隆master分支..."
-git clone -b master https://github.com/gitvelen/requirement-estimation-system.git /root/requirement-estimation-system
+cp -a "$RELEASE_DIR"/. "$REMOTE_DIR"/
+rm -rf "$RELEASE_DIR"
+mkdir -p "$REMOTE_DIR/data" "$REMOTE_DIR/uploads" "$REMOTE_DIR/logs" "$BACKUP_DIR"
 
-echo "代码克隆完成"
+echo "代码更新完成，运行数据目录已保留在 $REMOTE_DIR/data, $REMOTE_DIR/uploads, $REMOTE_DIR/logs"
 EOF
 
 # 3. 检查环境变量配置
@@ -138,10 +185,13 @@ EOF
 print_info "步骤 5/7: 构建并启动后端容器（可能需要几分钟）"
 ssh root@${BACKEND_SERVER} << EOF
 cd ${REMOTE_DIR}
+mkdir -p data uploads logs .deploy-backups
+
 if ! docker-compose -f docker-compose.backend.yml up -d --build; then
     echo "BuildKit 构建失败，回退到经典构建模式（DOCKER_BUILDKIT=0）..."
     DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker-compose -f docker-compose.backend.yml up -d --build
 fi
+echo "运行数据目录：${REMOTE_DIR}/data, ${REMOTE_DIR}/uploads, ${REMOTE_DIR}/logs"
 EOF
 
 # 6. 验证部署

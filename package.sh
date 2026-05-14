@@ -46,9 +46,10 @@ tar czf "$PACKAGE_NAME" \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='.git' \
-    --exclude='logs/*' \
-    --exclude='data/*' \
-    --exclude='uploads/*' \
+    --exclude='logs' \
+    --exclude='data' \
+    --exclude='uploads' \
+    --exclude='.deploy-backups' \
     --exclude='.DS_Store' \
     requirement-estimation-system/
 
