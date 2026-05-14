@@ -98,7 +98,7 @@ require_root() {
     echo_error "旧代码目录里可能存在容器生成的 root-owned 文件，普通用户无法安全原地更新。"
     echo_info "推荐命令："
     echo "  cd /home/admin"
-    echo "  unzip -p /home/admin/requirement-estimation-main.zip '*/deploy-internal-from-github-zip.sh' | sudo DEPLOY_FRONTEND=0 bash -s -- /home/admin/requirement-estimation-main.zip"
+    echo "  unzip -p /home/admin/requirement-estimation-main.zip '*/deploy-internal-from-github-zip.sh' | sudo env DEPLOY_FRONTEND=0 bash -s -- /home/admin/requirement-estimation-main.zip"
     exit 1
 }
 
