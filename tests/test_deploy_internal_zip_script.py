@@ -23,7 +23,7 @@ def test_internal_zip_deploy_script_safely_updates_project_dir():
     assert "-path ./uploads" in script_text
     assert "-path ./logs" in script_text
 
-    assert "bash deploy-backend-internal.sh" in script_text
+    assert "DEPLOY_ASSUME_YES=1 bash deploy-backend-internal.sh" in script_text
     assert "DEPLOY_BACKEND" in script_text
     assert "DEPLOY_FRONTEND" in script_text
     assert "/home/admin/frontend-build.tar.gz" in script_text
