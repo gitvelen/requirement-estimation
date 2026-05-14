@@ -46,3 +46,16 @@ def test_internal_deploy_protects_existing_runtime_dirs_in_place():
     assert "./logs:/app/logs" in compose_text
     assert "REPORT_DIR=/app/data" in compose_text
     assert "UPLOAD_DIR=/app/uploads" in compose_text
+
+
+def test_internal_backend_health_checks_do_not_require_curl():
+    script_text = (ROOT_DIR / "deploy-backend-internal.sh").read_text(encoding="utf-8")
+    compose_text = (ROOT_DIR / "docker-compose.backend.internal.yml").read_text(encoding="utf-8")
+
+    assert "curl -f http://localhost:443/api/v1/health" not in script_text
+    assert "docker exec -i requirement-backend python - <<'PY'" in script_text
+    assert "urllib.request.urlopen" in script_text
+
+    assert '["CMD", "curl"' not in compose_text
+    assert "python" in compose_text
+    assert "urllib.request" in compose_text

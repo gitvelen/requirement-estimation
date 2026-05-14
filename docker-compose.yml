@@ -39,7 +39,7 @@ services:
       - app-network
       - aiquant-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:443/api/v1/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:443/api/v1/health', timeout=5).read()\""]
       interval: 30s
       timeout: 10s
       retries: 3
