@@ -89,6 +89,19 @@ check_prerequisites() {
     fi
 }
 
+require_root() {
+    if [ "$EUID" -eq 0 ]; then
+        return 0
+    fi
+
+    echo_error "请使用 root 或 sudo 执行一键部署脚本。"
+    echo_error "旧代码目录里可能存在容器生成的 root-owned 文件，普通用户无法安全原地更新。"
+    echo_info "推荐命令："
+    echo "  cd /home/admin"
+    echo "  unzip -p /home/admin/requirement-estimation-main.zip '*/deploy-internal-from-github-zip.sh' | sudo DEPLOY_FRONTEND=0 bash -s -- /home/admin/requirement-estimation-main.zip"
+    exit 1
+}
+
 resolve_zip_path() {
     local zip_dir
     local zip_name
@@ -256,6 +269,7 @@ main() {
     echo_info "GitHub zip 内网一键部署"
     echo_info "========================================"
     check_prerequisites
+    require_root
     resolve_zip_path
     extract_release
     update_project_files
