@@ -323,11 +323,22 @@ verify_service() {
     echo_info "检查服务健康状态..."
     sleep 5
 
-    if curl -f http://localhost:443/api/v1/health &> /dev/null; then
+    if docker exec -i requirement-backend python - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("http://localhost:443/api/v1/health", timeout=5) as response:
+    payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("status") != "healthy":
+        raise SystemExit(1)
+PY
+    then
         echo_info "后端服务验证成功"
     else
         echo_warn "健康检查失败，但服务可能仍在启动中"
-        echo_info "请稍后手动验证：curl http://localhost:443/api/v1/health"
+        echo_info "请稍后手动验证：docker exec -i requirement-backend python - <<'PY'"
+        echo_info "import urllib.request; print(urllib.request.urlopen('http://localhost:443/api/v1/health', timeout=5).read().decode())"
+        echo_info "PY"
     fi
 }
 
@@ -340,7 +351,9 @@ show_result() {
     echo_info "部署完成！"
     echo_info "========================================"
     echo_info "后端服务地址：http://10.62.22.121:443"
-    echo_info "健康检查：curl http://10.62.22.121:443/api/v1/health"
+    echo_info "健康检查：docker exec -i requirement-backend python - <<'PY'"
+    echo_info "import urllib.request; print(urllib.request.urlopen('http://localhost:443/api/v1/health', timeout=5).read().decode())"
+    echo_info "PY"
     echo_info "运行数据目录：$PROJECT_DIR/data, $PROJECT_DIR/uploads, $PROJECT_DIR/logs"
     echo_info ""
     echo_info "常用命令："
