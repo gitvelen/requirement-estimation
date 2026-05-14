@@ -10,17 +10,18 @@ def test_internal_zip_deploy_script_safely_updates_project_dir():
     assert "ZIP_PATH=\"${1:-/home/admin/requirement-estimation-main.zip}\"" in script_text
     assert "unzip -q \"$ZIP_PATH\"" in script_text
     assert "-name deploy-backend-internal.sh" in script_text
-    assert "require_root" in script_text
-    assert "EUID" in script_text
-    assert "sudo" in script_text
+    assert "require_root" not in script_text
+    assert "clean_project_tree" in script_text
+    assert "__pycache__" in script_text
+    assert "*.pyc" in script_text
 
     assert "runtime_has_data" in script_text
     assert "backup_runtime_dirs" in script_text
     assert ".deploy-backups" in script_text
     assert "rm -rf \"$RELEASE_DIR/data\" \"$RELEASE_DIR/uploads\" \"$RELEASE_DIR/logs\" \"$RELEASE_DIR/.deploy-backups\"" in script_text
-    assert "! -name data" in script_text
-    assert "! -name uploads" in script_text
-    assert "! -name logs" in script_text
+    assert "-path ./data" in script_text
+    assert "-path ./uploads" in script_text
+    assert "-path ./logs" in script_text
 
     assert "bash deploy-backend-internal.sh" in script_text
     assert "DEPLOY_BACKEND" in script_text
